@@ -34,7 +34,7 @@ def test_the_fixture_directory_is_the_repo_contract() -> None:
 
 
 def test_every_status_word_of_rivets_run_entries_is_known() -> None:
-    """A word outside STATUSES reads as `failed`: `already_applied` (rivet 0.32, #623) would have failed a task whose
+    """A word outside STATUSES reads as `failed`: `already_applied` (rivet #623) would have failed a task whose
     plan rivet had applied. Each `run_entry_*.json` of the pinned contract must carry a word the provider knows."""
     words = {fixture(p.name)["status"] for p in FIXTURES.glob("run_entry*.json")}
     assert "already_applied" in words and words <= STATUSES, words - STATUSES

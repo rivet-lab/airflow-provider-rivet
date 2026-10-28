@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from airflow_provider_rivet.capabilities import Capabilities, ProbeFailed, probe
+from airflow_provider_rivet.capabilities import MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
 
 
 def fake_rivet(tmp_path: Path, body: str, mode: int = 0o755) -> str:
     """A `rivet` that runs `body` before it prints its version."""
     binary = tmp_path / "rivet"
-    binary.write_text(f"#!/bin/sh\n{body}\necho 'rivet 0.31.0'\n")
+    binary.write_text(f"#!/bin/sh\n{body}\necho 'rivet {'.'.join(map(str, MIN_RIVET_VERSION))}'\n")
     binary.chmod(mode)
     return str(binary)
 
@@ -31,7 +31,7 @@ def test_a_probe_runs_the_binary_with_path_and_home_and_nothing_else(tmp_path: P
     monkeypatch.setenv("PATH", "/bin:/usr/bin")
     monkeypatch.setenv("HOME", "/home/worker")
     monkeypatch.setenv("RIVET_PROBE_LEAK", "secret")
-    assert Capabilities(binary).version == (0, 31, 0)
+    assert Capabilities(binary).version == MIN_RIVET_VERSION
     assert seen.read_text() == "/bin:/usr/bin|/home/worker|unset\n"
 
 

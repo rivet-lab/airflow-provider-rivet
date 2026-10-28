@@ -75,7 +75,7 @@ def alive(pid: int) -> bool:
 
 def test_g1b_a_retry_after_the_task_died_past_a_successful_full_apply_takes_rivets_answer(rig: Rig) -> None:
     """G1b (`mode: full`): rivet apply exited 0, the task process died before Airflow recorded the success, and the
-    retry (a try of the same series) replays the sealed plan. rivet >= 0.32 extracts nothing and answers with the run
+    retry (a try of the same series) replays the sealed plan. rivet extracts nothing and answers with the run
     that applied it (`already_applied`, `run_id` == `answered_by_run`); the task ends success with that run's unit."""
     rig.scenario(apply={"summary": FULL})
     op = rig.operator(RivetApplyOperator, export="orders")
@@ -99,9 +99,9 @@ def test_g1b_a_retry_after_the_task_died_past_a_successful_full_apply_takes_rive
 
 
 def test_g1_a_retry_after_the_task_died_past_a_successful_incremental_apply_is_not_refused(rig: Rig) -> None:
-    """G1 (incremental): the same death after a successful apply. On rivet 0.31 the replay was refused
-    RIVET_PLAN_ARTIFACT_STALE (exit 5, a red DAG run with no retry); rivet >= 0.32 knows its own apply moved the cursor
-    and runs from there, finding nothing new: the task ends success, and nothing is extracted twice."""
+    """G1 (incremental): the same death after a successful apply. The replay is no RIVET_PLAN_ARTIFACT_STALE
+    refusal (exit 5, a red DAG run with no retry): rivet knows its own apply moved the cursor and runs from there,
+    finding nothing new: the task ends success, and nothing is extracted twice."""
     rig.scenario(cursors={"users": "5"}, apply={"summary": INCREMENTAL})
     op = rig.operator(RivetApplyOperator, export="users")
     first, _ = rig.run(op, FakeTI(try_number=1, max_tries=2))

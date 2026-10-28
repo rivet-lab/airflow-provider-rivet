@@ -3,9 +3,8 @@
 # for people: no job reads it. A pull request is failed only by a mutant on a line it changed (a change to tests alone
 # runs no mutants), and the full run fails when more mutants survive than .mutmut-ratchet allows.
 # 2026-10-18: release run 39130390503 (tag airflow-v0.1.0 on 9d83682, 5762 mutants), 20 names less the two of the dead `metrics` branch removed after it: 18.
+# 2026-10-28: 12 names: the two of _yaml.x_narrow_text (mutants 17, 18) are gone with the function #99 deleted (the list is a record, the ratchet stays 14 until a full run lowers it).
 airflow_provider_rivet._yaml.x__int__mutmut_18
-airflow_provider_rivet._yaml.x_narrow_text__mutmut_17
-airflow_provider_rivet._yaml.x_narrow_text__mutmut_18
 airflow_provider_rivet.invocation.x__apply__mutmut_3
 airflow_provider_rivet.invocation.x__apply__mutmut_6
 airflow_provider_rivet.invocation.x__plan__mutmut_47

@@ -29,8 +29,8 @@ from gate.sources import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-BATCH = (FIXTURES / "init_mysql_batch_0.31.0.yaml").read_text()
-CDC = (FIXTURES / "init_mysql_cdc_0.31.0.yaml").read_text()
+BATCH = (FIXTURES / "init_mysql_batch.yaml").read_text()
+CDC = (FIXTURES / "init_mysql_cdc.yaml").read_text()
 
 
 def payload(*rows: int | None, status: str = "success", decision: str = "success") -> dict:
@@ -287,11 +287,11 @@ def test_the_second_configs_run_is_refused_by_code_on_its_first_try() -> None:
 
 
 def test_the_two_configs_must_name_one_checkpoint_for_the_cell_to_mean_anything() -> None:
-    assert sources.checkpoint_of(CDC) == "./cdc/cdc.ckpt" and sources.same_checkpoint(CDC, CDC) == []
-    other = CDC.replace("./cdc/cdc.ckpt", "./cdc/other_cdc.ckpt")
+    assert sources.checkpoint_of(CDC) == "./cdc/rivet_cdc.ckpt" and sources.same_checkpoint(CDC, CDC) == []
+    other = CDC.replace("./cdc/rivet_cdc.ckpt", "./cdc/other.ckpt")
     # Mutant: `a != b` dropped (two configs on different files graded as sharing one).
-    assert sources.same_checkpoint(CDC, other)[0].startswith("the first config's checkpoint is './cdc/cdc.ckpt'")
+    assert sources.same_checkpoint(CDC, other)[0].startswith("the first config's checkpoint is './cdc/rivet_cdc.ckpt'")
     # An absolute checkpoint is one file wherever the copy sits, but then init chose it, not the state_dir.
-    absolute = CDC.replace("./cdc/cdc.ckpt", "/data/cdc.ckpt")
+    absolute = CDC.replace("./cdc/rivet_cdc.ckpt", "/data/cdc.ckpt")
     assert sources.same_checkpoint(absolute, absolute) != []
     assert sources.same_checkpoint(CDC, None) != []

@@ -196,7 +196,7 @@ def test_a_sealed_plan_that_is_not_an_object_has_no_strategy(rig: Rig) -> None:
 
 
 def test_a_replay_rivet_answers_already_applied_names_the_export_run_and_artifact(rig: Rig) -> None:
-    """The `rivet.apply.already_applied` record of a replay rivet answered (rivet >= 0.32)."""
+    """The `rivet.apply.already_applied` record of a replay rivet answered."""
     rig.scenario(apply={"summary": {"per_export": [entry()]}})
     op = rig.operator(RivetApplyOperator, export="orders")
     first = payload_of(rig, op, FakeTI(try_number=1, max_tries=2))

@@ -149,22 +149,20 @@ the same tables in MySQL types (`DATETIME(6)` and `TIMESTAMP(6)` cursors, `DECIM
 three cycles, and two DAGs: incremental batch and one CDC stream, each extracted to GCS and loaded and compacted into
 BigQuery from the `rivet_gate_mysql` and `gate_gcp` Connections. Every rivet config of the leg is the one
 `rivet init` writes against the live source inside the stack (`--mode incremental` / `--mode cdc`, `--gcs-bucket`,
-`--bigquery-project`, `--bigquery-dataset`, `--include` with the scenario's tables), used as written: init's prefixes are fixed (`exports/<table>/`, `cdc/`),
-so the gate gives each config a bucket of the run's own (`rivet-afgate-<tag>-<stack>-<engine>-<batch|cdc>`: SQL
-Server's CDC exports write under `exports/<table>/cdc/`, inside the batch export's prefix, which `rivet load` lists
-recursively), and since init names the batch exports after their tables, the batch and CDC loads get a dataset each; the export and stream names the DAGs
+`--bigquery-project`, `--bigquery-dataset`, `--include` with the scenario's tables), used as written: init's prefixes are fixed (`exports/<table>/` for a batch export and for the recipes beside a MySQL stream),
+so the gate gives each config a bucket of the run's own (`rivet-afgate-<tag>-<stack>-<engine>-<batch|cdc>`: two configs
+in one bucket would list each other's runs), and since init names the batch exports after their tables, the batch and CDC loads get a dataset each; the export and stream names the DAGs
 run are read from what init wrote. Each config has a TLS PostgreSQL state database of its own in the stack
 (`RIVET_STATE_URL`, the `rivet_gate_state_<engine>_<batch|cdc>` Connection) that init and its DAGs share, so the primary
 keys init records are the ones the runs read, nothing is left beside the config (the leg fails if init leaves a
-`.rivet_state.db` there), and two configs whose exports share a name (SQL Server's init names its CDC exports after
-their tables, as the batch ones) do not share their progress. rivet 0.31's `init` gives every MySQL stream the replica id `server_id: 4271`, so
-the leg runs one CDC config per MySQL server. `--sources mssql` is the same leg on SQL Server 2022 (`linux/amd64`,
+`.rivet_state.db` there), and the two configs do not share their progress. init derives a MySQL stream's replica id from
+the `-o` file's stem. `--sources mssql` is the same leg on SQL Server 2022 (`linux/amd64`,
 SQL Server Agent on for the CDC capture job, `READ_COMMITTED_SNAPSHOT` on as rivet asks of an incremental read; init
 with `--tls require`, SQL Server encrypts every login): `DATETIME2(7)`
 cursors, a `DATETIMEOFFSET(7)` at a non-UTC offset, `DECIMAL(12,2)`, Cyrillic `NVARCHAR`, `UNIQUEIDENTIFIER` and
 `VARBINARY`. SQL Server captures per table, so its init writes one CDC export per table and the leg runs one CDC DAG
 each (`gate_src_mssql_cdc_<export>`), loaded into the folded `dbo_<table>`; one table's capture instance has a non-default name (`gate_orders_v2`), which init must read from
-`cdc.change_tables` (rivet 0.32.0; the gate gives an older rivet the default name), and the changes wait for the
+`cdc.change_tables`, and the changes wait for the
 capture job before a CDC run reads. Both engines run with `--sources mysql,mssql`. Oracles: each compacted BigQuery
 base, read by google-cloud-bigquery, equals the source value by value (read by DuckDB's mysql scanner, or as `FOR JSON`
 through `sqlcmd`, an instant cut to the microseconds rivet keeps; batch: with exactly the keys the cycle deleted left
@@ -346,8 +344,8 @@ its export succeeds and deletes nothing, a load of the other export beside it cl
 load cleans (`live-run-blocks`).
 Everything lives in the stack and goes with its `down -v`.
 
-There is no Azure leg: rivet 0.32's `init` has no Azure destination flag (only `--gcs-bucket` and `--s3-bucket`), and
-the gate's configs come only from `rivet init`.
+There is no Azure leg: the gate's configs come only from `rivet init`, and no leg runs one against an Azure container
+(init has `--azure-container`; the gate has no Azure stand or credentials).
 
 **Connection legs.** Each stack runs with passwords made for it (32 random hex digits for the source, state,
 ClickHouse and metastore databases and the admin user) and a generated Fernet key, so no task log masks a word it

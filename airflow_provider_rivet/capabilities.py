@@ -37,7 +37,7 @@ class Capabilities:
         if not match:
             raise ProbeFailed(f"`{binary} --version` did not print a rivet version")
         self.version = tuple(int(g) for g in match.groups())
-        # The whole version line after `rivet`, so a branch build `0.32.1 (3f337e9e3)` is told apart from the release.
+        # The whole version line after `rivet`, so a branch build `0.32.2 (3f337e9e3)` is told apart from the release.
         self.version_text = out[match.start() :].splitlines()[0].split(None, 1)[1].strip()
 
     @staticmethod

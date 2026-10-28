@@ -3,7 +3,7 @@
 
 source:
   type: postgres
-  url_env: RIVET_GATE_S3_SOURCE_URL  # reads the variable you already exported
+  url_env: RIVET_GATE_SOURCE_URL  # reads the variable you already exported
   tls: { mode: disable }  # explicit remote-plaintext opt-in (--tls disable): only on a trusted
   # network path
 
