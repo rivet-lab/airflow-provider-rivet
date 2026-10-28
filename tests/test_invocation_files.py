@@ -295,6 +295,41 @@ def test_pruning_reads_each_kind_by_its_own_rule_and_goes_on_past_a_kept_file(tm
     assert not_ledger.exists() and live.exists() and not dead.exists() and not dead2.exists()
 
 
+def test_a_run_folder_is_removed_only_when_it_was_idle_before_the_pass(tmp_path: Path) -> None:
+    """_prune_stale / _idle_folders: an empty folder touched within STALE_AFTER is a live run's (a task made it and plans
+    into it next); an idle one, and one whose last expired artifact this pass removes, go; a file among them stays."""
+    old = NOW - invocation.STALE_AFTER - 10
+    plans = tmp_path / "plans"
+    fresh, idle, emptied = plans / "fresh", plans / "idle", plans / "emptied"
+    for folder in (fresh, idle):
+        folder.mkdir(parents=True)
+    aged(emptied / "a.json", json.dumps({"expires_at": "2001-01-01T00:00:00Z"}), old)
+    aged(plans / "stray", "x", NOW)
+    for folder in (idle, emptied):
+        os.utime(folder, (old, old))
+    os.utime(fresh, (NOW, NOW))
+    invocation._prune_stale(tmp_path, now=NOW)
+    assert fresh.is_dir() and not idle.exists() and not emptied.exists() and (plans / "stray").exists()
+
+
+def test_a_folder_exactly_at_the_cutoff_is_still_live(tmp_path: Path) -> None:
+    """_idle_folders: the same boundary as a file's."""
+    folder = tmp_path / "plans" / "r"
+    folder.mkdir(parents=True)
+    cutoff = NOW - invocation.STALE_AFTER
+    os.utime(folder, (cutoff, cutoff))
+    invocation._prune_stale(tmp_path, now=NOW)
+    assert folder.is_dir()
+    os.utime(folder, (cutoff - 1, cutoff - 1))
+    invocation._prune_stale(tmp_path, now=NOW)
+    assert not folder.exists()
+
+
+def test_a_plans_folder_that_cannot_be_listed_leaves_every_run_folder_alone(tmp_path: Path) -> None:
+    """_idle_folders: no folder list, no removal, no error."""
+    assert invocation._idle_folders(tmp_path / "missing", NOW) == []
+
+
 def test_a_kind_that_cannot_be_listed_does_not_stop_the_other_kind_from_being_pruned(tmp_path: Path) -> None:
     """_prune_stale 16: listing `plans` fails; the old crashed ledger is still removed."""
 

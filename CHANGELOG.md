@@ -7,6 +7,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- **Behaviour change.** A task ending no longer removes the plan folder of a run that is in progress. Every task's
+  cleanup removed any empty `plans/<run_id>/` folder, including the one another task of the same DAG run had just
+  created for its `rivet plan --output`, so that apply failed with "output unwritable" and was retried or lost, by
+  timing. A run folder is now removed only when nothing in it, and the folder itself, changed in the 24 h before the
+  cleanup (the apply touches its folder on every use). **Upgrade:** nothing is stored and nothing to migrate; an empty
+  folder an earlier version left stays for up to 24 h longer, then the next task's cleanup removes it.
 - **Behaviour change.** A SQL Server or Oracle `connection_url` percent-encoded the database, but rivet reads that URL
   path as written, so `my db` reached rivet as `my%20db` and the load failed with a login error naming another
   database. The database is now written as is for those two schemes, and PostgreSQL, MySQL and MongoDB stay encoded. A
