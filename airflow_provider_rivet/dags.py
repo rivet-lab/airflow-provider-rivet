@@ -345,7 +345,7 @@ def _config_dag(
     url_env = (doc.get("source") or {}).get("url_env")
     if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
-    return _dag_of_config(dag_id, mode, config, doc, common)
+    return _dag_of_config(dag_id, mode == "cdc", config, doc, common)
 
 
 def build_config_dag(
@@ -364,17 +364,16 @@ def build_config_dag(
     if mode not in (None, "cdc", "batch"):
         raise ValueError("`mode` is 'cdc', 'batch' or None (read from the config)")
     doc = read_config(config)
-    if mode is None:
-        mode = "cdc" if any(mode_of(e) == "cdc" for e in entries_of(doc)) else "batch"
+    as_cdc = any(mode_of(e) == "cdc" for e in entries_of(doc)) if mode is None else mode == "cdc"
     common = {"config": config, "state_dir": state_dir, "operator_kwargs": dict(operator_kwargs or {}), **dag_kwargs}
-    return _dag_of_config(dag_id, mode, Path(config), doc, common)
+    return _dag_of_config(dag_id, as_cdc, Path(config), doc, common)
 
 
-def _dag_of_config(dag_id: str, mode: str, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
-    """The DAG of a config read as `doc`, in `mode`; a config with no export for the mode is refused, coded."""
+def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
+    """The CDC (`as_cdc`) or batch DAG of a config read as `doc`; a config with no export for the mode is refused, coded."""
     exports = entries_of(doc)
     cdc = [e for e in exports if mode_of(e) == "cdc"]
-    if mode == "cdc":
+    if as_cdc:
         # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
         if not cdc:
             raise ConfigRefusal(

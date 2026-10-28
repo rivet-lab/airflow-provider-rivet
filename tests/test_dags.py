@@ -249,9 +249,13 @@ def test_config_dag_reads_its_mode_from_the_config_and_refuses_a_mode_with_nothi
     cdc = tmp_path / "cdc.yaml"
     cdc.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [t], mode: cdc}\n")
     assert sorted(build_config_dag("c", config=str(cdc)).task_ids) == ["run", "watcher"], "no `load:`, no load task"
+    assert set(build_config_dag("c", config=str(cdc)).tags) == {"rivet", "cdc"}, "read from the config"
     with pytest.raises(ConfigRefusal) as refused:
         build_config_dag("c", config=str(batch), mode="cdc")
-    assert refused.value.code == "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT"
+    assert str(refused.value) == (
+        f"[RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT] {batch} has no export with `mode: cdc`, so there is no stream for a CDC "
+        "DAG; build this source with mode='batch', or delete the file to have `init` write it again with the CDC mode"
+    )
     with pytest.raises(ConfigRefusal) as refused:
         build_config_dag("c", config=str(cdc), mode="batch")
     assert refused.value.code == "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT"
