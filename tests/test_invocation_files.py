@@ -305,11 +305,14 @@ def test_a_run_folder_is_removed_only_when_it_was_idle_before_the_pass(tmp_path:
         folder.mkdir(parents=True)
     aged(emptied / "a.json", json.dumps({"expires_at": "2001-01-01T00:00:00Z"}), old)
     aged(plans / "stray", "x", NOW)
-    for folder in (idle, emptied):
+    crashed_dir = tmp_path / "crashed" / "idle"  # only plan run folders are removed, never a folder of the crashed ledgers
+    crashed_dir.mkdir(parents=True)
+    for folder in (idle, emptied, crashed_dir):
         os.utime(folder, (old, old))
     os.utime(fresh, (NOW, NOW))
     invocation._prune_stale(tmp_path, now=NOW)
     assert fresh.is_dir() and not idle.exists() and not emptied.exists() and (plans / "stray").exists()
+    assert crashed_dir.is_dir()
 
 
 def test_a_folder_exactly_at_the_cutoff_is_still_live(tmp_path: Path) -> None:
