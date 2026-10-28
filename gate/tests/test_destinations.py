@@ -104,7 +104,7 @@ def prepared_s3(tmp_path: Path, monkeypatch) -> tuple[S3Leg, object]:
             kind = out.parent.name.removeprefix("s3_")
             fixture = "batch" if kind == "missing" else kind
             (stand.rivet_dir / "configs" / out.parent.name / out.name).write_text(
-                (FIXTURES / f"init_s3_{fixture}_0.32.1.yaml").read_text()
+                (FIXTURES / f"init_s3_{fixture}.yaml").read_text()
             )
         return Done()
 
