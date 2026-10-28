@@ -33,7 +33,6 @@ class Capabilities:
     """The version of one rivet binary, probed from `--version`."""
 
     def __init__(self, binary: str) -> None:
-        self.binary = binary
         out = self._run([binary, "--version"])
         match = _VERSION_RE.search(out)
         if not match:
