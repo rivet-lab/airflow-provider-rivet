@@ -17,10 +17,14 @@ for `run`, `apply` and `cdc_run` (a `run` of the whole config takes the lock of 
 sorted order, so it and a run of one of its exports wait for each other); one per table for `load` and `compact` with
 `--table`, else one per export. A lock is named by the export, not the config: two configs that share a state directory
 and an export name share its lock (they wait for each other; rivet's own lease, keyed by export and source, is the
-exact one). The lock's descriptor is passed to every rivet process the task starts, so a rivet that
-outlives its task keeps the lock until it exits. A task that finds the lock held waits up to
-`lock_wait` seconds, then starts no rivet and ends retryable (`RIVET_AIRFLOW_EXPORT_BUSY`; the
-waiting is logged when it starts, `waiting up to <lock_wait> s for the lock of ...`, record `rivet.lock.wait`). The task releases the lock by an explicit unlock once its
+exact one). The lock's descriptor is passed to every rivet process the task starts, so a rivet keeps the lock
+while the task process lives, and when the task process is killed outright, until that rivet exits. A task that ends
+normally releases the lock by an explicit unlock even if a process rivet left behind (a grandchild that outlived its
+parent) still holds a copy of the descriptor; that process then runs without the lock, and only rivet's own lease
+protects the export from a second holder (measured with a grandchild that kept the descriptor). A task that finds the lock held waits up to
+`lock_wait` seconds **for each lock it needs**, then starts no rivet and ends retryable (`RIVET_AIRFLOW_EXPORT_BUSY`; a `run` of
+the whole config takes one lock per export in turn, so it can wait up to the number of its exports times `lock_wait` before it
+gives up; the waiting is logged when it starts, `waiting up to <lock_wait> s for the lock of ...`, record `rivet.lock.wait`). The task releases the lock by an explicit unlock once its
 rivet has exited.
 
 On Linux each rivet process gets SIGTERM when the task process that started it dies
