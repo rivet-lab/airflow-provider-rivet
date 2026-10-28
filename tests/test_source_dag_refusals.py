@@ -233,3 +233,20 @@ def test_barrier_ids_a_dag_without_a_clash_are_what_they_were(monkeypatch: pytes
         "apply.big",
         "apply.wave_1_done",
     ]
+
+
+def test_a_barrier_id_taken_by_an_earlier_barrier_moves_on_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "airflow_provider_rivet.dags.read_plan_layout",
+        lambda _: [{"wave": 1, "exports": ["a", "a_barrier", "after_a"], "heavy": ["a", "a_barrier"]}],
+    )
+    dag = build_batch_dag("d", config="c", plan_file="p", load=False)
+    assert sorted(t for t in dag.task_ids if t.startswith("apply.")) == [
+        "apply.a",
+        "apply.a_barrier",
+        "apply.after_a",
+        "apply.after_a_barrier",
+        "apply.after_a_barrier_barrier",
+    ]
+    assert dag.get_task("apply.a_barrier").upstream_task_ids == {"plan", "apply.after_a_barrier"}
+    assert dag.get_task("apply.after_a").upstream_task_ids == {"plan", "apply.after_a_barrier_barrier"}
