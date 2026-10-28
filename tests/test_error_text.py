@@ -71,8 +71,8 @@ def test_a_credential_is_masked_before_the_cut_so_no_part_of_it_is_left_by_the_c
     assert text.startswith("x" * (ERROR_TEXT_LIMIT - 5) + "***")
 
 
-def test_a_credential_spanning_two_lines_of_the_text_is_masked_before_the_lines_are_cut(planted: str) -> None:
-    assert error_text(f"password={planted}\nsecond line") == "password=*** | second line"
+def test_a_credential_on_the_first_of_two_lines_is_masked(planted: str) -> None:
+    assert error_text(f"the value {planted}\nsecond line") == "the value *** | second line"
 
 
 def test_a_megabyte_of_hostile_text_is_read_once_and_cheaply(planted: str) -> None:
