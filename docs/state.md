@@ -53,7 +53,10 @@ SQLite state in `state_dir`.
      on every rivet it runs, and a `sqlite:` value in the task's environment that names another
      file moves the state out of the directory these checks look at, so leave it unset for tasks.
    - every relative `query_file` of the config, copied to the same relative path (see 5), and
-     `.rivet_airflow_query_files.json`, which records the config directory each one came from.
+     `.rivet_airflow_query_files.json`, which records the config directory each one came from, as the DAG
+     gave it (the `dags/repo` of a git-sync link, not the `rev-<sha>` it points to today), so a new revision of the same config is the
+     same owner. The copy and the record are made under one lock (`airflow/locks/state/query-files.lock`), so two tasks of two
+     config directories that share this state directory never both pass the check.
    - a relative `cdc.checkpoint`, which resolves beside the copied config, that is, here.
    - `airflow/<dag_id>/`: sealed plan artifacts
      (`plans/<run_id>/<export>__<task_id>__s<max_tries>__<inputs>-<hash>.json`), the crashed ledger, scratch
@@ -135,7 +138,7 @@ SQLite state in `state_dir`.
 
    | Key | rivet resolves it against | Under this package |
    |---|---|---|
-   | `query_file` | the config's directory; an absolute path, `..` and a symlink out of it are refused by rivet | stays as written; the file is copied to the same relative path in the state directory before every task. Refused before rivet starts (`RIVET_AIRFLOW_QUERY_FILE`) when it is absolute, has `..`, leaves the directory through a symlink, is missing for the task's export, or when a config from ANOTHER directory already put a file at that relative path in this state directory |
+   | `query_file` | the config's directory; an absolute path, `..` and a symlink out of it are refused by rivet | stays as written; the file is copied to the same relative path in the state directory before every task. Refused before rivet starts (`RIVET_AIRFLOW_QUERY_FILE`) when it is absolute, has `..`, leaves the directory through a symlink, is missing for the task's export, or when a config from ANOTHER directory already put a file at that relative path in this state directory (the refusal names the directory and the remedy for an owner that is an earlier revision of this config, or is gone: delete `.rivet_airflow_query_files.json` in the state directory and the next task claims the path) |
    | `cdc.checkpoint` | the config's directory | resolves in the state directory, a subdirectory included (rivet 0.32.2's `init -o <stem>.yaml` writes `./cdc/<stem>_<export>.ckpt`); a file left beside the original is refused, see 3. The `<checkpoint>.owner` record rivet 0.32.2 keeps beside it (which config owns the checkpoint) is neither checked nor touched by the operator: move it with the checkpoint or leave it, rivet re-claims a checkpoint whose recorded owner no longer names it |
    | a local `destination.path` (or `prefix`) | the config's directory (rivet 0.32+) | the state directory: init's `./output/orders/` lands in `<state_dir>/output/orders/` (from rivet 0.32.2 a CDC scaffold written with `-o <stem>.yaml` says `./output/<stem>/orders_cdc/`, which lands in `<state_dir>/output/<stem>/orders_cdc/`); `cwd` does not move it. Write an absolute path to put the files elsewhere |
    | the other paths rivet opens as written, such as `tls.ca_file` | the process's working directory | unchanged: the working directory defaults to the directory of your ORIGINAL config; set `cwd` to change it |
