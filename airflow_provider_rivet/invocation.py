@@ -27,7 +27,7 @@ from typing import Any
 
 from . import _yaml
 from .capabilities import ProbeFailed
-from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, binary_unanswering, run_preflight, state_kind
+from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, binary_unanswering, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
 
@@ -98,9 +98,9 @@ def path_name(*parts: Any) -> str:
 
 
 def undeclared_state_variables(env: Mapping[str, str], environ: Mapping[str, str] | None = None) -> list[str]:
-    """The state variable, when the worker's value selects PostgreSQL state and the task's environment has no entry for it."""
+    """The state variable, when the worker's value names a state rivet opens (PostgreSQL or a `sqlite:` file) and the task's environment has no entry for it."""
     source = os.environ if environ is None else environ
-    return [STATE_URL_ENV] if state_kind(source) == "postgres" and STATE_URL_ENV not in env else []
+    return [STATE_URL_ENV] if selects_state(source) and STATE_URL_ENV not in env else []
 
 
 def plan_layout(plan: Any) -> list[dict[str, Any]]:

@@ -646,7 +646,7 @@ def build_environment(
     """rivet's environment, in order: the worker's allow-listed and passed-through variables; the storage and
     warehouse Connections, each REPLACING the worker's variables of its kind when it supplies a credential (a
     Connection's static keys never ride beside the worker's session token); `env`; URLs from Connections. Key
-    files go to `secrets_dir`. A worker PostgreSQL state the task would not pass is refused."""
+    files go to `secrets_dir`. A worker state (PostgreSQL or `sqlite:`) the task would not pass is refused."""
     env = worker_environment(spec.passthrough, spec.clouds, worker_env)
     if resolved_connections:
         made, replaced = _cloud(resolved_connections, secrets_dir, spec.config)
@@ -659,8 +659,8 @@ def build_environment(
     for name in undeclared_state_variables(env, worker_env):
         raise PreflightRefusal(
             "RIVET_AIRFLOW_STATE_ENV_NOT_PASSED",
-            f"the worker's environment sets {name} to a PostgreSQL state and this task would not pass it to rivet, which would then "
-            f"run on an empty SQLite state and treat every export as a first run. Either inherit the worker's "
+            f"the worker's environment sets {name} to a state rivet would use (a PostgreSQL URL or a `sqlite:` file) and this task "
+            f"would not pass it to rivet, which would then run on an empty SQLite state in state_dir and treat every export as a first run. Either inherit the worker's "
             f'value with env_passthrough=["{name}"], or give the task its own with '
             f'env_from_connections={{"{name}": "<conn_id>"}} (or `env`); unset it on the worker if it is not '
             "meant for this pipeline",

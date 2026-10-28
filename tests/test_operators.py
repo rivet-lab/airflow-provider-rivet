@@ -864,7 +864,7 @@ def test_a_worker_state_url_the_task_does_not_pass_on_is_refused_before_rivet_st
         "a declared empty value is a decision: SQLite state, beside the config's copy in state_dir"
     )
     assert rig.calls()[-1]["env"]["RIVET_STATE_URL"] == ""
-    for ignored in ("", " ", "sqlite:///tmp/x.db", "mysql://state-db/x", "Postgres://state-db/x", " postgresql://state-db/x"):
+    for ignored in ("", " ", "mysql://state-db/x", "Postgres://state-db/x", " postgresql://state-db/x"):
         monkeypatch.setenv("RIVET_STATE_URL", ignored)
         payload, _ = rig.run(rig.operator(RivetRunOperator, export="orders"))
         assert isinstance(payload, dict) and payload["decision"] == "success", (
