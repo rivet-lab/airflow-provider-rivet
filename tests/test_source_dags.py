@@ -850,8 +850,6 @@ def test_builder_refusals_word_for_word(tmp_path: Path) -> None:
     for key in ("config", "state_dir"):
         assert message(operator_kwargs={key: "x"}) == f"operator_kwargs may not set ['{key}']: each source's DAG sets them"
     assert message(operator_kwargs={"trigger_rule": "all_done"}).startswith("operator_kwargs may not set `trigger_rule`")
-    (tmp_path / "shop.yaml").write_text("exports: []\n")
-    assert message() == f"{tmp_path / 'shop.yaml'}: no export with `mode: cdc`"
 
 
 def test_every_source_is_built_whichever_has_a_config(tmp_path: Path) -> None:
@@ -873,16 +871,7 @@ def test_a_stream_naming_no_table_without_a_warehouse_only_runs(tmp_path: Path) 
     assert tasks(tmp_path, cdc_config(load="", stream="")) == {"run", "watcher"}
 
 
-def test_batch_leaves_out_the_stream_and_loads_only_with_a_warehouse(tmp_path: Path) -> None:
-    stream = "  - name: cdc\n    mode: cdc\n    tables: [orders]\n"
-    (tmp_path / "shop.yaml").write_text(BATCH_CONFIG + stream)
-    assert {t.task_id for t in build(tmp_path, mode="batch")["rivet_shop_batch"].tasks} == {
-        "apply.orders",
-        "apply.customers",
-        "load.orders",
-        "load.customers",
-        "watcher",
-    }
+def test_batch_loads_only_with_a_warehouse(tmp_path: Path) -> None:
     (tmp_path / "shop.yaml").write_text(BATCH_CONFIG.replace("load:\n  target: bigquery\n  project: p\n  dataset: shop\n", ""))
     assert {t.task_id for t in build(tmp_path, mode="batch")["rivet_shop_batch"].tasks} == {
         "apply.orders",

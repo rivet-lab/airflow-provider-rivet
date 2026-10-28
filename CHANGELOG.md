@@ -18,6 +18,18 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   first `compact` of an export finds the buffer the earlier runs left to merge. To keep a change log
   (no compaction), write `layout: log_view` in `load:`.
 
+- `build_source_dags`: a source whose config cannot be built no longer ends the DAG file. Before, one malformed or
+  surprising `<name>.yaml` raised at parse and Airflow registered none of the file's DAGs, so every other database's DAG
+  vanished; now that source's DAG keeps its id and has one task, `config`, that fails without retry naming the cause and
+  the remedy, and the others are built. A YAML error names its line and column (`ParserError at line 5, column 4:
+  ...`). **Behaviour change:** a **batch** DAG over a config that has a `mode: cdc` export (the config `rivet init --mode
+  cdc` wrote) is now refused with `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT` instead of silently running the stream's
+  baseline recipes beside the CDC DAG on one config and one state database; an all-CDC config in a batch call names that
+  cause instead of "`exports` is empty". **Remedy:** give the batch call its own source name, or its own `config_dir` and
+  `state_root` (the documented rule, now enforced); a DAG already built over such a config shows the red `config` task
+  at the next parse. In a batch plan, an export named `after_<heavy export>` or `wave_<n>_done` no longer duplicates
+  an ordering point's task id (the DAG file did not import): the ordering point is `<id>_barrier`.
+
 ## 0.3.0 (2026-10-24)
 
 Against rivet 0.32.2 (the minimum) and the contract of ADR-0039 at rivet 0.32.2.

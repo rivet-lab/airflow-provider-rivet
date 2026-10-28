@@ -28,6 +28,10 @@ class PreflightRefusal(Exception):
         self.code = code
 
 
+class ConfigRefusal(PreflightRefusal, ValueError):
+    """A refusal of the config a DAG builder reads: coded like every refusal, and still the `ValueError` the builders raise."""
+
+
 @dataclass
 class Preflight:
     """What the checks established about the binary, the deployment and the state."""
@@ -87,6 +91,15 @@ def binary_unanswering(exc: ProbeFailed) -> PreflightRefusal:
     return PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}")
 
 
+def _where(exc: Exception) -> str:
+    """Where a YAML error is, in the text rivet and the operator both read: `" at line 3, column 7: <what is wrong>"`; the
+    library's own words for the problem, never the text of the config."""
+    mark = getattr(exc, "problem_mark", None)
+    if mark is None:
+        return ""
+    return f" at line {mark.line + 1}, column {mark.column + 1}: {getattr(exc, 'problem', None) or 'invalid YAML'}"
+
+
 def read_config_source(
     config_path: str, env: Mapping[str, str] | None = None, params: Mapping[str, str] | None = None
 ) -> tuple[dict[str, Any], str, Callable[[str], str | None]]:
@@ -103,7 +116,7 @@ def read_config_source(
         doc, _ = _yaml.resolve_and_load(text, value_of)
     except (OSError, ValueError, RecursionError, _yaml.yaml.YAMLError) as exc:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_CONFIG_UNREADABLE", f"cannot read config {config_path}: {type(exc).__name__}"
+            "RIVET_AIRFLOW_CONFIG_UNREADABLE", f"cannot read config {config_path}: {type(exc).__name__}{_where(exc)}"
         ) from exc
     if not isinstance(doc, dict):
         raise PreflightRefusal("RIVET_AIRFLOW_CONFIG_UNREADABLE", f"config {config_path} is not a YAML mapping")
