@@ -68,7 +68,8 @@ def _yes(value: Any) -> bool:
 
 
 def _secret_file(folder: Path, name: str, data: str) -> str:
-    """Write a 0600 UTF-8 file in the task's private folder; its path."""
+    """Write a 0600 UTF-8 file in the task's private folder; its path. `name` is a constant of this module: a file is
+    never named after a Connection id, which Airflow lets hold `/`, `\\` and `..`, and which can be 250 characters long."""
     path = folder / name
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as handle:
@@ -131,7 +132,7 @@ def _gcp(conn: Any, folder: Path, config: Mapping[str, Any]) -> dict[str, str]:
     path = _extra(conn, "key_path", "google_cloud_platform")
     if keyfile:
         text = keyfile if isinstance(keyfile, str) else json.dumps(keyfile)
-        env["GOOGLE_APPLICATION_CREDENTIALS"] = _secret_file(folder, f"gcp-{conn.conn_id}.json", text)
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = _secret_file(folder, "gcp.json", text)
     elif path:
         env["GOOGLE_APPLICATION_CREDENTIALS"] = str(path)
     project = _extra(conn, "project", "google_cloud_platform")
@@ -213,7 +214,7 @@ def _snowflake(conn: Any, folder: Path, config: Mapping[str, Any]) -> dict[str, 
     key_text = _extra(conn, "private_key_content", "snowflake")
     key_path = _extra(conn, "private_key_file", "snowflake")
     if key_text:
-        key_path = _secret_file(folder, f"snowflake-{conn.conn_id}.p8", _pem(conn, str(key_text)))
+        key_path = _secret_file(folder, "snowflake.p8", _pem(conn, str(key_text)))
     if key_path:
         fields["authenticator"] = "SNOWFLAKE_JWT"
         fields["private_key_file"] = str(key_path)
@@ -338,6 +339,30 @@ def _param(value: Any) -> str:
     return ("true" if value else "false") if isinstance(value, bool) else _quote(str(value))
 
 
+# The databases rivet reads out of the URL path as written: its SQL Server and Oracle parsers never percent-decode it
+# (`parse_mssql_url`, `parse_oracle_url`), while the PostgreSQL, MySQL and MongoDB drivers do. Each has the characters
+# its parser reads as the end of the name or of the credentials.
+_RAW_PATH = {"sqlserver": ("SQL Server", ("@", "?", "#")), "oracle": ("Oracle", ("@", "?", "#", "/"))}
+
+
+def _database_path(scheme: str, database: str, conn_id: str) -> str:
+    """The database as the URL path of `scheme`: percent-encoded where the driver decodes it, as written where rivet
+    reads it itself, and refused when a character of it would end the name or the credentials there: rivet would
+    connect to another database, or refuse with a wrong cause."""
+    if scheme not in _RAW_PATH:
+        return _quote(database)
+    engine, cut = _RAW_PATH[scheme]
+    for char in cut:
+        if char in database:
+            raise PreflightRefusal(
+                UNSUPPORTED,
+                f"connection `{conn_id}` names the {engine} database `{database}`, which holds `{char}`: rivet's "
+                f"{engine} URL reads that character as the end of the name or of the credentials, so it cannot "
+                "carry this name; rename the database",
+            )
+    return database
+
+
 def connection_url(conn: Any, scheme: str | None = None) -> str:
     """A rivet URL from an Airflow Connection's fields, credentials percent-encoded; an unknown scheme is refused.
     Well-known extras (`URL_EXTRAS`) become query parameters, Mongo's `srv` the `mongodb+srv` scheme; an extra in
@@ -366,8 +391,10 @@ def connection_url(conn: Any, scheme: str | None = None) -> str:
     if conn.password:
         auth += ":" + _quote(conn.password)
     auth += "@" if auth else ""
-    port = f":{conn.port}" if conn.port else ""
-    database = (extra.get("service_name") if scheme == "oracle" else None) or conn.schema or ""
+    host = url_host(conn)
+    # rivet's SQL Server parser splits host and port at the last `:` and knows no brackets: `[::1]` alone reads as port `1]`.
+    port = f":{conn.port}" if conn.port else ":1433" if scheme == "sqlserver" and host.startswith("[") else ""
+    database = str((extra.get("service_name") if scheme == "oracle" else None) or conn.schema or "")
     own = str(extra.get("rivet_params") or "")
     named = {pair.partition("=")[0] for pair in own.split("&") if pair}
     params = [
@@ -376,7 +403,7 @@ def connection_url(conn: Any, scheme: str | None = None) -> str:
         if extra.get(name) not in (None, "") and key not in named
     ]
     query = "&".join([*params, *([own] if own else [])])
-    return f"{scheme}://{auth}{url_host(conn)}{port}/{_quote(str(database))}{'?' + query if query else ''}"
+    return f"{scheme}://{auth}{host}{port}/{_database_path(scheme, database, conn_id)}{'?' + query if query else ''}"
 
 
 # --- A database by name: an Airflow Connection, else an ODBC data source ---
@@ -397,7 +424,8 @@ ODBC_FIELDS = {
     "schema": ("database", "db"),
 }
 # Oracle's EZConnect `[//]host[:port]/service`; anything else in ServerName is a tnsnames.ora alias.
-EZCONNECT = re.compile(r"(?://)?(?P<host>[^:/\s]+)(?::(?P<port>[^/]*))?/(?P<service>\S+)")
+# The host is a bracketed IPv6 literal or a name without `:`, `/` or brackets.
+EZCONNECT = re.compile(r"(?://)?(?P<host>\[[^\]/\s]+\]|[^:/\s\[\]]+)(?::(?P<port>[^/]*))?/(?P<service>\S+)")
 REF_KEYS = {"conn_id", "scheme", "database", "odbc_ini", "dsn"}
 
 
@@ -415,20 +443,70 @@ class OdbcConnection:
     extra_dejson: Mapping[str, Any] = field(default_factory=dict)
 
 
-def odbc_connection(path: str, name: str) -> OdbcConnection | None:
-    """The data source `[name]` of the odbc.ini at `path`, or None when the file or the section is absent. A driver
-    rivet has no URL for, or a port that is no number, is refused: the data source exists, so a fallback would hide it."""
-    import configparser
+class OdbcFileUnavailable(Exception):
+    """The odbc.ini cannot be read at all; `reason` says why, without a word of its content."""
 
-    # Passwords hold `%` (no interpolation); a file that repeats a section or key is read, the last one winning.
-    ini = configparser.ConfigParser(interpolation=None, strict=False)  # pragma: no mutate - strict=None reads as False
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _odbc_section(path: str, name: str) -> dict[str, str] | None:
+    """The keys (lower-cased) of the data source `name` in the odbc.ini at `path`, read as unixODBC reads it (each rule
+    measured with `isql -v`): the name matches in ASCII case-insensitively with its padding trimmed, only the first
+    section of that name counts, and the first value of a key wins. `;` and `#` start a comment, and a key is split from
+    its value at the first `=`. The first line of substance must be a header at column 0, or unixODBC finds no data
+    source in the file; after that an indented or unclosed `[name` is a header too. Only the chosen section is decoded,
+    so a stray byte elsewhere in a shared file does no harm."""
     try:
-        ini.read(path)
-    except configparser.Error as exc:
-        raise PreflightRefusal(UNSUPPORTED, f"{path} is not a readable odbc.ini ({type(exc).__name__})") from None
-    if not ini.has_section(name):
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise OdbcFileUnavailable(
+            "does not exist on this worker" if isinstance(exc, FileNotFoundError) else f"cannot be read ({exc.strerror})"
+        ) from None
+    wanted = name.encode(errors="backslashreplace").lower()
+    lines = [
+        (number, line)
+        for number, line in enumerate(data.splitlines(), 1)
+        if line.strip() and not line.strip().startswith((b";", b"#"))
+    ]
+    if lines and not lines[0][1].startswith(b"["):
+        # unixODBC reads no data source at all from a file whose first line of substance is not a header at column 0.
+        raise PreflightRefusal(
+            UNSUPPORTED,
+            f"{path} is not a readable odbc.ini: line {lines[0][0]} is neither a comment nor inside a [section], "
+            "and unixODBC finds no data source in such a file",
+        )
+    found: dict[bytes, bytes] | None = None
+    for _, line in lines:
+        body = line.strip()
+        if body.startswith(b"["):  # once a section is open, an indented or unclosed `[name` is a header too
+            if found is not None:
+                break
+            found = {} if body[1:].partition(b"]")[0].strip().lower() == wanted else None
+        elif found is not None:
+            key, equals, value = body.partition(b"=")
+            if equals:
+                found.setdefault(key.strip().lower(), value.strip())
+    if found is None:
         return None
-    section = dict(ini[name])  # keys lower-cased by the parser
+    try:
+        return {key.decode(): value.decode() for key, value in found.items()}
+    except UnicodeDecodeError:
+        raise PreflightRefusal(
+            UNSUPPORTED,
+            f"ODBC data source [{name}] in {path} holds bytes that are not UTF-8, which the provider cannot read: "
+            f"save the file as UTF-8, or create an Airflow Connection `{name}` instead",
+        ) from None
+
+
+def odbc_connection(path: str, name: str) -> OdbcConnection | None:
+    """The data source `[name]` of the odbc.ini at `path` (`_odbc_section`), or None when the file has no such section.
+    A file that cannot be read raises `OdbcFileUnavailable`. A driver rivet has no URL for, or a port that is no port
+    number, is refused: the data source exists, so a fallback would hide it."""
+    section = _odbc_section(path, name)
+    if section is None:
+        return None
     driver = section.get("driver", "")
     conn_type = next((kind for word, kind in ODBC_DRIVERS if word in driver.lower()), None)
     where = f"ODBC data source [{name}] in {path}"
@@ -447,8 +525,10 @@ def odbc_connection(path: str, name: str) -> OdbcConnection | None:
     elif conn_type == "oracle":
         _odbc_oracle(values, where)
     port = values.pop("port")
-    if port is not None and not port.isdigit():
-        raise PreflightRefusal(UNSUPPORTED, f"ODBC data source [{name}] in {path} has port `{port}`, which is no number")
+    if port is not None and not (port.isascii() and port.isdigit()):
+        raise PreflightRefusal(UNSUPPORTED, f"{where} has port `{port}`, which is no number")
+    if port is not None and int(port) > 65535:
+        raise PreflightRefusal(UNSUPPORTED, f"{where} has port `{port}`, which is above 65535")
     return OdbcConnection(conn_id=name, conn_type=conn_type, port=int(port) if port else None, **values)
 
 
@@ -506,14 +586,17 @@ def database_ref(ref: Any) -> dict[str, Any]:
     return {"conn_id": conn_id, "scheme": scheme}
 
 
-def missing_connection(conn_id: str, odbc_ini: str | None = None, dsn: str | None = None) -> PreflightRefusal:
-    """The refusal of a Connection no backend defines (and, with `odbc_ini`, no data source `dsn` of that file): final,
-    since a retry cannot create it."""
+def missing_connection(
+    conn_id: str, odbc_ini: str | None = None, dsn: str | None = None, unreadable: str | None = None
+) -> PreflightRefusal:
+    """The refusal of a Connection no backend defines (and, with `odbc_ini`, no data source `dsn` of that file, or the
+    file itself `unreadable` for the reason given): final, since a retry cannot create it."""
     return PreflightRefusal(
         "RIVET_AIRFLOW_CONNECTION_MISSING",
         f"connection `{conn_id}` is not defined in the metadata database or any secrets backend this worker reads"
-        + (f", and {odbc_ini} has no data source [{dsn}]" if odbc_ini else "")
-        + "; create it, or correct the id the task names",
+        + (f", and {odbc_ini} {unreadable or f'has no data source [{dsn}]'}" if odbc_ini else "")
+        + ("; create it, put a readable odbc.ini there," if unreadable else "; create it,")
+        + " or correct the id the task names",
     )
 
 
@@ -525,7 +608,10 @@ def resolve_database(ref: Mapping[str, Any], lookup: Callable[[str], Any]) -> tu
     dsn = ref.get("dsn") or conn_id
     conn, source = lookup(conn_id), None
     if conn is None and odbc_ini:
-        conn, source = odbc_connection(odbc_ini, dsn), dsn
+        try:
+            conn, source = odbc_connection(odbc_ini, dsn), dsn
+        except OdbcFileUnavailable as exc:
+            raise missing_connection(conn_id, odbc_ini, unreadable=exc.reason) from None
     if conn is None:
         raise missing_connection(conn_id, odbc_ini, dsn)
     return with_database(conn, ref.get("database")), source

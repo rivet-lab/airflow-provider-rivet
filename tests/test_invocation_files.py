@@ -207,6 +207,26 @@ def test_a_copy_of_a_config_without_a_suffix_is_named_yaml(tmp_path: Path) -> No
     assert invocation.copy_name(tmp_path / "r.yml") == f"r.{hashlib.sha256(str(tmp_path / 'r.yml').encode()).hexdigest()[:8]}.yml"
 
 
+def test_a_long_config_name_is_cut_by_bytes_so_the_copy_and_its_temp_file_fit_the_file_system(tmp_path: Path) -> None:
+    """A name over 255 bytes is refused by the file system (ENAMETOOLONG); the hash keeps two long names apart."""
+    for stem in ("a" * 300, "é" * 130, "日本" * 60):
+        source = tmp_path / f"{stem}.yaml"
+        name = invocation.copy_name(source)
+        assert len(name.encode()) <= invocation.COPY_NAME_BYTES, stem[:3]
+        assert name.endswith(f".{hashlib.sha256(str(source).encode()).hexdigest()[:8]}.yaml")
+        name.encode().decode()  # whole characters only
+        assert invocation.copy_name(source, "orders") != name
+        assert len(invocation.copy_name(source, "O R" * 40).encode()) <= invocation.COPY_NAME_BYTES
+    first, second = tmp_path / ("a" * 300 + "1.yaml"), tmp_path / ("a" * 300 + "2.yaml")
+    assert invocation.copy_name(first) != invocation.copy_name(second)
+    assert invocation.copy_name(tmp_path / ("c" + "." + "x" * 40)).endswith(".yaml"), "an extension this long is none"
+    for length, kept in ((15, True), (16, False)):  # the extension with its dot is 16 bytes, then 17
+        extension = "." + "x" * length
+        assert invocation.copy_name(tmp_path / f"c{extension}").endswith(extension if kept else ".yaml"), length
+    short = tmp_path / "rivet.yaml"
+    assert invocation.copy_name(short) == f"rivet.{hashlib.sha256(str(short).encode()).hexdigest()[:8]}.yaml", "unchanged"
+
+
 def test_a_hashed_name_joins_its_parts_with_two_underscores_and_keeps_80_readable_characters() -> None:
     """hashed_name 5/11."""
     digest = hashlib.sha256(json.dumps(["a b", "c"]).encode()).hexdigest()[:12]
