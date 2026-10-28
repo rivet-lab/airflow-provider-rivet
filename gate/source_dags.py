@@ -27,7 +27,7 @@ import yaml
 from airflow_provider_rivet import _yaml
 from airflow_provider_rivet.exports import compacts, entries_of, mode_of, name_of, tables_of
 
-from . import dagspec, oracle, warehouse
+from . import cycle_effect, dagspec, oracle, warehouse
 from .sources import ENGINES, Engine, SourceLeg, read_config, short, task_log, warehouse_table
 from .stand import sh
 
@@ -71,8 +71,6 @@ CDC_REFUSED = {
         )
     }
 }
-#: The change events of each cycle in the CDC parts graded as files (Oracle's `changes` on its CDC-able table).
-FILE_OPS = {"delta": {"GATE_CUSTOMERS": {"insert": 20, "update": 10}}}
 #: The order of Oracle change events: the commit SCN in `__pos`, then `__seq` (rivet's cheat-sheet, `__pos`).
 ORACLE_POS = "json_extract_string(__pos, '$.commit_scn')::UBIGINT"
 #: The rivet tasks build_source_dags adds beside the rivet commands: the run's watcher.
@@ -549,7 +547,7 @@ class SourceDagsLeg(SourceLeg):
                 cycle = [str(self.local[p]) for p in mine if p in changes and p in new]
                 self.history.setdefault(table, []).append(cycle)
                 cell = f"{name}/{eng}/files/{kind}/{table}"
-                v.check(cell + "/operations", oracle.cdc_ops, con, cycle, FILE_OPS.get(name, {}).get(table, {}), cell)
+                v.check(cell + "/operations", oracle.cdc_ops, con, cycle, cycle_effect.ops(name)[table.lower()], cell)
                 relation = source_relation(con, table, source[table], cols)
                 v.check(
                     cell + "/replay-equals-source",

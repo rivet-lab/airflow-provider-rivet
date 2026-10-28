@@ -24,8 +24,8 @@ from typing import Any
 
 import yaml
 
-from . import dagspec, oracle, warehouse
-from .scenario import CHANGED_OPS, CHANGES, NO_OPS, SEED, Verdicts, grade_runs, wait_file, wait_runs
+from . import cycle_effect, dagspec, oracle, warehouse
+from .scenario import SEED, Verdicts, grade_runs, wait_file, wait_runs
 from .sources import read_config
 from .stand import Stand, sh, worker_hostname, worker_service
 
@@ -43,14 +43,13 @@ PAUSED = "gate_orders"
 QUEUE_OF = {"apply.gate_customers": "gate_a", "apply.gate_orders": "gate_b", "run": "gate_cdc"}
 #: Which host consumes each queue in each cycle: every export changes host from one cycle to the next. In `retry` the
 #: paused apply starts on `a`, is killed there, and its retry is sent to `b`.
-CYCLES: tuple[tuple[str, str | None, Mapping[str, Mapping[str, int]], Mapping[str, str]], ...] = (
-    ("initial", None, NO_OPS, {"gate_a": "a", "gate_b": "b", "gate_cdc": "a"}),
-    ("delta", CHANGES, CHANGED_OPS, {"gate_a": "b", "gate_b": "a", "gate_cdc": "b"}),
-    ("idle", None, NO_OPS, {"gate_a": "a", "gate_b": "b", "gate_cdc": "a"}),
-    ("retry", CHANGES, CHANGED_OPS, {"gate_a": "b", "gate_b": "a", "gate_cdc": "b"}),
-)
-#: Keys an incremental extract cannot see deleted (CHANGES deletes five orders each time it runs).
-DELETED = {"initial": 0, "delta": 5, "idle": 5, "retry": 10}
+CYCLES = (*cycle_effect.CYCLES, cycle_effect.RETRY)
+ROUTES: dict[str, Mapping[str, str]] = {
+    "initial": {"gate_a": "a", "gate_b": "b", "gate_cdc": "a"},
+    "delta": {"gate_a": "b", "gate_b": "a", "gate_cdc": "b"},
+    "idle": {"gate_a": "a", "gate_b": "b", "gate_cdc": "a"},
+    "retry": {"gate_a": "b", "gate_b": "a", "gate_cdc": "b"},
+}
 
 
 @dataclass(frozen=True)
@@ -316,10 +315,11 @@ class MultiHost:
         files: set[str] = set()
         marks: dict[str, Any] = {}
         history: list[list[str]] = []
-        for n, (name, changes, ops, routes) in enumerate(CYCLES, start=1):
+        for n, c in enumerate(CYCLES, start=1):
+            name, routes = c.name, ROUTES[c.name]
             run_id = f"gate_mh_{n}_{name}"
-            if changes:
-                self.stand.psql("gate-source", "rivet", changes)
+            if c.changes:
+                self.stand.psql("gate-source", "rivet", cycle_effect.script("postgres"))
             self.route(routes)
             self.marker().unlink(missing_ok=True)
             # In `retry` only the graded pipelines run: another extract on host a would race the queue move.
@@ -346,7 +346,7 @@ class MultiHost:
             history.append(sorted(f for f in new if f.startswith(str(self.mirror / "cdc")) and "/snapshot/" not in f))
             if "gate_mh_sqlite" in states:
                 self.v.grade(f"multihost/{name}/sqlite-refused", self.sqlite_refused(states["gate_mh_sqlite"], run_id))
-            self.grade_cycle(name, run_id, routes, states, ops, new, history, marks)
+            self.grade_cycle(name, run_id, routes, states, cycle_effect.ops(name, CYCLES), new, history, marks)
             if name == "initial":
                 self.chain()
             files, marks = after, self.high_water()
@@ -403,7 +403,7 @@ class MultiHost:
             c = f"{cell}/{table}"
             rows = oracle.rows_in(con, mine)
             v.check(c + "/delta-values", oracle.batch_delta, con, mine, src, cols, cur, marks.get(table), ok=f"{rows} row(s)")
-            deleted = DELETED[name] if table == "gate_orders" else 0
+            deleted = cycle_effect.kept_by_batch(name, table, CYCLES)
             v.check(c + "/latest-equals-source", oracle.batch_latest, con, every, src, cols, "id", cur, deleted)
             v.check(c + "/each-version-once", oracle.duplicates, con, every, ["id", cur], c)
             xcom = v.guard(c + "/xcom-rows", self.stand.xcom, p.dag, run_id, f"apply.{table}")

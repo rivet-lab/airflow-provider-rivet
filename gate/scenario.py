@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import dagspec, destinations, oracle, sources, warehouse
+from . import cycle_effect, dagspec, destinations, oracle, sources, warehouse
 from .stand import Stand
 
 TABLES = {
@@ -26,17 +26,6 @@ CREATE TABLE gate_orders (id serial PRIMARY KEY, customer_id int NOT NULL, amoun
 INSERT INTO gate_customers (name, tier) SELECT 'customer ' || g, (ARRAY['free','pro','team'])[1 + g % 3] FROM generate_series(1, 1000) g;
 INSERT INTO gate_orders (customer_id, amount, status) SELECT 1 + g % 1000, round((g % 997) * 1.37, 2), 'new' FROM generate_series(1, 5000) g;
 """
-CHANGES = """
-INSERT INTO gate_customers (name, tier) SELECT 'new customer ' || g, 'free' FROM generate_series(1, 20) g;
-INSERT INTO gate_orders (customer_id, amount, status) SELECT 1 + g % 1000, 9.99 * g, 'new' FROM generate_series(1, 100) g;
-UPDATE gate_orders SET status = 'shipped', updated_at = clock_timestamp() WHERE id IN (SELECT id FROM gate_orders ORDER BY id LIMIT 30);
-UPDATE gate_customers SET tier = 'team', updated_at = clock_timestamp() WHERE id IN (SELECT id FROM gate_customers ORDER BY id LIMIT 10);
-DELETE FROM gate_orders WHERE id IN (SELECT id FROM gate_orders WHERE id <= 5000 ORDER BY id DESC LIMIT 5);
-"""
-CHANGED_OPS = {"gate_customers": {"insert": 20, "update": 10}, "gate_orders": {"insert": 100, "update": 30, "delete": 5}}
-NO_OPS: dict[str, dict[str, int]] = {"gate_customers": {}, "gate_orders": {}}
-CYCLES = (("initial", None, NO_OPS), ("delta", CHANGES, CHANGED_OPS), ("idle", None, NO_OPS))
-DELETED_BY_BATCH = {"initial": 0, "delta": 5, "idle": 5}
 
 BATCH = """source:
   type: postgres
@@ -318,7 +307,7 @@ def grade_base(
                     high_water.get(table),
                     ok=f"{oracle.rows_in(con, mine)} row(s)",
                 )
-                deleted = DELETED_BY_BATCH[name] if table == "gate_orders" else 0
+                deleted = cycle_effect.kept_by_batch(name, table)
                 v.check(cell + "/latest-equals-source", oracle.batch_latest, con, every, src, cols, "id", "updated_at", deleted)
                 xcom = v.guard(cell + "/xcom-rows", stand.xcom, f"gate_batch_{state}", run_id, f"apply.{state}_{short}")
                 if xcom is not None:
@@ -400,7 +389,7 @@ def run_cycle(
         grade_runs(stand, v, name, run_id, states, leg.tasks, may_skip=warehouse.may_skip(leg.dags, name))
         if sabotage == "warehouse-value" and name == "delta":
             print(f"SABOTAGE {leg.sabotage()}", flush=True)
-        leg.grade(stand, v, name, {t: DELETED_BY_BATCH[name] if t == "gate_orders" else 0 for t in TABLES})
+        leg.grade(stand, v, name, {t: cycle_effect.kept_by_batch(name, t) for t in TABLES})
     for src in src_legs:
         grade_runs(stand, v, name, run_id, states, src.cycle_tasks(), may_skip=src.may_skip, refused=src.refused)
         src.grade(stand, v, name, run_id)
@@ -448,9 +437,10 @@ def play(
     files: set[str] = set()
     high_water: dict[str, Any] = {}
     history: dict[str, list[list[str]]] = {state: [] for state in STATES}
-    for n, (name, changes, ops) in enumerate(CYCLES, start=1):
+    for n, c in enumerate(cycle_effect.CYCLES, start=1):
+        changes = cycle_effect.script("postgres") if c.changes else None
         files, high_water = run_cycle(
-            stand, v, n, name, changes, ops, files, high_water, history, sabotage, leg, src_legs, dest_legs
+            stand, v, n, c.name, changes, cycle_effect.ops(c.name), files, high_water, history, sabotage, leg, src_legs, dest_legs
         )
     for src in src_legs:
         if not src.extras:

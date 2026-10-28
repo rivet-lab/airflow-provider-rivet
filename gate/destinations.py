@@ -28,7 +28,7 @@ from typing import Any
 
 import yaml
 
-from . import cleanup, dagspec, oracle, warehouse
+from . import cleanup, cycle_effect, dagspec, oracle, warehouse
 from .stand import state_db
 
 NAME = "s3"
@@ -40,8 +40,6 @@ TABLES = {
     "gate_customers": ["id", "name", "tier", "updated_at"],
     "gate_orders": ["id", "customer_id", "amount", "status", "updated_at"],
 }
-#: Keys an incremental extract cannot see deleted, left in the batch target after each cycle.
-DELETED_BY_BATCH = {"initial": {}, "delta": {"gate_orders": 5}, "idle": {"gate_orders": 5}}
 #: The refusal a write into a bucket that does not exist must end in (rivet's src/error.rs), and how long it may take:
 #: a persistent 404 read as transient is retried for minutes (rivet #606, Azurite's `keep-alive: timeout=5`).
 MISSING_BUCKET_CODE = "RIVET_DEST_CONTAINER_NOT_FOUND"
@@ -439,7 +437,7 @@ class S3Leg:
                     cell + "/delta-values", oracle.batch_delta, con, mine, src, cols, "updated_at", self.high_water.get(table),
                     ok=f"{oracle.rows_in(con, mine)} row(s) in {len(mine)} part(s)",
                 )  # fmt: skip
-                deleted = DELETED_BY_BATCH[name].get(table, 0)
+                deleted = cycle_effect.kept_by_batch(name, table)
                 v.check(cell + "/latest-equals-source", oracle.batch_latest, con, every, src, cols, "id", "updated_at", deleted)
                 xcom = v.guard(cell + "/xcom-rows", stand.xcom, CONFIGS["batch"].dag, run_id, f"apply.{table}")
                 if xcom is not None:
@@ -451,9 +449,7 @@ class S3Leg:
             self.files_before["batch"] = after["batch"]
             self.high_water = {t: con.execute(f"SELECT max(updated_at) FROM src.public.{t}").fetchone()[0] for t in TABLES}
         if after["cdc"] is not None:
-            from .scenario import CHANGED_OPS, NO_OPS
-
-            ops = CHANGED_OPS if name == "delta" else NO_OPS
+            ops = cycle_effect.ops(name)
             bucket = self.root(CONFIGS["cdc"].bucket) + self.shape["cdc"]["cdc_root"]
             new = after["cdc"] - self.files_before["cdc"]
             changes_new = sorted(f for t in TABLES for f in table_parts(new, bucket, t)["changes"])
@@ -481,7 +477,7 @@ class S3Leg:
         for kind in ("ch_batch", "ch_cdc"):
             db, flagged = CONFIGS[kind].clickhouse_db, kind == "ch_cdc"
             for table, cols in TABLES.items():
-                deleted = 0 if flagged else DELETED_BY_BATCH[name].get(table, 0)
+                deleted = 0 if flagged else cycle_effect.kept_by_batch(name, table)
                 v.check(
                     f"{name}/s3/clickhouse/{kind.removeprefix('ch_')}/{table}/current-equals-source",
                     lambda db=db, t=table, c=cols, d=deleted, f=flagged: warehouse.current_state(
