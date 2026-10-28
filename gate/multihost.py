@@ -120,6 +120,16 @@ class Measure(Verdicts):
             print(f"MEASURE airflow-{self.stack} {cell} — {'; '.join(problems)}"[:1500], flush=True)
 
 
+def cdc_prefix(text: str) -> str:
+    """The prefix the CDC stream writes its tables under (`rivet/cdc` in 0.32.2), from the destination of the stream's
+    export in the config init wrote: the prefix is init's, not the leg's."""
+    doc = yaml.safe_load(text) or {}
+    prefixes = [e["destination"]["prefix"] for e in doc.get("exports") or [] if e.get("mode") == "cdc"]
+    if len(prefixes) != 1:
+        raise ValueError(f"init wrote {len(prefixes)} CDC destination prefixes, not one")
+    return str(prefixes[0]).strip("/")
+
+
 def bucket(cloud: warehouse.Cloud, stack: str, pipeline: str) -> str:
     """The pipeline's bucket, of the shape the source legs' sweep drops: `rivet-afgate-<tag>-<stack>-mh<p>-batch|cdc`."""
     kind = "cdc" if pipeline == "cdc" else "batch"
@@ -137,6 +147,8 @@ class MultiHost:
         self.cursor_col: dict[str, str] = {}
         self.cursors: dict[str, dict[str, str]] = {}
         self.mirror = stand.dir / "mirror"
+        #: The prefix the CDC stream writes its tables under, read from init's config (set by `prepare`).
+        self.cdc_prefix = ""
 
     # --- setup ------------------------------------------------------------------------------------------------------
 
@@ -174,6 +186,8 @@ class MultiHost:
                     raise ValueError(f"init wrote streams {found['streams']}: not one stream over the tables")
             elif sorted(found["exports"]) != sorted(TABLES) or found["extra"] or found["streams"]:
                 raise ValueError(f"init wrote {found}: not one incremental export per table")
+            if p.mode == "cdc":
+                self.cdc_prefix = cdc_prefix(text)
             if p.name == "batch":
                 self.cursor_col = {e["name"]: e["cursor_column"] for e in yaml.safe_load(text)["exports"]}
             specs.append(self.spec(p, found))
@@ -238,7 +252,7 @@ class MultiHost:
         return [self.stand.host_disk(h) / p.name / "output" for h in self.stand.hosts]
 
     def files(self, p: Pipeline, under: str) -> set[str]:
-        """Parquet files under `under` (init's prefix of a table, or `cdc/<table>`) of one pipeline."""
+        """Parquet files under `under` (init's prefix of a table, or the CDC stream's `<prefix>/<table>`) of one pipeline."""
         if p.gcs and p.mode != "cdc":
             under = f"exports/{under}"
         return {str(f) for root in self.roots(p) for f in (root / under).rglob("*.parquet")}
@@ -425,13 +439,13 @@ class MultiHost:
         for table, cols in TABLES.items():
             c = f"{cell}/cdc/{table}"
             # backfill: auto runs the table's batch recipe once, after the anchor, into the stream's `<table>/snapshot/`
-            baseline = sorted(self.files(p, f"cdc/{table}/snapshot"))
-            changes = [f for f in history[-1] if f"/cdc/{table}/" in f]
+            baseline = sorted(self.files(p, f"{self.cdc_prefix}/{table}/snapshot"))
+            changes = [f for f in history[-1] if f"/{self.cdc_prefix}/{table}/" in f]
             v.check(c + "/operations", oracle.cdc_ops, con, changes, ops[table], c)
-            stream = [[f for f in run if f"/cdc/{table}/" in f] for run in history]
+            stream = [[f for f in run if f"/{self.cdc_prefix}/{table}/" in f] for run in history]
             v.check(c + "/replay-equals-source", oracle.cdc_replay, con, baseline, stream, f"src.public.{table}", cols, "id")
             v.check(c + "/baseline-once", oracle.duplicates, con, baseline, ["id"], c + " baseline")
-            events = sorted(f for f in self.files(p, f"cdc/{table}") if "/snapshot/" not in f)
+            events = sorted(f for f in self.files(p, f"{self.cdc_prefix}/{table}") if "/snapshot/" not in f)
             v.check(c + "/each-event-once", oracle.duplicates, con, events, ["__pos", "__seq"], c)
         xcom = v.guard(f"{cell}/cdc/xcom-rows", self.stand.xcom, p.dag, run_id, "run")
         if xcom is not None:
@@ -441,7 +455,7 @@ class MultiHost:
 
     def _new_snapshots(self, p: Pipeline, cycle: int) -> list[str]:
         """The baseline counts in the first cycle's XCom (the stream ran it); never after."""
-        return sorted(f for t in TABLES for f in self.files(p, f"cdc/{t}/snapshot")) if cycle == 1 else []
+        return sorted(f for t in TABLES for f in self.files(p, f"{self.cdc_prefix}/{t}/snapshot")) if cycle == 1 else []
 
     # --- measurements beyond the cycles -----------------------------------------------------------------------------
 
