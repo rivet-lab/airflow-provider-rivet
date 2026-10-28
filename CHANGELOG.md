@@ -3,6 +3,21 @@
 All notable changes to `airflow-provider-rivet`. The package is versioned independently of the
 rivet binary; its release tags will use the prefix `airflow-v`.
 
+## Unreleased
+
+### Changed (behaviour change)
+
+- `build_source_dags` reads each export's layout as rivet resolves it, once, for both modes. A **batch** DAG over a
+  BigQuery config with `layout: base_buffer` (what `rivet init --mode incremental` writes) now has `compact.<export>`
+  after `load.<export>`; before, it had none, so `<table>` stayed the first pass's snapshot while `<table>__changes`
+  grew with every run. A **CDC** stream with `cdc.backfill` and no `layout:` on BigQuery, and a table whose own
+  `load.tables.<t>.layout` differs from the section's, now compact (or not) as rivet resolves them. An export without
+  `mode:` is `full` (rivet's default) in every reader: its task-log target is `<table>`, not `<table>__changes`, and
+  a numeric export name (`name: 2024`) is the text `2024` in task ids instead of a `TypeError` that took the DAG file
+  down. **Upgrade:** the DAGs change shape at the next parse (new `compact.*` tasks, paused DAGs stay paused); the
+  first `compact` of an export finds the buffer the earlier runs left to merge. To keep a change log
+  (no compaction), write `layout: log_view` in `load:`.
+
 ## 0.3.0 (2026-10-24)
 
 Against rivet 0.32.2 (the minimum) and the contract of ADR-0039 at rivet 0.32.2.

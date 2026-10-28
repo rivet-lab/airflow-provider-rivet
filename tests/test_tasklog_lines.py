@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from airflow_provider_rivet import tasklog
+from airflow_provider_rivet import _yaml, tasklog
 from airflow_provider_rivet.preflight import SETUP_GUIDE
 from airflow_provider_rivet.tasklog import TaskLog
 
@@ -230,7 +230,13 @@ def test_notes_sqlite_an_unknown_degradation_warnings_max_events_and_a_ledger_pr
 
 
 BQ = {"target": "bigquery", "project": "p", "dataset": "d"}
-EXPORTS = [{"name": "snap", "mode": "full"}, {"name": "inc", "mode": "incremental"}, {"name": "cdc", "mode": "cdc"}]
+EXPORTS = [
+    {"name": "snap", "mode": "full"},
+    {"name": "inc", "mode": "incremental"},
+    {"name": "cdc", "mode": "cdc"},
+    {"name": "bare"},
+    {"name": _yaml.load("name: 2024")["name"]},
+]
 
 
 @pytest.mark.parametrize(
@@ -240,6 +246,8 @@ EXPORTS = [{"name": "snap", "mode": "full"}, {"name": "inc", "mode": "incrementa
         (BQ, "load", "inc", "t", ("p.d.t__changes", None)),  # any other appends to its log
         (BQ, "load", "cdc", "t", ("p.d.t__changes", None)),
         (BQ, "load", "unknown", "t", ("p.d.t__changes", None)),
+        (BQ, "load", "bare", "t", ("p.d.t", None)),  # no `mode:` is rivet's `full` (src/config/export.rs `default_mode`)
+        (BQ, "load", "2024", "t", ("p.d.t", None)),  # `name: 2024` is the export "2024" (D07), also without a mode
         (BQ, "compact", "cdc", "t", ("p.d.t", "p.d.t__changes")),  # the buffer merged into the base
         ({"target": "bigquery", "dataset": "d"}, "load", "snap", "t", ("d.t", None)),  # project from the credentials
         ({"target": "snowflake", "database": "DB", "schema": "S"}, "load", "snap", "T", ("DB.S.T", None)),
