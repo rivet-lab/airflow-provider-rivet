@@ -122,11 +122,10 @@ def _dag(dag_id: str, tags: Sequence[str], dag_kwargs: Mapping[str, Any]) -> DAG
 def _barrier_id(wanted: str, taken: set[str]) -> str:
     """An ordering point's id in the `apply` group, which an export of that clean name already has: `after_sales` for an
     export named so would be a duplicate task id and the DAG file would not import. The first free `<id>_barrier` instead."""
-    barrier = wanted
-    while barrier in taken:
-        barrier += "_barrier"
-    taken.add(barrier)
-    return barrier
+    if wanted in taken:
+        return _barrier_id(f"{wanted}_barrier", taken)
+    taken.add(wanted)
+    return wanted
 
 
 def build_batch_dag(
@@ -390,7 +389,8 @@ def _refused_dag(dag_id: str, mode: str, config: Path, exc: Exception, common: M
     )
     settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
     with _dag(dag_id, ("rivet", mode, "refused"), settings) as dag:
-        RivetConfigRefused(task_id="config", refusal=str(refusal), code=refusal.code, retries=0)
+        # Airflow 3 stores retries=None as 0 and Airflow 2.10 keeps None: its CI job asserts 0
+        RivetConfigRefused(task_id="config", refusal=str(refusal), code=refusal.code, retries=0)  # pragma: no mutate
     return dag
 
 
