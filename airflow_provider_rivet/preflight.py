@@ -94,10 +94,9 @@ def binary_unanswering(exc: ProbeFailed) -> PreflightRefusal:
 def _where(exc: Exception) -> str:
     """Where a YAML error is, in the text rivet and the operator both read: `" at line 3, column 7: <what is wrong>"`; the
     library's own words for the problem, never the text of the config."""
-    mark = getattr(exc, "problem_mark", None)
-    if mark is None:
+    if not isinstance(exc, _yaml.yaml.MarkedYAMLError) or exc.problem_mark is None:
         return ""
-    return f" at line {mark.line + 1}, column {mark.column + 1}: {getattr(exc, 'problem', None) or 'invalid YAML'}"
+    return f" at line {exc.problem_mark.line + 1}, column {exc.problem_mark.column + 1}: {exc.problem or 'invalid YAML'}"
 
 
 def read_config_source(

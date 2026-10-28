@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from conftest import FakeTI
 
 from airflow_provider_rivet._compat import AirflowFailException
 from airflow_provider_rivet.dags import build_batch_dag, build_source_dags
-from airflow_provider_rivet.preflight import ConfigRefusal, PreflightRefusal, read_config_source
+from airflow_provider_rivet.preflight import ConfigRefusal, PreflightRefusal, _where, read_config_source
 
 GOOD_CDC = """\
 source: {type: mysql, url_env: RIVET_SOURCE_URL}
@@ -59,6 +60,15 @@ def test_a_malformed_config_names_its_line_and_column_and_what_is_wrong(tmp_path
         f"[RIVET_AIRFLOW_CONFIG_UNREADABLE] cannot read config {cfg}: ParserError at line 5, column 4: "
         "expected <block end>, but found '<block mapping start>'"
     )
+
+
+def test_where_a_yaml_error_is_is_told_from_the_marks_the_library_gives() -> None:
+    mark = yaml.Mark("c.yaml", 40, 6, 2, "", 0)
+    assert _where(yaml.MarkedYAMLError(problem="found a tab", problem_mark=mark)) == " at line 7, column 3: found a tab"
+    assert _where(yaml.MarkedYAMLError(problem=None, problem_mark=mark)) == " at line 7, column 3: invalid YAML"
+    assert _where(yaml.MarkedYAMLError(problem="no mark here")) == ""
+    assert _where(yaml.YAMLError("not a marked error")) == ""
+    assert _where(ValueError("not YAML at all")) == ""
 
 
 def test_a_config_that_is_not_yaml_text_still_names_only_its_type(tmp_path: Path) -> None:
@@ -115,6 +125,14 @@ REFUSED = {
         "{cfg} has `mode: cdc` exports (shop_cdc): a batch DAG over it would run on the config and the state database of "
         "the CDC DAG, and load the same tables beside it. A source in both a CDC and a batch DAG needs two names, or a "
         "`config_dir` and a `state_root` per mode: build the batch DAG from its own",
+    ),
+    "two_streams_in_a_batch_dag": (
+        "batch",
+        GOOD_CDC + "  - name: shop_cdc_2\n    mode: cdc\n    tables: [users]\n",
+        "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+        "{cfg} has `mode: cdc` exports (shop_cdc, shop_cdc_2): a batch DAG over it would run on the config and the state "
+        "database of the CDC DAG, and load the same tables beside it. A source in both a CDC and a batch DAG needs two "
+        "names, or a `config_dir` and a `state_root` per mode: build the batch DAG from its own",
     ),
     "a_stream_beside_batch_exports_in_a_batch_dag": (
         "batch",

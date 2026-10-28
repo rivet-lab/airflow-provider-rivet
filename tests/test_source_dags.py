@@ -434,7 +434,10 @@ def test_with_a_config_the_same_dag_streams_loads_and_compacts_each_table(tmp_pa
 def test_a_config_moved_from_cron_gets_the_source_under_the_variable_it_names(tmp_path: Path) -> None:
     (tmp_path / "shop.yaml").write_text(CDC_CONFIG.format(env="RIVET_MYSQL_URL"))
     run = build(tmp_path)["rivet_shop_cdc"].get_task("run")
-    assert set(run.env_from_connections) == {"RIVET_MYSQL_URL", "RIVET_STATE_URL"}
+    assert run.env_from_connections == {
+        "RIVET_MYSQL_URL": {"conn_id": "shop", "odbc_ini": "/etc/odbc.ini", "dsn": "shop"},
+        "RIVET_STATE_URL": {"conn_id": "rivet_state", "database": "rivet_state_shop"},
+    }
 
 
 def test_batch_runs_and_loads_every_export(tmp_path: Path) -> None:
