@@ -209,7 +209,7 @@ or it failed in a way Airflow does not retry. A try that Airflow will retry send
 every message is about a task that is failed now; the title says what kind of failure it is.
 
 The error type is the rivet code with `final` or `retryable`; with several failed exports, the
-first one's code and `+N more`; when the task died without a rivet result, the exception's class
+code of the error that decided the task (the one the exception carries) and `+N more`; when the task died without a rivet result, the exception's class
 (`AirflowTaskTimeout`, ...).
 
 **Final** (a refusal, or a stop before rivet started): running it again changes nothing; fix what

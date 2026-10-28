@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .preflight import SETUP_GUIDE
-from .result import BUSY, BUSY_CODES, REFUSED, STOPPED
+from .result import BUSY, BUSY_CODES, REFUSED, STOPPED, SUBCOMMAND
 
 clock = time.monotonic  # replaced by tests, so a golden log has fixed durations
 Write = Callable[[int, str], None]
@@ -116,6 +116,11 @@ def _why(text: Any) -> str:
     return f": {text}" if isinstance(text, str) and text else ""
 
 
+def _locks(acquired: list[dict[str, Any]]) -> str:
+    """`2 locks (export `a` of the config, export `b` of the config)`: the locks a task waited for, in the order it took them."""
+    return f"{len(acquired)} locks ({', '.join(str(a.get('unit')) for a in acquired)})"
+
+
 def _unit_name(unit: dict[str, Any]) -> str:
     return ".".join(str(part) for part in (unit.get("export"), unit.get("table")) if part) or "(config)"
 
@@ -157,6 +162,9 @@ class TaskLog:
     def _first(self, event: str) -> dict[str, Any] | None:
         return next((e for e in self.events if e.get("event") == event), None)
 
+    def _all(self, event: str) -> list[dict[str, Any]]:
+        return [e for e in self.events if e.get("event") == event]
+
     def _reasons(self) -> dict[str, Any]:
         """The `rivet.error` record of a failed task: rivet's reason for the task and for each failed unit, already safe
         to print (`result.error_text`)."""
@@ -169,7 +177,9 @@ class TaskLog:
     def render(self, payload: dict[str, Any], try_number: int, max_tries: int, stop_requested: bool) -> list[tuple[int, str]]:
         """The readable block: `[(level, line)]`, headline first."""
         seconds = clock() - self.started
-        subject = " ".join(p for p in (self.command.replace("cdc_", ""), self.export, self.table and f"table {self.table}") if p)
+        subject = " ".join(
+            p for p in (SUBCOMMAND.get(self.command, self.command), self.export, self.table and f"table {self.table}") if p
+        )
         head = f"rivet {subject} →"
         targets = [_target(e) for e in self.events if e.get("event") == "rivet.unit"]
         if len(targets) == 1 and targets[0]:
@@ -190,7 +200,7 @@ class TaskLog:
             step = payload[STOPPED]
             lines.append((logging.WARNING, f"{head} STOPPED by Airflow before rivet {step} started; rivet {step} was not run"))
         elif BUSY in payload:
-            wait = self._first("rivet.lock.wait") or {}
+            wait = (self._all("rivet.lock.wait") or [{}])[-1]  # the lock that timed out is the last one waited for
             lines.append(
                 (
                     retry_level,
@@ -220,10 +230,11 @@ class TaskLog:
         if len(units) > 1:
             counts.insert(0, _plural(len(units), UNIT_WORD.get(self.command, "export")))
         took = _secs(seconds)
-        acquired = self._first("rivet.lock.acquired")
-        if acquired is not None:  # the task's own wait for the export's lock, apart from the work
-            waited = acquired.get("waited") or 0.0
-            took = f"{_secs(seconds - waited)}, after {_secs(waited)} waiting for the lock of {acquired.get('unit')}"
+        acquired = self._all("rivet.lock.acquired")
+        if acquired:  # the task's own wait for its locks, apart from the work
+            waited = sum(a.get("waited") or 0.0 for a in acquired)
+            what = f"the lock of {acquired[0].get('unit')}" if len(acquired) == 1 else _locks(acquired)
+            took = f"{_secs(seconds - waited)}, after {_secs(waited)} waiting for {what}"
         done = self._first("rivet.apply.already_applied")
         if done is not None:
             what = ", ".join(counts)
@@ -254,7 +265,8 @@ class TaskLog:
                 return logging.WARNING, f"{head} STOPPED by Airflow: rivet ended by {how}"
             if payload.get("crashed_retry"):
                 return retry_level, f"{head} CRASHED: rivet ended by {how}; {retry_text} under the crash budget"
-            return logging.ERROR, f"{head} CRASHED: rivet ended by {how}, final: the crash budget is used up"
+            why = retry_text if retry_level == logging.ERROR else "the crash budget is used up"  # ERROR: no Airflow try left
+            return logging.ERROR, f"{head} CRASHED: rivet ended by {how}, final: {why}"
         # a lease another rivet holds reads like the package's own busy lock, whichever class rivet printed it with
         word = "BUSY" if error.get("code") in BUSY_CODES else STOP_WORD.get(class_, "FAILED")
         parts = [word + (f" [{error['code']}]" if error.get("code") else "")]
@@ -314,7 +326,8 @@ class TaskLog:
                 code = f" [{error['code']}]" if error.get("code") else ""
                 text = ", ".join([f"failed{code} {error.get('class')}", *_digest(record.get("digest"))])
             else:
-                text = ", ".join([str(unit.get("status")), *_counts([unit]), *_digest(record.get("digest"))])
+                status = str(unit.get("status")) + (f" ({record['skip_reason']})" if record.get("skip_reason") else "")
+                text = ", ".join([status, *_counts([unit]), *_digest(record.get("digest"))])
             run = f" (run {unit['run_id']})" if isinstance(unit.get("run_id"), str) else ""
             if unit.get("status") == "failed" and said.get((unit.get("export"), unit.get("table"))) != reasons.get("text"):
                 run += _why(said.get((unit.get("export"), unit.get("table"))))  # the headline has the reason, once
