@@ -34,8 +34,8 @@ jobs:
           tag="${{ inputs.rivet }}"
           [ -n "$tag" ] || tag=$(gh release view -R panchenkoai/rivet --json tagName -q .tagName)
           case "$tag" in v*) ;; *) tag="v$tag" ;; esac
-          # The provider's contract needs rivet 0.32 (`apply --summary-output`, `already_applied`): an older binary is refused.
-          min=v0.32.0
+          # An older binary than the provider admits is refused: the minimum is MIN_RIVET_VERSION (dev/min_rivet.py).
+          min=v$(python3 dev/min_rivet.py)
           if [ "$(printf '%s\n' "$min" "$tag" | sort -V | head -1)" != "$min" ]; then
             echo "::error::rivet $tag is older than the minimum $min the gate runs against"; exit 1
           fi

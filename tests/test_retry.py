@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 from airflow.exceptions import AirflowException, AirflowFailException
-from conftest import NEW_FLAGS, FakeTI, Rig
+from conftest import FakeTI, Rig
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.operators import (
@@ -77,7 +77,7 @@ def test_g1b_a_retry_after_the_task_died_past_a_successful_full_apply_takes_rive
     """G1b (`mode: full`): rivet apply exited 0, the task process died before Airflow recorded the success, and the
     retry (a try of the same series) replays the sealed plan. rivet >= 0.32 extracts nothing and answers with the run
     that applied it (`already_applied`, `run_id` == `answered_by_run`); the task ends success with that run's unit."""
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": FULL})
+    rig.scenario(apply={"summary": FULL})
     op = rig.operator(RivetApplyOperator, export="orders")
     first, _ = rig.run(op, FakeTI(try_number=1, max_tries=2))
     assert first["decision"] == "success"  # ... and the task process died before Airflow saw it
@@ -102,7 +102,7 @@ def test_g1_a_retry_after_the_task_died_past_a_successful_incremental_apply_is_n
     """G1 (incremental): the same death after a successful apply. On rivet 0.31 the replay was refused
     RIVET_PLAN_ARTIFACT_STALE (exit 5, a red DAG run with no retry); rivet >= 0.32 knows its own apply moved the cursor
     and runs from there, finding nothing new: the task ends success, and nothing is extracted twice."""
-    rig.scenario(flags=NEW_FLAGS, cursors={"users": "5"}, apply={"summary": INCREMENTAL})
+    rig.scenario(cursors={"users": "5"}, apply={"summary": INCREMENTAL})
     op = rig.operator(RivetApplyOperator, export="users")
     first, _ = rig.run(op, FakeTI(try_number=1, max_tries=2))
     assert first["decision"] == "success"
@@ -118,12 +118,12 @@ def test_g1b_a_retry_after_a_failed_or_killed_apply_replays_the_plan(rig: Rig, h
     """G1b negative: the apply the earlier try started did not succeed (exit 2, or killed and left `running`), so the
     retry applies the sealed plan again and rivet extracts it."""
     first_play = {"exit": 2, "line": {"error": "network", "exit_class": 2}} if how == "failed" else {"signal": "SIGKILL"}
-    rig.scenario(flags=NEW_FLAGS, apply=first_play)
+    rig.scenario(apply=first_play)
     op = rig.operator(RivetApplyOperator, export="orders")
     first, _ = rig.run(op, FakeTI(try_number=1, max_tries=2))
     assert type(first) is AirflowException
     assert [r["status"] for r in recorded_runs(rig)] == ["failed" if how == "failed" else "running"]
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": FULL})
+    rig.scenario(apply={"summary": FULL})
     retry, _ = rig.run(op, FakeTI(try_number=2, max_tries=2))
     assert retry["decision"] == "success" and len(applies(rig)) == 2
     assert applies(rig)[0][1] == applies(rig)[1][1], "the same sealed artifact is replayed"
@@ -134,7 +134,7 @@ def test_g1b_a_retry_after_a_failed_or_killed_apply_replays_the_plan(rig: Rig, h
 def test_g1b_a_new_try_series_plans_and_applies_again(rig: Rig) -> None:
     """G1b negative: a clear (a new `max_tries`) plans a new artifact and applies it; rivet's record of the earlier
     series' plan does not answer for it."""
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": FULL})
+    rig.scenario(apply={"summary": FULL})
     op = rig.operator(RivetApplyOperator, export="orders")
     rig.run(op, FakeTI(try_number=1, max_tries=2))
     again, _ = rig.run(op, FakeTI(try_number=2, max_tries=4))
@@ -183,7 +183,7 @@ def test_g2_a_retry_while_the_earlier_try_still_runs_rivet_starts_nothing_and_is
     """G2 (a): a zombie try's rivet apply still runs (held here by a sleeping fake) when the retry starts: the retry
     waits `lock_wait` seconds for the export's lock, starts no rivet process and ends retryable, never failed."""
     started = tmp_path / "started"
-    proc, rig = task_process(tmp_path, {"flags": NEW_FLAGS, "apply": {"sleep": 60, "started": str(started), "summary": FULL}})
+    proc, rig = task_process(tmp_path, {"apply": {"sleep": 60, "started": str(started), "summary": FULL}})
     pid = int(wait_for(started))
     try:
         retry, ti = rig.run(rig.operator(RivetApplyOperator, export="orders", lock_wait=1), FakeTI(try_number=2, max_tries=2))
@@ -197,10 +197,11 @@ def test_g2_a_retry_while_the_earlier_try_still_runs_rivet_starts_nothing_and_is
         proc.wait()
 
 
+@pytest.mark.before_0_32_2
 def test_g2_a_load_of_another_table_does_not_wait_for_the_lock_of_this_one(tmp_path: Path) -> None:
     """G2 (a): the lock is the export's (and the table's, for a load with `--table`), not the state directory's."""
     started = tmp_path / "started"
-    play = {"flags": NEW_FLAGS, "load:users:users": {"sleep": 60, "started": str(started)}}
+    play = {"load:users:users": {"sleep": 60, "started": str(started)}}
     proc, rig = task_process(tmp_path, play, "RivetLoadOperator", export="users", table="users")
     pid = int(wait_for(started))
     try:
@@ -253,7 +254,7 @@ def test_g2_the_lock_is_released_by_an_explicit_unlock_not_by_close(rig: Rig) ->
     """G2 (a): a copy of the lock's descriptor in any other process (here a fork made while rivet runs, as a library or
     a sibling thread can make one) keeps a lock released by close alone held. The task unlocks explicitly once rivet
     has exited, so the next task takes the lock at once."""
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": FULL})
+    rig.scenario(apply={"summary": FULL})
     op = rig.operator(RivetApplyOperator, export="orders")
     forks: list[int] = []
     hold = op._hold
@@ -299,7 +300,7 @@ def test_g2c_rivets_busy_refusals_are_retried(rig: Rig, code: str, command: type
     if contract:
         line |= {"class": "refusal", "retryable": False, "exit_code": 5}
     sub = command.command
-    rig.scenario(flags=NEW_FLAGS, **{sub: {"exit": 5, "line": line}})
+    rig.scenario(**{sub: {"exit": 5, "line": line}})
     exc, ti = rig.run(rig.operator(command, **kwargs))
     assert type(exc) is AirflowException, exc
     payload = ti.store[("task", "return_value")]
@@ -309,7 +310,7 @@ def test_g2c_rivets_busy_refusals_are_retried(rig: Rig, code: str, command: type
 def test_g2c_another_refusal_is_still_not_retried(rig: Rig) -> None:
     """G2 (c) negative: only the busy codes changed; any other exit-5 refusal still fails without retry."""
     line = {"error": "stale", "exit_class": 5, "code": "RIVET_STATE_CURSOR_OWNER_MISMATCH"}
-    rig.scenario(flags=NEW_FLAGS, run={"exit": 5, "line": line})
+    rig.scenario(run={"exit": 5, "line": line})
     exc, _ = rig.run(rig.operator(RivetRunOperator, export="users"))
     assert type(exc) is AirflowFailException
 
@@ -361,7 +362,7 @@ def test_rivet_0322_codes_end_the_task_by_their_printed_class(
     export = "orders_cdc" if command is RivetCdcRunOperator else "users"
     kwargs = {"table": "users"} if command is RivetLoadOperator else {}
     sub = "run" if command is RivetCdcRunOperator else command.command  # `cdc_run` is a `rivet run`
-    rig.scenario(flags=NEW_FLAGS, **{sub: {"exit": exit_code, "line": line}})
+    rig.scenario(**{sub: {"exit": exit_code, "line": line}})
     exc, ti = rig.run(rig.operator(command, export=export, **kwargs))
     assert type(exc) is raised, exc
     assert str(exc) == f"[{code}] {class_}: the registry's remedy ({export})"

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from airflow.exceptions import AirflowException, AirflowFailException, AirflowNotFoundException
-from conftest import NEW_FLAGS, FakeTI, Rig, fixture
+from conftest import FakeTI, Rig, fixture
 
 from airflow_provider_rivet import operators
 from airflow_provider_rivet.invocation import Busy, Stopped
@@ -142,7 +142,7 @@ def test_a_crash_on_a_pod_keeps_no_ledger_in_the_state_directory(rig: Rig) -> No
 
 def test_the_max_events_record_says_a_backlog_remains(rig: Rig) -> None:
     """_settle 35-38."""
-    rig.scenario(flags=NEW_FLAGS, run={"summary": {"per_export": [fixture("run_entry.json")]}})
+    rig.scenario(run={"summary": {"per_export": [fixture("run_entry.json")]}})
     rig.run(rig.operator(RivetCdcRunOperator, export="orders_cdc"))
     assert rig.events("rivet.cdc.max_events") == [
         {"event": "rivet.cdc.max_events", "exports": ["orders_cdc"], "text": "stopped on max_events; backlog remains"}

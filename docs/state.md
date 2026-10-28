@@ -140,7 +140,9 @@ SQLite state in `state_dir`.
    | a local `destination.path` (or `prefix`) | the config's directory (rivet 0.32+) | the state directory: init's `./output/orders/` lands in `<state_dir>/output/orders/` (from rivet 0.32.2 a CDC scaffold written with `-o <stem>.yaml` says `./output/<stem>/orders_cdc/`, which lands in `<state_dir>/output/<stem>/orders_cdc/`); `cwd` does not move it. Write an absolute path to put the files elsewhere |
    | the other paths rivet opens as written, such as `tls.ca_file` | the process's working directory | unchanged: the working directory defaults to the directory of your ORIGINAL config; set `cwd` to change it |
    The preflight reads the config as rivet does: every `${name}` is taken from a `-p` /
-   `--param` in `extra_args`, then from the task's environment, and spliced into the text before
+   `--param` in `extra_args` (a run, CDC run or plan task only: `rivet load`, `compact` and `apply`
+   have no `-p`, and those tasks refuse it with `RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`), then from the
+   task's environment, and spliced into the text before
    the YAML is parsed, with YAML 1.2 scalars (`017` and `name: 2024` stay the text written). A
    `mode` no variable resolves is treated as `cdc` by the guards; an export name or a
    `cdc.checkpoint` no variable resolves is refused (`RIVET_AIRFLOW_CONFIG_UNRESOLVED`), as rivet

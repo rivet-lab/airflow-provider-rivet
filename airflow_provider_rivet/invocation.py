@@ -993,8 +993,27 @@ def invoke(
         raise binary_unanswering(exc) from exc
 
 
+#: The commands whose rivet subcommand has `-p` / `--param` (rivet 0.32.2: run, plan and check); load, compact and apply refuse it.
+PARAM_COMMANDS = ("run", "cdc_run", "plan")
+
+
+def refuse_param(command: str, extra_args: Sequence[str]) -> None:
+    """Refuse `-p` / `--param` in the extra arguments of a command whose rivet subcommand does not take it."""
+    if command in PARAM_COMMANDS:
+        return
+    for arg in extra_args:
+        if arg == "--param" or arg.startswith(("--param=", "-p")):
+            raise PreflightRefusal(
+                "RIVET_AIRFLOW_PARAM_NOT_ACCEPTED",
+                f"`{arg}` in extra_args: rivet {command} has no -p / --param (`unexpected argument '-p' found`); only rivet run, "
+                "plan and check take it, so RivetRunOperator, RivetCdcRunOperator and RivetPlanOperator do. A `${name}` in "
+                f"the config of a {command} task is read from the task's environment: set it in env=",
+            )
+
+
 def _invoke(request: Request, emit: Emit, on_process: Callable | None, stopped: Callable[[], bool] | None) -> Outcome:
     """`invoke` with the probes' failures still raw: the binary's `<sub> --help` is read lazily while argv is built."""
+    refuse_param(request.command, request.extra_args)
     pf = run_preflight(
         rivet_bin=request.rivet_bin,
         config_path=request.config,
