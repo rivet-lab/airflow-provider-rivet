@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from bson import Binary, Decimal128, Int64, ObjectId
-from test_stand_hygiene import Loader, compose_view, laid_out
+from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from airflow_provider_rivet.connections import connection_url
 from gate import sources, warehouse
@@ -208,4 +208,4 @@ def test_a_limit_kind_runs_init_without_failing_the_leg_and_builds_no_dag(tmp_pa
     assert leg.limits == {"batch": []}
     assert sorted(leg.dags) == ["gate_src_mongodb_cdc_gate_customers_cdc", "gate_src_mongodb_cdc_gate_orders_cdc"]
     assert leg.tasks["gate_src_mongodb_cdc_gate_orders_cdc"] == ["run", "load.gate_orders", "compact.gate_orders"]
-    assert "batch" not in json.loads((stand.rivet_dir / "configs" / "mongodb_shape.json").read_text())
+    assert not [dag for dag in written_specs(stand, "mongodb") if dag.endswith("_batch")]

@@ -271,13 +271,6 @@ x-rivet: &rivet
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:{metastore}@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: {result_backend}://airflow:{metastore}@postgres/airflow
     AIRFLOW__API_AUTH__JWT_SECRET: '{jwt}'
-    GATE_WAREHOUSES: '{warehouses}'
-    GATE_SOURCES: '{sources}'
-    GATE_WORKERS: '{workers}'
-    GATE_DESTINATIONS: '{destinations}'
-    GATE_SOURCE_STATE_ROOT: '{source_state_root}'
-    GATE_GCP_AUTH: '{gcp_auth}'
-    GATE_CLIENT_OVERRIDE: '{client}'
 {gcp_env}{backend}  env_file: [gate-connections.env]
   volumes:
     - {rivet_dir}:/opt/rivet
@@ -661,24 +654,17 @@ class Stand:
             image=self.image,
             rivet_dir=self.rivet_dir,
             services=services,
-            warehouses=",".join(self.warehouses),
-            sources=",".join(e.name for e in self.sources),
             source_services="".join(e.service_yaml.format(**vars(self.secrets)) for e in self.sources),
-            destinations=",".join(d.name for d in self.destinations),
             destination_services="".join(d.service_yaml.format(**vars(self.secrets)) for d in self.destinations),
             backend=backend,
             adc=adc,
             result_backend=self.flavor.result_backend,
-            workers=self.workers,
-            source_state_root=self.source_state_root,
-            gcp_auth="env-file" if self.gcp_key_file else "",
             # The client's compose sets it itself; the gate sets it only for its own stacks.
             gcp_env=(
                 f"    GOOGLE_APPLICATION_CREDENTIALS: {GCP_KEY_IN_CONTAINER}\n"
                 if self.gcp_key_file and not self.client_override
                 else ""
             ),
-            client="1" if self.client_override else "",
             # The key file the client's compose names but does not mount (the client's prod file mounts it).
             extra_volumes=(f"    - {self.gcp_key_file}:{GCP_KEY_IN_CONTAINER}:ro\n" if self.gcp_key_file else "")
             + (f"    - {self.dir / 'odbc.ini'}:{ODBC_INI}:ro\n" if self.source_dags is not None else ""),

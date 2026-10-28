@@ -6,11 +6,11 @@ Each test names the mutant it is RED on.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 
 from test_sources_mysql_client import CDC, prepared
+from test_stand_hygiene import written_specs
 
 from gate import sources
 from gate.sources import flip, git_sync_layout, run_after_flip, stream_equals_source
@@ -82,13 +82,12 @@ def test_the_stream_must_equal_the_source_on_every_table() -> None:
 
 def test_the_streams_dags_read_the_config_through_the_checkout(tmp_path: Path, monkeypatch) -> None:
     leg, stand = prepared(tmp_path, monkeypatch)
-    shape = json.loads((stand.rivet_dir / "configs" / "mysql_shape.json").read_text())
-    # Mutant: the DAG left on init's own path (no symlink: the flip changes nothing the operator reads).
-    assert shape["cdc_config"] == "/opt/rivet/configs/mysql_cdc_sync/repo/rivet.yaml"
+    made = written_specs(stand, "mysql")
+    checkout = "/opt/rivet/configs/mysql_cdc_sync/repo/rivet.yaml"
     assert (stand.rivet_dir / "configs" / "mysql_cdc_sync" / "repo").is_symlink()
-    dag = (Path(sources.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index("cdc_config = shape.get") : dag.index("# A second CDC config")]
-    assert block.count("config=cdc_config") == 3, "the stream's, the hot and the second overlapping DAG read one config path"
+    # Mutant: a DAG left on init's own path (no symlink: the flip changes nothing the operator reads).
+    reads = {dag: made[dag]["build"]["config"] for dag in (*leg.dags[1:], leg.hot_dag, leg.overlap_dag)}
+    assert reads == {dag: checkout for dag in reads} and len(reads) == 3, "the stream's, the hot and the second overlapping DAG"
 
 
 def test_the_stale_copy_carries_the_name_the_previous_provider_gave_it() -> None:

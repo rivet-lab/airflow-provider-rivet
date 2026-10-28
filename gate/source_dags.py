@@ -27,7 +27,7 @@ import yaml
 from airflow_provider_rivet import _yaml
 from airflow_provider_rivet.exports import compacts, entries_of, mode_of, name_of, tables_of
 
-from . import oracle, warehouse
+from . import dagspec, oracle, warehouse
 from .sources import ENGINES, Engine, SourceLeg, read_config, short, task_log, warehouse_table
 from .stand import sh
 
@@ -310,13 +310,12 @@ class SourceDagsLeg(SourceLeg):
             }
             for kind, name in self.names.items()
         ]
-        gcp = {"cloud_credentials": ["gcp"]} if getattr(stand, "gcp_key_file", None) else {"connections": ["gate_gcp"]}
         return {
             "engine": self.engine.name,
             "config_dir": CONFIG_DIR,
             "state_root": STATE_ROOT,
             "state_connection": STATE_CONNECTION,
-            "operator_kwargs": gcp,
+            "operator_kwargs": dagspec.gcp(stand),
             "calls": calls,
         }
 

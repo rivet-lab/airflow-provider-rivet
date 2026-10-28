@@ -15,10 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from test_stand_hygiene import Loader, compose_view, laid_out
+from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from gate import __main__ as gate_main
-from gate import destinations, oracle
+from gate import cleanup, dagspec, destinations, oracle
 from gate.destinations import CONFIGS, MISSING_BUCKET_CODE, S3Leg, check_shape, init_argv, missing_bucket, table_parts
 from gate.scenario import Verdicts
 from gate.sources import read_config
@@ -87,6 +87,90 @@ def test_the_cdc_parts_are_read_under_the_prefix_init_wrote() -> None:
         destinations.cdc_root(text.replace("prefix: s3_cdc/cdc/", "prefix: changes/"))
 
 
+# --- The DAGs the leg builds -----------------------------------------------------------------------------------------
+
+
+class Done:
+    returncode, stdout, stderr = 0, "", ""
+
+
+def prepared_s3(tmp_path: Path, monkeypatch) -> tuple[S3Leg, object]:
+    """`S3Leg.prepare` against init's real output (the fixtures), the stack's commands stubbed."""
+    stand = laid_out(tmp_path, destinations=(S3Leg(),))
+    leg = S3Leg()
+
+    def compose(*args, extra_env=None, **kw):
+        if "airflow-worker" in args:
+            out = Path(args[-1])
+            kind = out.parent.name.removeprefix("s3_")
+            fixture = "batch" if kind == "missing" else kind
+            (stand.rivet_dir / "configs" / out.parent.name / out.name).write_text(
+                (FIXTURES / f"init_s3_{fixture}_0.32.1.yaml").read_text()
+            )
+        return Done()
+
+    monkeypatch.setattr(stand, "compose", compose)
+    monkeypatch.setattr(stand, "psql", lambda *a: "")
+    monkeypatch.setattr(stand, "host_port", lambda *a: 1)
+    monkeypatch.setattr(S3Leg, "mc", lambda self, *a, **k: Done())
+    monkeypatch.setattr(destinations, "ch_exec", lambda *a: None)
+    leg.prepare(stand, "SELECT 1")
+    return leg, stand
+
+
+def test_the_dag_file_builds_exactly_the_specs_the_leg_writes_and_grades(tmp_path: Path, monkeypatch) -> None:
+    leg, stand = prepared_s3(tmp_path, monkeypatch)
+    made = written_specs(stand, "s3")
+    assert leg.dags == ["gate_s3_batch", "gate_s3_cdc", "gate_s3_ch_batch", "gate_s3_ch_cdc"]
+    assert set(made) == {*leg.dags, "gate_s3_missing", *cleanup.dags(TABLES)}
+    # What is graded is what the spec builds (task_ids), never a second derivation.
+    assert all(leg.tasks[dag] == dagspec.task_ids(made[dag]) for dag in leg.dags)
+    assert leg.tasks["gate_s3_cdc"] == ["run"], "an extract-only stream"
+    assert leg.tasks["gate_s3_ch_cdc"] == [
+        "run",
+        "load.gate_customers",
+        "compact.gate_customers",
+        "load.gate_orders",
+        "compact.gate_orders",
+    ]
+    assert leg.tasks["gate_s3_batch"] == ["apply.gate_customers", "apply.gate_orders"]
+    assert leg.tasks["gate_s3_ch_batch"][:3] == ["apply.gate_customers", "load.gate_customers", "compact.gate_customers"]
+    # A compaction with nothing to merge skips; the cycles still grade every other task.
+    assert all(leg.may_skip[dag] == ("compact.",) for dag in leg.dags)
+    ch = made["gate_s3_ch_cdc"]["build"]["operator_kwargs"]
+    assert ch["connections"] == ["rivet_gate_s3", "rivet_gate_s3_clickhouse"]
+    assert ch["env_from_connections"] == {
+        "RIVET_GATE_SOURCE_URL": "rivet_gate_source",
+        "RIVET_STATE_URL": "rivet_gate_state_s3_ch_cdc",
+    }
+    assert made["gate_s3_cdc"]["build"]["operator_kwargs"]["connections"] == ["rivet_gate_s3"]
+    assert made["gate_s3_cdc"]["build"]["config"] == "/opt/rivet/configs/s3_cdc/s3_cdc.yaml"
+    assert made["gate_s3_cdc"]["build"]["state_dir"] == "/opt/rivet/state/s3_cdc"
+    # The cleanup config reads its own database through its own Connection.
+    held = made[cleanup.PAUSED_DAG]["build"]["operator_kwargs"]["env_from_connections"]
+    assert held["RIVET_GATE_CLEANUP_SOURCE_URL"] == "rivet_gate_s3_cleanup_source"
+
+
+def test_every_stream_of_a_cdc_config_gets_its_dag_and_is_graded(tmp_path: Path, monkeypatch) -> None:
+    leg, _ = prepared_s3(tmp_path, monkeypatch)
+    shape = {
+        "exports": ["gate_customers", "gate_orders"],
+        "streams": [
+            {"name": "first", "tables": ["gate_customers"]},
+            {"name": "second", "tables": ["gate_orders"]},
+        ],
+    }
+    out = {spec["dag_id"]: spec for spec in leg.specs("ch_cdc", shape, "/c.yaml")}
+    # Mutant: `streams[:1]` (the destination leg's old `streams[0]`): the second stream never runs and is never graded.
+    assert list(out) == ["gate_s3_ch_cdc", "gate_s3_ch_cdc_second"]
+    assert [dagspec.task_ids(spec) for spec in out.values()] == [
+        ["run", "load.gate_customers", "compact.gate_customers"],
+        ["run", "load.gate_orders", "compact.gate_orders"],
+    ]
+    assert [spec["build"]["export"] for spec in out.values()] == ["first", "second"]
+    assert leg.kind_dags["ch_cdc"] == list(out), "the host runs and grades every DAG the spec made"
+
+
 # --- The stand -----------------------------------------------------------------------------------------------------------
 
 
@@ -102,7 +186,7 @@ def test_the_stand_runs_minio_and_hands_rivet_its_endpoint_through_an_aws_connec
     assert s3["extra"] == {"region_name": "us-east-1", "endpoint_url": "http://gate-minio:9000"}
     for kind in CONFIGS:
         assert f"AIRFLOW_CONN_RIVET_GATE_STATE_S3_{kind.upper()}" in worker
-    assert worker["GATE_DESTINATIONS"] == "s3"
+    assert not [k for k in worker if k.startswith("GATE_")], "the DAG file reads specs, not the overlay"
 
 
 def test_no_destination_leg_leaves_the_stand_as_it_was(tmp_path: Path) -> None:

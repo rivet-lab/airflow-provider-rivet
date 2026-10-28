@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from . import warehouse
+from . import dagspec, warehouse
 from .oracle import SHOWN
 
 KIND = "cleanup"
@@ -56,16 +56,18 @@ G2 = "cleanup/unloaded-runs-survive"
 G3 = "cleanup/live-run-blocks"
 
 
-def shape() -> dict[str, Any]:
-    """What the DAG file reads to build the cleanup DAGs beside init's config."""
-    return {
-        "cleanup": {
-            "extract": EXTRACT_DAG,
-            "paused": PAUSED_DAG,
-            "loads": {e: load_dag(e) for e in (FIRST, LIVE)},
-            "pause": {"export": LIVE, "at": PAUSE_AT, "marker": f"/opt/rivet/markers/{MARKER}"},
-        }
-    }
+def specs(
+    *, config: str, state_dir: str, exports: Sequence[str], operator_kwargs: Mapping[str, Any], tags: Sequence[str]
+) -> list[dict[str, Any]]:
+    """The cleanup DAGs beside init's config: extract, extract with one apply held live, and one load per export.
+    Nothing retries, so a failed load is the run's verdict."""
+    common = {"config": config, "state_dir": state_dir, "operator_kwargs": operator_kwargs, "tags": tags}
+    held = {"RIVET_TEST_PAUSE_AT": PAUSE_AT, "RIVET_TEST_PAUSE_MARKER": f"/opt/rivet/markers/{MARKER}"}
+    return [
+        dagspec.batch(EXTRACT_DAG, exports=exports, load=False, retries=0, **common),
+        dagspec.batch(PAUSED_DAG, exports=exports, load=False, retries=0, task_env={f"apply.{LIVE}": held}, **common),
+        *(dagspec.load_only(load_dag(e), export=e, retries=0, **common) for e in (FIRST, LIVE)),
+    ]
 
 
 def load_dag(export: str) -> str:

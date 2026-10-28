@@ -39,6 +39,12 @@ def laid_out(tmp_path: Path, version: str = "3.3.2", **kw) -> Stand:
     return stand
 
 
+def written_specs(stand: Stand, leg: str) -> dict[str, dict]:
+    """The DAG specs a leg wrote for the stack's DAG file, by DAG id (`{}` when it wrote none)."""
+    path = stand.rivet_dir / "configs" / f"dag_specs_{leg}.json"
+    return {spec["dag_id"]: spec for spec in json.loads(path.read_text())["dags"]} if path.exists() else {}
+
+
 def compose_view(stand: Stand) -> dict:
     """What compose would run: per service, the environment after the base file, the overlay and the env file."""
     base = yaml.load((stand.dir / "docker-compose.yaml").read_text(), Loader=Loader)

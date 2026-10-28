@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_stand_hygiene import laid_out
+from test_stand_hygiene import laid_out, written_specs
 
 from gate import __main__ as gate_main
 from gate import sources
@@ -127,11 +127,14 @@ def test_the_second_run_ends_its_first_try_busy_and_its_retry_goes_through() -> 
     assert sources.overlap_problems("failed", "success", TRIES, codes, 3, 3) == ["the held run failed"]
 
 
-def test_the_second_dag_waits_briefly_and_retries_once() -> None:
-    dag = (Path(sources.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index('overlap = shape.get("overlap")') : dag.index("# A second CDC config")]
+def test_the_second_dag_waits_briefly_and_retries_once(tmp_path: Path, monkeypatch) -> None:
+    from test_sources_mysql_client import prepared
+
+    leg, stand = prepared(tmp_path, monkeypatch)
+    spec = written_specs(stand, "mysql")[leg.overlap_dag]
     # Mutant: the default lock_wait (600 s: the held run ends first and nothing is busy) or no retry.
-    assert '"lock_wait": overlap["lock_wait"]' in block and '"retries": 1' in block
+    assert spec["build"]["operator_kwargs"]["lock_wait"] == sources.OVERLAP_LOCK_WAIT
+    assert spec["default_args"] == {"retries": 1, "retry_delay": 60}
     assert 0 < sources.OVERLAP_LOCK_WAIT < MYSQL.hot.pause_ms / 1000, "the wait must end inside the held run's pause"
 
 

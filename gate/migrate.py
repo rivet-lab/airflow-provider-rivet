@@ -28,7 +28,7 @@ from typing import Any
 
 import duckdb
 
-from . import warehouse
+from . import dagspec, warehouse
 from .sources import MYSQL
 from .stand import sh, state_conn_id, state_db
 
@@ -205,6 +205,9 @@ class Migration:
         self.b_dataset = f"{src.cloud.dataset(src.stack)}_mysqlmig_batch"
         self.stream: dict[str, Any] = {}
         self.b_exports: list[str] = []
+        #: The rivet tasks the cells grade on the CDC and on the batch DAGs: what their specs build (set by `prepare`).
+        self.tasks: list[str] = []
+        self.b_tasks: list[str] = []
         #: The state_dirs in the containers (set by `prepare`, under the stand's source state root).
         self.state_dir = f"/opt/rivet/state/{STATE_SUB}"
         self.b_state_dir = f"/opt/rivet/state/{B_STATE_SUB}"
@@ -256,11 +259,32 @@ class Migration:
             raise ValueError(f"rivet 0.32.1's init wrote streams {streams}, expected one")
         self.stream = streams[0]
         self.b_exports = self.prepare_batch(stand)
-        shape = {"config": f"{CONFIG_DIR}/rivet.yaml", "state_dir": self.state_dir, "stream": self.stream, "dags": DAGS,
-                 "old_bin": OLD_BIN, "url_env": URL_ENV, "conn": CONN, "state_conn": STATE_CONN,
-                 "batch": {"config": f"{self.b_state_dir}/rivet.yaml", "state_dir": self.b_state_dir, "exports": self.b_exports,
-                           "dags": B_DAGS, "state_conn": B_STATE_CONN}}  # fmt: skip
-        (stand.rivet_dir / "configs" / "mysql_migrate.json").write_text(json.dumps(shape))
+        specs = self.specs(stand)
+        graded = {spec["dag_id"]: dagspec.task_ids(spec) for spec in specs}
+        self.tasks, self.b_tasks = graded[DAGS["sqlite"]], graded[B_DAGS["sqlite"]]
+        dagspec.write(stand.rivet_dir, "mig", specs)
+
+    def specs(self, stand: Any) -> list[dict[str, Any]]:
+        """The six DAGs: the CDC config and the incremental batch config, each run by rivet 0.32.1 on SQLite, then by this
+        binary on the PostgreSQL state `rivet state copy` filled, then (the way back) by this binary on the SQLite file again."""
+        on_sqlite = {"env_from_connections": {URL_ENV: CONN}, "env": {"RIVET_STATE_URL": ""}, "single_host": True}
+        tags = ["rivet", "gate", "migrate"]
+        gcp = dagspec.gcp(stand)
+        out = []
+        for kind, pg_conn, dags in (("cdc", STATE_CONN, DAGS), ("batch", B_STATE_CONN, B_DAGS)):
+            on_pg = {"env_from_connections": {URL_ENV: CONN, "RIVET_STATE_URL": pg_conn}}
+            for leg, operator_kwargs in (("sqlite", {**on_sqlite, "rivet_bin": OLD_BIN}), ("pg", on_pg), ("back", on_sqlite)):
+                common = {
+                    "config": f"{CONFIG_DIR}/rivet.yaml" if kind == "cdc" else f"{self.b_state_dir}/rivet.yaml",
+                    "state_dir": self.state_dir if kind == "cdc" else self.b_state_dir,
+                    "operator_kwargs": {**operator_kwargs, **gcp},
+                    "tags": tags,
+                }
+                if kind == "cdc":
+                    out.append(dagspec.cdc(dags[leg], export=self.stream["name"], tables=self.stream["tables"], **common))
+                else:
+                    out.append(dagspec.batch(dags[leg], exports=self.b_exports, compact_exports=self.b_exports, **common))
+        return out
 
     def prepare_batch(self, stand: Any) -> list[str]:
         """rivet 0.32.1's init of the incremental batch config over the same tables (its own bucket, dataset, state)."""
@@ -291,10 +315,6 @@ class Migration:
             raise ValueError(f"rivet 0.32.1's batch init wrote exports {exports}, expected {sorted(TABLES)}")
         return exports
 
-    @property
-    def b_tasks(self) -> list[str]:
-        return [f"{g}.{e}" for e in self.b_exports for g in ("apply", "load", "compact")]
-
     def shown_url(self, stand: Any, db: str) -> str:
         """The state URL as a client writes it, the password left out."""
         return stand.leg_state_url(db).replace(stand.secrets.compose_state, "<password>")
@@ -306,10 +326,6 @@ class Migration:
     @property
     def dags(self) -> list[str]:
         return [*DAGS.values(), *B_DAGS.values()]
-
-    @property
-    def tasks(self) -> list[str]:
-        return ["run", *(f"{g}.{t}" for t in self.stream["tables"] for g in ("load", "compact"))]
 
     # --- reads ---
 

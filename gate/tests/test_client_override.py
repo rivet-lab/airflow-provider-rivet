@@ -8,13 +8,14 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 from test_stand_hygiene import Loader
 
 from gate import __main__ as gate_main
-from gate import client, conns, sources
+from gate import client, conns, dagspec, sources
 from gate.sources import MYSQL
 from gate.stand import (
     CLIENT_FILES,
@@ -112,18 +113,29 @@ def test_the_gates_overlay_adds_the_key_and_leaves_the_clients_variables(tmp_pat
     # Mutant: the overlay sets GOOGLE_APPLICATION_CREDENTIALS itself (the client's variable would go untested).
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in anchor["environment"]
     assert f"{key}:{GCP_KEY_IN_CONTAINER}:ro" in anchor["volumes"]
-    assert anchor["environment"]["GATE_CLIENT_OVERRIDE"] == "1" and anchor["environment"]["GATE_GCP_AUTH"] == "env-file"
+    # The overlay decides nothing for the DAG file any more: the specs the leg wrote carry what it builds.
+    assert not [k for k in anchor["environment"] if k.startswith("GATE_")]
     assert "gate_gcp" not in stand.connections()
 
 
 def test_the_readme_dag_takes_its_step_6_kwargs() -> None:
-    dag = (Path(sources.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index("# The client's README (gate/client.py") :]
+    spec = client.readme_spec({"name": "cdc", "tables": ["a", "b"]})
     # Mutant: the gate's own Connections or state_dir for the README's stream.
-    assert '"env_from_connections": {"RIVET_STATE_URL": "rivet_state", "RIVET_MYSQL_URL": "rivet_mysql"}' in block
-    assert '"cloud_credentials": ["gcp"]' in block and 'state_dir=readme["state_dir"]' in block
-    assert client.STATE_DIR == "/opt/airflow/rivet-state/mysql"
-    assert 'GCP = {"cloud_credentials": ["gcp"]} if ENV_KEY else {"connections": ["gate_gcp"]}' in dag
+    assert spec["build"]["operator_kwargs"] == {
+        "env_from_connections": {"RIVET_STATE_URL": "rivet_state", "RIVET_MYSQL_URL": "rivet_mysql"},
+        "cloud_credentials": ["gcp"],
+    }
+    assert spec["build"]["state_dir"] == client.STATE_DIR == "/opt/airflow/rivet-state/mysql"
+    assert (spec["dag_id"], spec["kind"], spec["build"]["export"], spec["build"]["tables"]) == (
+        client.DAG,
+        "cdc",
+        "cdc",
+        ["a", "b"],
+    )
+    assert dagspec.task_ids(spec) == ["run", "load.a", "compact.a", "load.b", "compact.b"]
+    # The key file or the Connection: the one decision, made once (client_override runs `--gcp-auth env-file`).
+    assert dagspec.gcp(SimpleNamespace(gcp_key_file=Path("/k"))) == {"cloud_credentials": ["gcp"]}
+    assert dagspec.gcp(SimpleNamespace(gcp_key_file=None)) == {"connections": ["gate_gcp"]}
 
 
 README_LINE = (

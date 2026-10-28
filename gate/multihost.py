@@ -17,7 +17,6 @@ is a measurement that prints `MEASURE` lines instead of verdicts.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from . import oracle, warehouse
+from . import dagspec, oracle, warehouse
 from .scenario import CHANGED_OPS, CHANGES, NO_OPS, SEED, Verdicts, grade_runs, wait_file, wait_runs
 from .sources import read_config
 from .stand import Stand, sh, worker_hostname, worker_service
@@ -35,6 +34,10 @@ TABLES = {
     "gate_orders": ["id", "customer_id", "amount", "status", "updated_at"],
 }
 URL_ENV = "RIVET_GATE_SOURCE_URL"
+#: Where each worker mounts its own disk.
+HOST_DISK = "/opt/rivet-host"
+#: The retry waits long enough for the gate to move the killed task's queue to the other host (seconds).
+RETRY_AFTER = 90
 #: The export whose apply pauses after its first fetch (the window in which the gate kills it).
 PAUSED = "gate_orders"
 QUEUE_OF = {"apply.gate_customers": "gate_a", "apply.gate_orders": "gate_b", "run": "gate_cdc"}
@@ -132,7 +135,6 @@ class MultiHost:
         self.stand, self.v, self.cloud = stand, v, cloud
         self.measure = Measure(v.stack)
         self.stack = stand.flavor.version
-        self.shape: dict[str, Any] = {"paused": PAUSED, "pipelines": {}}
         self.cursor_col: dict[str, str] = {}
         self.cursors: dict[str, dict[str, str]] = {}
         self.mirror = stand.dir / "mirror"
@@ -146,6 +148,7 @@ class MultiHost:
         for db in STATE_DBS:
             s.psql("gate-state", "rivet_state", f"CREATE DATABASE {db};")
         source_url = f"postgresql://rivet:{s.secrets.source}@gate-source:5432/rivet"
+        specs: list[dict[str, Any]] = []
         for p in PIPELINES:
             argv = ["rivet", "init", "--source-env", URL_ENV, "--tls", "disable", "--mode", p.mode, "--include", *TABLES]
             if p.gcs:
@@ -174,19 +177,41 @@ class MultiHost:
                 raise ValueError(f"init wrote {found}: not one incremental export per table")
             if p.name == "batch":
                 self.cursor_col = {e["name"]: e["cursor_column"] for e in yaml.safe_load(text)["exports"]}
-            self.shape["pipelines"][p.name] = {
-                "kind": "cdc" if p.mode == "cdc" else "batch",
-                "exports": found["exports"] if p.mode != "cdc" else [],
-                "stream": found["streams"][0] if p.mode == "cdc" else None,
-                "state_conn": p.state_conn,
-                "gcs": p.gcs,
-                "load": p.load,
-                "queues": {t: q for t, q in QUEUE_OF.items() if (t == "run") == (p.mode == "cdc")}
-                | ({"load.gate_customers": "gate_b"} if p.load else {}),
-                "pause": p.name == "batch",
-            }
-        (s.rivet_dir / "configs" / "mh_shape.json").write_text(json.dumps(self.shape))
+            specs.append(self.spec(p, found))
+        dagspec.write(s.rivet_dir, "mh", specs)
         s.wait_dags([p.dag for p in PIPELINES])
+
+    @staticmethod
+    def spec(p: Pipeline, found: Mapping[str, Any]) -> dict[str, Any]:
+        """The DAG of one pipeline: the config init wrote, the queue of each task, the retry that waits for the gate to move
+        the killed task's queue to the other host, and (the batch pipeline) the apply that pauses after its first fetch,
+        announced by a marker the gate polls: the window in which the gate kills it and sends its retry to the other host."""
+        if p.state_db is None:  # SQLite in the state_dir
+            kwargs: dict[str, Any] = {"env_from_connections": dict(dagspec.SOURCE_ENV), "env": {"RIVET_STATE_URL": ""}}
+        else:
+            kwargs = {"env_from_connections": {**dagspec.SOURCE_ENV, "RIVET_STATE_URL": p.state_conn}}
+        if p.gcs:
+            kwargs["connections"] = ["gate_gcp"]
+        common: dict[str, Any] = {
+            "config": f"{dagspec.ROOT}/configs/mh_{p.name}/rivet.yaml",
+            "state_dir": f"{HOST_DISK}/{p.name}",
+            "operator_kwargs": kwargs,
+            "tags": ["rivet", "gate", "multihost"],
+            "retry_delay": RETRY_AFTER,
+            "task_queue": {t: q for t, q in QUEUE_OF.items() if (t == "run") == (p.mode == "cdc")}
+            | ({"load.gate_customers": "gate_b"} if p.load else {}),
+        }
+        if p.mode == "cdc":
+            stream = found["streams"][0]
+            return dagspec.cdc(p.dag, export=stream["name"], tables=stream["tables"], load=False, **common)
+        paused = {
+            f"apply.{PAUSED}": {
+                "RIVET_TEST_PAUSE_AT": "pg_after_snapshot_open:15000",
+                "RIVET_TEST_PAUSE_MARKER": f"{dagspec.ROOT}/markers/mh_{PAUSED}",
+            }
+        }
+        exports = found["exports"][:1] if p.load else found["exports"]
+        return dagspec.batch(p.dag, exports=exports, load=p.load, task_env=paused if p.name == "batch" else None, **common)
 
     def cleanup(self) -> None:
         """Delete the leg's buckets and look again: nothing may be left."""
