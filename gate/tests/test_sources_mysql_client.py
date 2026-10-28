@@ -6,16 +6,15 @@ Each test names the mutant it is RED on.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 import yaml
 from test_conns import CLOUD
-from test_stand_hygiene import laid_out
+from test_stand_hygiene import laid_out, written_specs
 
-from gate import sources
+from gate import dagspec, sources
 from gate.sources import (
     MYSQL,
     SourceLeg,
@@ -183,26 +182,26 @@ def test_the_hot_dag_runs_the_streams_tasks_on_its_config_and_state(tmp_path: Pa
     # Mutant: `cycle_tasks` returning every DAG's tasks (a cycle grades the hot DAG, which has no run then: a 404).
     assert list(leg.cycle_tasks()) == leg.dags
     assert leg.may_skip[leg.hot_dag] == ("compact.",)
-    shape = json.loads((stand.rivet_dir / "configs" / "mysql_shape.json").read_text())
-    assert shape["hot"] == {
-        "dag": "gate_src_mysql_cdc_hot",
-        "stream": {"name": "cdc", "tables": ["gate_customers", "gate_orders"], "dag": "_cdc"},
-        "pause": "cdc_after_open:45000",
-        "marker": "/opt/rivet/markers/mysql_hot",
+    made = written_specs(stand, "mysql")
+    hot = made[leg.hot_dag]
+    cdc = made["gate_src_mysql_cdc"]
+    # The hot DAG is the stream's own, on its config and state, with the one apply-less pause on `run`'s environment.
+    assert hot["build"]["export"] == "cdc" and hot["build"]["tables"] == ["gate_customers", "gate_orders"]
+    assert hot["build"]["config"] == cdc["build"]["config"] and hot["build"]["state_dir"] == cdc["build"]["state_dir"]
+    held = hot["build"]["operator_kwargs"]["env"]
+    assert held == {
+        "RIVET_TEST_PAUSE_AT": "cdc_after_open:45000",
+        "RIVET_TEST_PAUSE_MARKER": "/opt/rivet/markers/mysql_hot",
     }
+    assert "env" not in cdc["build"]["operator_kwargs"]
     assert leg.texts == {"batch": BATCH, "cdc": CDC}
-    # The second CDC config: init's, in a directory of its own, its DAG in the first stream's state_dir (the DAG file).
-    assert shape["shared"] == {
-        "dag": "gate_src_mysql_cdc_shared",
-        "config": "/opt/rivet/configs/mysql_cdc_shared/rivet.yaml",
-        "stream": {"name": "cdc", "tables": ["gate_customers", "gate_orders"], "dag": "_cdc"},
-    }
+    # The second CDC config: init's, in a directory of its own, its DAG in the first stream's state_dir.
+    shared = made["gate_src_mysql_cdc_shared"]
+    assert shared["build"]["config"] == "/opt/rivet/configs/mysql_cdc_shared/rivet.yaml"
+    assert shared["build"]["state_dir"] == cdc["build"]["state_dir"]
     assert leg.shared_dag == "gate_src_mysql_cdc_shared" and "gate_src_mysql_cdc_shared" not in leg.cycle_tasks()
-    dag = (Path(sources.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index('hot = shape.get("hot")') : dag.index("# Destination legs")]
-    assert '"RIVET_TEST_PAUSE_AT": hot["pause"]' in block and 'state_dir=leg_state_dir(engine, "cdc")' in block
-    shared = dag[dag.index('shared = shape.get("shared")') : dag.index("# Destination legs")]
-    assert 'state_dir=leg_state_dir(engine, "cdc")' in shared and 'config=shared["config"]' in shared
+    # What the cells grade is what the DAG file builds: the tasks come from the spec, not from a second derivation.
+    assert all(leg.tasks[dag] == dagspec.task_ids(spec) for dag, spec in made.items() if dag in leg.tasks)
 
 
 def test_the_rows_each_task_moved_come_from_what_the_gate_did(tmp_path: Path, monkeypatch) -> None:
@@ -253,7 +252,7 @@ def test_the_counted_changes_are_the_ones_the_engine_makes(cycle: str) -> None:
 def test_init_refusing_the_second_config_leaves_no_dag_and_is_the_cell(tmp_path: Path, monkeypatch) -> None:
     leg, stand = prepared(tmp_path, monkeypatch, refuse_second=True)
     # Mutant: a DAG made for a config init refused to write.
-    assert leg.shared_dag == "" and "shared" not in json.loads((stand.rivet_dir / "configs" / "mysql_shape.json").read_text())
+    assert leg.shared_dag == "" and "gate_src_mysql_cdc_shared" not in written_specs(stand, "mysql")
     assert sources.init_refused(leg.shared) == []
     # Mutant: the exit or the code not compared.
     assert sources.init_refused({**leg.shared, "exit": 1}) == ["init exited 1, expected 5"]

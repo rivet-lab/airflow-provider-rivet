@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from test_conns import CLOUD
-from test_stand_hygiene import Loader, compose_view, laid_out
+from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from gate import __main__ as gate_main
 from gate import sources
@@ -87,7 +87,9 @@ def test_the_stand_runs_the_engine_with_its_own_password_and_hands_rivet_a_conne
     view = compose_view(stand)
     env = view["gate-mysql"]["environment"]
     assert env["MYSQL_PASSWORD"] == stand.secrets.mysql and env["MYSQL_ROOT_PASSWORD"] == stand.secrets.mysql_root
-    assert view["airflow-worker"]["environment"]["GATE_SOURCES"] == "mysql"
+    assert not [k for k in view["airflow-worker"]["environment"] if k.startswith("GATE_")], (
+        "specs, not the overlay, say what runs"
+    )
     conn = stand.connections()["rivet_gate_mysql"]
     assert (conn["conn_type"], conn["host"], conn["port"], conn["password"]) == ("mysql", "gate-mysql", 3306, stand.secrets.mysql)
     command = " ".join(
@@ -125,10 +127,18 @@ def test_init_and_the_dags_of_each_config_share_a_postgresql_state_of_its_own(tm
             assert f"rivet:{conn['password']}@{conn['host']}:{conn['port']}/{conn['schema']}?" in url
             dbs.add(conn["schema"])
     assert len(dbs) == 4, "a config's export names may repeat another's (SQL Server: CDC exports named after tables)"
-    dag = (Path(sources.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index("def leg_kwargs") : dag.index("# The multi-host leg")]
-    assert 'f"rivet_gate_state_{engine}_{kind}"' in block and '"RIVET_STATE_URL": ""' not in block
-    assert 'leg_kwargs(engine, "batch")' in block and 'leg_kwargs(engine, "cdc")' in block
+
+
+def test_each_configs_dag_reads_the_state_init_recorded_in(tmp_path: Path, monkeypatch) -> None:
+    from test_sources_mysql_client import prepared
+
+    leg, stand = prepared(tmp_path, monkeypatch)
+    made = written_specs(stand, "mysql")
+    # Mutant: one state for both configs, or SQLite (`RIVET_STATE_URL` emptied): the DAG would not see the keys init recorded.
+    for dag, kind in (("gate_src_mysql_batch", "batch"), ("gate_src_mysql_cdc", "cdc")):
+        kwargs = made[dag]["build"]["operator_kwargs"]
+        assert kwargs["env_from_connections"]["RIVET_STATE_URL"] == f"rivet_gate_state_mysql_{kind}"
+        assert "env" not in kwargs
 
 
 def test_init_leaving_a_state_beside_the_config_fails_the_leg(tmp_path: Path, monkeypatch) -> None:

@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import warehouse
+from . import dagspec, warehouse
 from .migrate import OLD_BIN
 from .sources import read_config, stream_equals_source
 from .stand import sh
@@ -76,6 +76,23 @@ def continues_problems(
     return problems
 
 
+def readme_spec(stream: Mapping[str, Any]) -> dict[str, Any]:
+    """The README's step 6 DAG: the stream the cron job ran, on the cron config as it ran, the client's own Connections
+    and state_dir, verbatim."""
+    return dagspec.cdc(
+        DAG,
+        config="/opt/rivet/configs/client_cron/rivet.yaml",
+        state_dir=STATE_DIR,
+        export=stream["name"],
+        tables=stream["tables"],
+        operator_kwargs={
+            "env_from_connections": {"RIVET_STATE_URL": "rivet_state", "RIVET_MYSQL_URL": "rivet_mysql"},
+            "cloud_credentials": ["gcp"],
+        },
+        tags=["rivet", "gate", "client"],
+    )
+
+
 class ClientReadme:
     """The README's migration of a cron-run stream, on the client's stack."""
 
@@ -85,15 +102,13 @@ class ClientReadme:
         self.bucket = f"rivet-afgate-{tag}-mysqlcron-cdc"
         self.dataset = f"{src.cloud.dataset(src.stack)}_mysqlcron_cdc"
         self.stream: dict[str, Any] = {}
+        #: The rivet tasks the cells grade on the README's DAG: what its spec builds (set by `prepare`).
+        self.tasks: list[str] = []
         self.commands: list[str] = []
 
     @property
     def dags(self) -> list[str]:
         return [DAG]
-
-    @property
-    def tasks(self) -> list[str]:
-        return ["run", *(f"{g}.{t}" for t in self.stream.get("tables", []) for g in ("load", "compact"))]
 
     def command(self, text: str) -> None:
         self.commands.append(text)
@@ -133,8 +148,9 @@ class ClientReadme:
         # Step 6 runs the same config: a copy where a DAG folder keeps it (not in migration-src, whose checkpoint sits
         # beside it and would be refused, RIVET_AIRFLOW_CHECKPOINT_BESIDE_CONFIG).
         (stand.rivet_dir / "configs" / "client_cron").mkdir(parents=True, exist_ok=True)
-        shape = {"dag": DAG, "config": "/opt/rivet/configs/client_cron/rivet.yaml", "stream": self.stream, "state_dir": STATE_DIR}
-        (stand.rivet_dir / "configs" / "client_readme.json").write_text(json.dumps(shape))
+        spec = readme_spec(self.stream)
+        self.tasks = dagspec.task_ids(spec)
+        dagspec.write(stand.rivet_dir, "client", [spec])
 
     def play(self, stand: Any, v: Any, wait_runs: Callable[..., Any]) -> None:
         eng, hot = self.src.engine, self.src.engine.hot

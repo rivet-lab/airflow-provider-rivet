@@ -6,6 +6,7 @@ Each test names the mutant it is RED on.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,13 +93,29 @@ def test_the_steps_count_the_changes_they_make() -> None:
     assert migrate.events(migrate.STEPS["before-switch"][1]) == 3
 
 
+def migration_specs(key_file: Path | None = None) -> dict[str, dict]:
+    src = SimpleNamespace(cloud=SimpleNamespace(tag="t", dataset=lambda stack: "d"), stack="3.3.2")
+    leg = migrate.Migration(src)
+    leg.stream = {"name": "cdc", "tables": ["mig_customers", "mig_orders"]}
+    leg.b_exports = ["mig_customers", "mig_orders"]
+    return {s["dag_id"]: s for s in leg.specs(SimpleNamespace(gcp_key_file=key_file))}
+
+
 def test_the_three_dags_share_one_config_and_state_dir_and_differ_in_binary_and_state() -> None:
-    dag = (Path(migrate.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index("# The migration leg (gate/migrate.py)") :]
+    made = migration_specs()
+    sqlite, pg, back = (made[migrate.DAGS[k]]["build"] for k in ("sqlite", "pg", "back"))
     # Mutant: the PostgreSQL DAG on SQLite, the SQLite DAG on this binary, or the way back on the old binary.
-    assert '("sqlite", {**on_sqlite, "rivet_bin": mig["old_bin"]}), ("pg", on_pg), ("back", on_sqlite)' in block
-    assert '"RIVET_STATE_URL": mig["state_conn"]' in block and '"env": {"RIVET_STATE_URL": ""}, "single_host": True' in block
-    assert 'state_dir=mig["state_dir"]' in block and 'config=mig["config"]' in block
+    assert sqlite["operator_kwargs"]["rivet_bin"] == migrate.OLD_BIN
+    assert "rivet_bin" not in pg["operator_kwargs"] and "rivet_bin" not in back["operator_kwargs"]
+    assert pg["operator_kwargs"]["env_from_connections"] == {migrate.URL_ENV: migrate.CONN, "RIVET_STATE_URL": migrate.STATE_CONN}
+    for on_sqlite in (sqlite, back):
+        assert (
+            on_sqlite["operator_kwargs"]["env"] == {"RIVET_STATE_URL": ""} and on_sqlite["operator_kwargs"]["single_host"] is True
+        )
+        assert on_sqlite["operator_kwargs"]["env_from_connections"] == {migrate.URL_ENV: migrate.CONN}
+    assert "env" not in pg["operator_kwargs"]
+    assert {b["state_dir"] for b in (sqlite, pg, back)} == {f"/opt/rivet/state/{migrate.STATE_SUB}"}
+    assert {b["config"] for b in (sqlite, pg, back)} == {f"{migrate.CONFIG_DIR}/rivet.yaml"}
 
 
 def test_the_old_binary_and_the_connections_reach_the_stack(tmp_path: Path) -> None:
@@ -158,10 +175,19 @@ def test_a_base_holds_each_key_once() -> None:
 
 
 def test_the_batch_pipeline_migrates_with_its_own_config_state_and_dags() -> None:
-    dag = (Path(migrate.__file__).parent / "stand" / "dags" / "rivet_gate.py").read_text()
-    block = dag[dag.index("# The incremental batch pipeline of the same tables") :]
+    made = migration_specs()
+    sqlite, pg, back = (made[migrate.B_DAGS[k]]["build"] for k in ("sqlite", "pg", "back"))
     # Mutant: the batch PostgreSQL DAG on the stream's state, or the batch way back on the old binary.
-    assert '"RIVET_STATE_URL": b["state_conn"]' in block
-    assert '(("sqlite", {**on_sqlite_b, "rivet_bin": mig["old_bin"]}), ("pg", on_pg_b), ("back", on_sqlite_b))' in block
+    assert pg["operator_kwargs"]["env_from_connections"]["RIVET_STATE_URL"] == migrate.B_STATE_CONN != migrate.STATE_CONN
+    assert sqlite["operator_kwargs"]["rivet_bin"] == migrate.OLD_BIN and "rivet_bin" not in back["operator_kwargs"]
+    assert all(b["compact_exports"] == ["mig_customers", "mig_orders"] for b in (sqlite, pg, back))
     assert migrate.B_STATE_DB != migrate.STATE_DB and migrate.B_STATE_SUB != migrate.STATE_SUB
     assert all("DELETE" not in sql for sql, _ in migrate.B_STEPS.values()), "an incremental extract cannot see a delete"
+
+
+def test_the_migration_dags_reach_gcp_the_way_the_stack_does() -> None:
+    # Mutant: the GCP decision made here, not by the stack's key file (a client stack would be given a Connection it lacks).
+    assert all(s["build"]["operator_kwargs"]["connections"] == ["gate_gcp"] for s in migration_specs().values())
+    keyed = migration_specs(Path("/k.json"))
+    assert all(s["build"]["operator_kwargs"]["cloud_credentials"] == ["gcp"] for s in keyed.values())
+    assert not any("connections" in s["build"]["operator_kwargs"] for s in keyed.values())

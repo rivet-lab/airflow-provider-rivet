@@ -24,8 +24,8 @@ from typing import Any
 import duckdb
 import yaml
 
-from . import warehouse
-from .stand import COMPOSE_STATE_ROLE, METASTORE_DB, sh, state_db
+from . import dagspec, warehouse
+from .stand import COMPOSE_STATE_ROLE, METASTORE_DB, sh, state_conn_id, state_db
 
 #: A bucket the gate made for one config of a stack and engine: `rivet-afgate-<tag>-<stack>-<engine>-<batch|cdc>`, or
 #: `...-<engine>_<batch|cdc>` for a source of `--source-dags`, named after the source (the sweep drops nothing else).
@@ -570,6 +570,10 @@ class SourceLeg:
         self.unq_dataset = f"{cloud.dataset(stack)}_{engine.name}unq_cdc"
         self.dags: list[str] = []  # the DAGs init's configs make (one CDC DAG per stream), known after `prepare`
         self.shape: dict[str, dict[str, Any]] = {}
+        #: Every DAG the leg runs, as the specs the DAG file builds (`gate/dagspec.py`), known after `prepare`.
+        self.specs: list[dict[str, Any]] = []
+        #: The path the stream's DAGs read the CDC config at.
+        self.cdc_config = ""
         self.tasks: dict[str, list[str]] = {}
         self.may_skip: dict[str, tuple[str, ...]] = {}
         self.targets: dict[str, dict[str, str]] = {}
@@ -681,11 +685,32 @@ class SourceLeg:
             "cdc": {short(t): warehouse_table(t) for s in cdc["streams"] for t in s["tables"]},
         }
         prefix = f"gate_src_{self.engine.name}"
-        self.tasks = {}
+        self.tasks, self.specs = {}, []
+        # The stream's DAGs read init's config, or the same text through a git-sync checkout (`repo -> rev-<n>`) from the
+        # first cycle on.
+        self.cdc_config = f"{dagspec.ROOT}/configs/{self.engine.name}_cdc/rivet.yaml"
+        if self.engine.git_sync is not None:
+            self.cdc_config = git_sync_layout(stand.rivet_dir / "configs" / f"{self.engine.name}_cdc_sync", self.texts["cdc"])
+            # What the previous provider left in the state_dir: its copy of the config, named by the RESOLVED path (the
+            # revision's), with the same text and no `.owner` record (rivet <= 0.32.1 wrote none).
+            resolved = self.cdc_config.replace("/repo/", "/rev-A/")
+            state_dir = stand.source_state_host / leg_sub(stand, self.engine.name, "cdc")
+            self.stale_copy = state_dir / old_copy_name(resolved)
+            self.stale_copy.write_text(self.texts["cdc"])
         if batch["exports"]:
-            self.tasks[f"{prefix}_batch"] = [f"{g}.{e}" for e in batch["exports"] for g in ("apply", "load", "compact")]
+            self.add(
+                dagspec.batch(
+                    f"{prefix}_batch",
+                    config=f"{dagspec.ROOT}/configs/{self.engine.name}_batch/rivet.yaml",
+                    state_dir=self.state_dir(stand, "batch"),
+                    exports=batch["exports"],
+                    compact_exports=batch["exports"],
+                    operator_kwargs=self.operator_kwargs(stand, "batch"),
+                    tags=self.tags,
+                )
+            )
         for stream in cdc["streams"]:
-            self.tasks[prefix + stream["dag"]] = ["run", *(f"{g}.{t}" for t in stream["tables"] for g in ("load", "compact"))]
+            self.add(self.stream_spec(stand, prefix + stream["dag"], stream, self.cdc_config))
         self.dags = list(self.tasks)
         if self.engine.hot is not None:
             # The same stream, config and state, in a DAG whose run pauses after it opened (run after the cycles only).
@@ -693,36 +718,67 @@ class SourceLeg:
                 raise ValueError(f"the hot ALTER needs one stream over the tables, init wrote {cdc['streams']}")
             stream = cdc["streams"][0]
             self.hot_dag = f"{prefix}{stream['dag']}_hot"
-            self.tasks[self.hot_dag] = self.tasks[prefix + stream["dag"]]
-            self.shape["hot"] = {
-                "dag": self.hot_dag,
-                "stream": stream,
-                "pause": f"cdc_after_open:{self.engine.hot.pause_ms}",
-                "marker": f"/opt/rivet/markers/{self.engine.name}_hot",
+            pause = {
+                "RIVET_TEST_PAUSE_AT": f"cdc_after_open:{self.engine.hot.pause_ms}",
+                "RIVET_TEST_PAUSE_MARKER": f"{dagspec.ROOT}/markers/{self.engine.name}_hot",
             }
+            self.add(self.stream_spec(stand, self.hot_dag, stream, self.cdc_config, env=pause))
             if self.engine.overlap is not None:
                 # The second of two overlapping runs: the stream's config and state, a short wait for the export lock,
                 # one retry a minute later (the hot DAG's run, held inside rivet, is the first).
                 self.overlap_dag = f"{prefix}{stream['dag']}_second"
-                self.tasks[self.overlap_dag] = self.tasks[prefix + stream["dag"]]
-                self.shape["overlap"] = {"dag": self.overlap_dag, "stream": stream, "lock_wait": OVERLAP_LOCK_WAIT}
+                self.add(
+                    self.stream_spec(
+                        stand, self.overlap_dag, stream, self.cdc_config, lock_wait=OVERLAP_LOCK_WAIT, retries=1, retry_delay=60
+                    )
+                )
             if self.engine.shared is not None:
                 self.prepare_shared(stand, f"{prefix}_cdc_shared")
-        if self.engine.git_sync is not None:
-            # The stream's DAGs read init's config through a git-sync checkout from the first cycle on.
-            self.shape["cdc_config"] = git_sync_layout(
-                stand.rivet_dir / "configs" / f"{self.engine.name}_cdc_sync", self.texts["cdc"]
-            )
-            # What the previous provider left in the state_dir: its copy of the config, named by the RESOLVED path (the
-            # revision's), with the same text and no `.owner` record (rivet <= 0.32.1 wrote none).
-            resolved = self.shape["cdc_config"].replace("/repo/", "/rev-A/")
-            state_dir = stand.source_state_host / leg_sub(stand, self.engine.name, "cdc")
-            self.stale_copy = state_dir / old_copy_name(resolved)
-            self.stale_copy.write_text(self.texts["cdc"])
         # A compaction with nothing to merge skips; the `compacted` cell holds every cycle to "no buffer left".
         self.may_skip = {dag: ("compact.",) for dag in self.tasks}
-        # The DAG file reads which exports and stream to build from here (the names are init's, not the gate's).
-        (stand.rivet_dir / "configs" / f"{self.engine.name}_shape.json").write_text(json.dumps(self.shape))
+        # The DAG file builds these (the names are init's, not the gate's) and the cells grade the tasks they list.
+        dagspec.write(stand.rivet_dir, self.engine.name, self.specs)
+
+    @property
+    def tags(self) -> list[str]:
+        return ["rivet", "gate", "source", self.engine.name]
+
+    def state_dir(self, stand: Any, kind: str) -> str:
+        """The config's state_dir under the source state root."""
+        return f"{stand.source_state_root}/{leg_sub(stand, self.engine.name, kind)}"
+
+    def operator_kwargs(self, stand: Any, kind: str, **extra: Any) -> dict[str, Any]:
+        """The config's own PostgreSQL state: the one `rivet init` recorded the source's primary keys in."""
+        return {
+            "env_from_connections": {
+                self.engine.url_env: self.engine.conn_id,
+                "RIVET_STATE_URL": state_conn_id(self.engine.name, kind),
+            },
+            **dagspec.gcp(stand),
+            **extra,
+        }
+
+    def stream_spec(
+        self, stand: Any, dag: str, stream: dict[str, Any], config: str, env: dict[str, str] | None = None,
+        lock_wait: int | None = None, **dag_args: int,
+    ) -> dict[str, Any]:  # fmt: skip
+        """One CDC stream's DAG, in the CDC config's own state_dir."""
+        extra = {**({"env": env} if env else {}), **({"lock_wait": lock_wait} if lock_wait is not None else {})}
+        return dagspec.cdc(
+            dag,
+            config=config,
+            state_dir=self.state_dir(stand, "cdc"),
+            export=stream["name"],
+            tables=stream["tables"],
+            operator_kwargs=self.operator_kwargs(stand, "cdc", **extra),
+            tags=self.tags,
+            **dag_args,
+        )
+
+    def add(self, spec: dict[str, Any]) -> None:
+        """Keep a DAG: it is written for the DAG file, and its tasks are the ones the cells grade."""
+        self.specs.append(spec)
+        self.tasks[spec["dag_id"]] = dagspec.task_ids(spec)
 
     def prepare_shared(self, stand: Any, dag: str) -> None:
         """A second CDC config of the same source, written by init in a directory of its own (so no sibling names its
@@ -752,8 +808,8 @@ class SourceLeg:
         if len(streams) != 1:
             raise ValueError(f"the second CDC config holds streams {streams}, expected one")
         self.shared_dag = dag
-        self.tasks[dag] = ["run", *(f"{g}.{t}" for t in streams[0]["tables"] for g in ("load", "compact"))]
-        self.shape["shared"] = {"dag": dag, "config": out, "stream": streams[0]}
+        # Its DAG runs in the first stream's state_dir, on the config init wrote in a directory of its own.
+        self.add(self.stream_spec(stand, dag, streams[0], out))
 
     def adopt(self, stand: Any, v: Any) -> None:
         """After the DAGs are unpaused, before the first cycle: nothing here (init ran in `prepare`)."""
@@ -1130,8 +1186,16 @@ class SourceLeg:
             v.grade(cell, [f"init wrote streams {streams}, expected one over {list(self.engine.tables)}"])
             return
         dag = f"gate_src_{eng}_cdc_unq"
-        shape = {"dag": dag, "config": out, "stream": streams[0], "state_dir": f"{stand.source_state_root}/{eng}_unq"}
-        (stand.rivet_dir / "configs" / f"{eng}_unq.json").write_text(json.dumps(shape))
+        spec = dagspec.cdc(
+            dag,
+            config=out,
+            state_dir=self.state_dir(stand, "unq"),
+            export=streams[0]["name"],
+            tables=streams[0]["tables"],
+            operator_kwargs=self.operator_kwargs(stand, "unq"),
+            tags=self.tags,
+        )
+        dagspec.write(stand.rivet_dir, f"{eng}_unq", [spec])
         stand.wait_dags([dag])
         run_id = f"gate_{eng}_unq"
         stand.trigger(dag, run_id)

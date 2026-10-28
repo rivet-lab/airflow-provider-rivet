@@ -125,7 +125,16 @@ def test_the_cleanup_config_is_inits_own_on_a_database_of_its_own() -> None:
     leg = destinations.S3Leg()
     assert leg.connections(SimpleNamespace(minio="m", source="p", clickhouse="c"))[cfg.source_conn]["schema"] == cfg.database
     assert set(cleanup.dags(destinations.TABLES)) <= set(leg.probe_dags)
-    assert cleanup.shape()["cleanup"]["pause"]["export"] == LIVE != FIRST
+    made = {
+        x["dag_id"]: x
+        for x in cleanup.specs(config="/c.yaml", state_dir="/s", exports=[FIRST, LIVE], operator_kwargs={}, tags=[])
+    }
+    assert set(made) == set(cleanup.dags([FIRST, LIVE]))
+    # Only the live export's apply is held, in the paused extract only; nothing in the cleanup DAGs retries.
+    assert list(made[cleanup.PAUSED_DAG]["task_env"]) == [f"apply.{LIVE}"] and LIVE != FIRST
+    assert made[cleanup.PAUSED_DAG]["task_env"][f"apply.{LIVE}"]["RIVET_TEST_PAUSE_AT"] == cleanup.PAUSE_AT
+    assert made[cleanup.EXTRACT_DAG]["task_env"] == {}
+    assert all(x["default_args"] == {"retries": 0} for x in made.values())
 
 
 # --- The phase against a fake world -----------------------------------------------------------------------------------

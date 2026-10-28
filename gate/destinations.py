@@ -28,7 +28,7 @@ from typing import Any
 
 import yaml
 
-from . import cleanup, oracle, warehouse
+from . import cleanup, dagspec, oracle, warehouse
 from .stand import state_db
 
 NAME = "s3"
@@ -237,6 +237,8 @@ class S3Leg:
         self.tasks: dict[str, list[str]] = {}
         self.may_skip: dict[str, tuple[str, ...]] = {}
         self.shape: dict[str, dict[str, Any]] = {}
+        #: The DAG ids each config's spec made.
+        self.kind_dags: dict[str, list[str]] = {}
         self.minio_port = 0
         # What the earlier cycles left: every part, the batch high-water, each cycle's new change parts.
         self.files_before: dict[str, set[str]] = {k: set() for k in ("batch", "cdc")}
@@ -293,7 +295,8 @@ class S3Leg:
         self.wait_ready(stand)
         self.minio_port = stand.host_port("gate-minio", 9000)
         self.cleanup_source_dsn = stand.source_dsn.replace("dbname=rivet ", f"dbname={cleanup.DATABASE} ")
-        problems = []
+        problems: list[str] = []
+        specs: list[dict[str, Any]] = []
         for kind, cfg in CONFIGS.items():
             if cfg.database != "rivet":
                 stand.psql(cfg.service, "rivet", f"CREATE DATABASE {cfg.database};")
@@ -322,32 +325,51 @@ class S3Leg:
             print(f"INIT s3 {kind} config:\n{text}", flush=True)
             shape = read_config(text, list(TABLES))
             problems += check_shape(kind, shape)
-            self.shape[kind] = {
-                **shape,
-                "config": out,
-                "state_dir": f"/opt/rivet/state/s3_{kind}",
-                "url_env": cfg.url_env,
-                "source_conn": cfg.source_conn,
-                "state_conn": f"rivet_gate_state_{NAME}_{kind}",
-                "connections": ["rivet_gate_s3"] + (["rivet_gate_s3_clickhouse"] if cfg.clickhouse_db else []),
-                "load": bool(cfg.clickhouse_db),
-                **({"cdc_root": cdc_root(text)} if cfg.mode == "cdc" else {}),
-                **(cleanup.shape() if kind == cleanup.KIND else {}),
-            }
+            self.shape[kind] = {**shape, **({"cdc_root": cdc_root(text)} if cfg.mode == "cdc" else {})}
+            specs += self.specs(kind, shape, out)
         if problems:
             raise ValueError("; ".join(problems))
-        for kind in CYCLED:
-            shape, dag = self.shape[kind], CONFIGS[kind].dag
-            if shape["streams"]:
-                tables = shape["streams"][0]["tables"]
-                groups = ("load", "compact") if shape["load"] else ()
-                self.tasks[dag] = ["run", *(f"{g}.{t}" for t in tables for g in groups)]
-            else:
-                groups = ("apply", "load", "compact") if shape["load"] else ("apply",)
-                self.tasks[dag] = [f"{g}.{e}" for e in shape["exports"] for g in groups]
+        graded = {spec["dag_id"]: spec for spec in specs if spec["dag_id"] in {d for k in CYCLED for d in self.kind_dags[k]}}
+        for dag_id, spec in graded.items():
+            self.tasks[dag_id] = dagspec.task_ids(spec)
             # A compaction with nothing to merge skips (ClickHouse keeps a change log behind a view).
-            self.may_skip[dag] = ("compact.",)
-        (stand.rivet_dir / "configs" / "s3_shape.json").write_text(json.dumps(self.shape))
+            self.may_skip[dag_id] = ("compact.",)
+        self.dags = [d for k in CYCLED for d in self.kind_dags[k]]
+        dagspec.write(stand.rivet_dir, NAME, specs)
+
+    def specs(self, kind: str, shape: dict[str, Any], config: str) -> list[dict[str, Any]]:
+        """The DAGs of one config: what the DAG file builds, and what the gate grades. A CDC config gets a DAG per
+        stream (the first keeps the config's id, the rest are suffixed with the stream's name), not the first stream's only."""
+        cfg = CONFIGS[kind]
+        operator_kwargs = {
+            "env_from_connections": {cfg.url_env: cfg.source_conn, "RIVET_STATE_URL": f"rivet_gate_state_{NAME}_{kind}"},
+            "connections": ["rivet_gate_s3"] + (["rivet_gate_s3_clickhouse"] if cfg.clickhouse_db else []),
+        }
+        common = {
+            "config": config,
+            "state_dir": f"/opt/rivet/state/s3_{kind}",
+            "operator_kwargs": operator_kwargs,
+            "tags": ["rivet", "gate", "destination", "s3"],
+        }
+        load = bool(cfg.clickhouse_db)
+        if kind == cleanup.KIND:
+            out = cleanup.specs(exports=shape["exports"], **common)
+        elif shape["streams"]:
+            out = [
+                dagspec.cdc(
+                    cfg.dag if i == 0 else f"{cfg.dag}_{stream['name']}",
+                    export=stream["name"], tables=stream["tables"], load=load, compact=load, **common,
+                )
+                for i, stream in enumerate(shape["streams"])
+            ]  # fmt: skip
+        else:
+            out = [
+                dagspec.batch(
+                    cfg.dag, exports=shape["exports"], load=load, compact_exports=shape["exports"] if load else [], **common
+                )
+            ]
+        self.kind_dags[kind] = [spec["dag_id"] for spec in out]
+        return out
 
     # --- reads ---
 

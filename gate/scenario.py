@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import destinations, oracle, sources, warehouse
+from . import dagspec, destinations, oracle, sources, warehouse
 from .stand import Stand
 
 TABLES = {
@@ -116,8 +116,69 @@ class Verdicts:
             self.grade(cell, problems, ok=ok)
 
 
+#: The SQLite CDC run holds itself open here, and the marker file tells the gate it got there (the pause window in which
+#: the SQLite batch run writes beside it).
+PAUSE_AT = "cdc_after_open:20000"
+MARKER = "cdc_sqlite"
+
+
+def operator_kwargs(state: str) -> dict[str, Any]:
+    """SQLite state lives in the shared state_dir (the SQLite CDC run holds a pause window); PostgreSQL state comes from a connection."""
+    if state == "pg":
+        return {
+            "cwd": f"{dagspec.ROOT}/out",
+            "env_from_connections": {**dagspec.SOURCE_ENV, "RIVET_STATE_URL": "rivet_gate_state"},
+        }
+    # One state_dir volume that every worker of the stack mounts: one disk, so SQLite under Celery is declared single-host.
+    return {
+        "cwd": f"{dagspec.ROOT}/out",
+        "env_from_connections": dict(dagspec.SOURCE_ENV),
+        "env": {"RIVET_STATE_URL": ""},
+        "single_host": True,
+    }
+
+
+def dag_specs() -> list[dict[str, Any]]:
+    """The four DAGs of the scenario (incremental batch and CDC, each on the shared SQLite state and on a PostgreSQL one)."""
+    specs = []
+    for state in STATES:
+        tags = ["rivet", "gate"]
+        specs.append(
+            dagspec.batch(
+                f"gate_batch_{state}",
+                config=f"{dagspec.ROOT}/configs/batch_{state}.yaml",
+                state_dir=f"{dagspec.ROOT}/state/{state}",
+                exports=[f"{state}_{short}" for short, _ in TABLES.values()],
+                load=False,
+                operator_kwargs=operator_kwargs(state),
+                tags=tags,
+            )
+        )
+        cdc_kwargs = operator_kwargs(state)
+        if state == "sqlite":
+            cdc_kwargs["env"] = {
+                **cdc_kwargs["env"],
+                "RIVET_TEST_PAUSE_AT": PAUSE_AT,
+                "RIVET_TEST_PAUSE_MARKER": f"{dagspec.ROOT}/markers/{MARKER}",
+            }
+        specs.append(
+            dagspec.cdc(
+                f"gate_cdc_{state}",
+                config=f"{dagspec.ROOT}/configs/cdc_{state}.yaml",
+                state_dir=f"{dagspec.ROOT}/state/{state}",
+                export=f"{state}_cdc",
+                tables=list(TABLES),
+                load=False,
+                operator_kwargs=cdc_kwargs,
+                tags=tags,
+            )
+        )
+    return specs
+
+
 def write_configs(rivet_dir: Path) -> None:
-    """The four rivet configs the gate DAGs run."""
+    """The four rivet configs the gate DAGs run, and the DAGs that run them."""
+    dagspec.write(rivet_dir, "main", dag_specs())
     for state in STATES:
         exports = "".join(
             BATCH_EXPORT.format(state=state, short=short, cols=", ".join(cols), table=table)
@@ -169,7 +230,7 @@ def stored_cursors(stand: Stand, state: str) -> dict[str, str]:
 
 def trigger_cycle(stand: Stand, v: Verdicts, name: str, run_id: str, dags: list[str]) -> dict[str, str]:
     """Start the SQLite CDC run, wait for its pause window, start every other DAG, wait for all; their states."""
-    marker = stand.rivet_dir / "markers" / "cdc_sqlite"
+    marker = stand.rivet_dir / "markers" / MARKER
     marker.unlink(missing_ok=True)
     stand.trigger("gate_cdc_sqlite", run_id)
     opened = wait_file(marker)

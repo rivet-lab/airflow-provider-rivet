@@ -20,7 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from . import oracle
+from . import dagspec, oracle
 from .stand import sh
 
 WAREHOUSES = ("bigquery", "snowflake", "clickhouse")
@@ -386,18 +386,53 @@ def _age_hours(stamp: Any) -> float:
     return (datetime.now(UTC) - when).total_seconds() / 3600
 
 
-def dags(warehouses: Sequence[str] = WAREHOUSES) -> list[str]:
-    """The warehouse DAG ids."""
-    return [f"gate_wh_{wh}_{kind}" for wh in warehouses for kind in ("batch", "cdc")]
+#: The Connections a warehouse's DAGs read, beside the source's: GCS for the staging, then the warehouse's own.
+WAREHOUSE_CONNECTIONS = {
+    "bigquery": ["gate_gcp"],
+    "snowflake": ["gate_gcp", "gate_snowflake"],
+    "clickhouse": ["gate_gcp", "gate_clickhouse"],
+}
 
 
-def rivet_tasks(tables: Sequence[str], shorts: Sequence[str], warehouses: Sequence[str] = WAREHOUSES) -> dict[str, list[str]]:
-    """The rivet tasks of each warehouse DAG."""
-    out = {}
+def dag_specs(
+    tables: Mapping[str, tuple[str, list[str]]], warehouses: Sequence[str] = WAREHOUSES, env_key: bool = False
+) -> list[dict[str, Any]]:
+    """The batch and the CDC DAG of each warehouse. `env_key`: no `gate_gcp` Connection (the client's key file instead)."""
+    specs = []
     for wh in warehouses:
-        out[f"gate_wh_{wh}_batch"] = [f"{g}.{wh}_{s}" for s in shorts for g in ("apply", "load", "compact")]
-        out[f"gate_wh_{wh}_cdc"] = ["run", *(f"{g}.{t}" for t in tables for g in ("load", "compact"))]
-    return out
+        kwargs = {
+            "cwd": f"{dagspec.ROOT}/out",
+            "env_from_connections": dict(dagspec.SOURCE_ENV),
+            "env": {"RIVET_STATE_URL": ""},
+            "single_host": True,  # the stack's one state volume
+            "connections": [c for c in WAREHOUSE_CONNECTIONS[wh] if not (env_key and c == "gate_gcp")],
+            **({"cloud_credentials": ["gcp"]} if env_key else {}),
+        }
+        tags = ["rivet", "gate", "warehouse", wh]
+        exports = [f"{wh}_{short}" for short, _ in tables.values()]
+        specs.append(
+            dagspec.batch(
+                f"gate_wh_{wh}_batch",
+                config=f"{dagspec.ROOT}/configs/wh_{wh}_batch.yaml",
+                state_dir=f"{dagspec.ROOT}/state/wh_{wh}",
+                exports=exports,
+                compact_exports=exports,
+                operator_kwargs=kwargs,
+                tags=tags,
+            )
+        )
+        specs.append(
+            dagspec.cdc(
+                f"gate_wh_{wh}_cdc",
+                config=f"{dagspec.ROOT}/configs/wh_{wh}_cdc.yaml",
+                state_dir=f"{dagspec.ROOT}/state/wh_{wh}",
+                export=f"{wh}_cdc",
+                tables=list(tables),
+                operator_kwargs=kwargs,
+                tags=tags,
+            )
+        )
+    return specs
 
 
 def may_skip(dag_ids: Sequence[str], cycle: str = "delta") -> dict[str, tuple[str, ...]]:
@@ -598,14 +633,16 @@ class Leg:
         self.stack = stack
         self.tables = tables
         self.warehouses = tuple(warehouses)
-        self.dags = dags(self.warehouses)
-        self.tasks = rivet_tasks(list(tables), [short for short, _ in tables.values()], self.warehouses)
+        specs = dag_specs(tables, self.warehouses)
+        self.dags = [spec["dag_id"] for spec in specs]
+        self.tasks = {spec["dag_id"]: dagspec.task_ids(spec) for spec in specs}
         self.may_skip = may_skip(self.dags)
         self._clients: dict[str, Any] = {}
 
     def prepare(self, stand: Any) -> None:
         """Configs in the stand, the dataset and the schema in the clouds."""
         write_configs(stand.rivet_dir, self.cloud, self.stack, self.tables)
+        dagspec.write(stand.rivet_dir, "warehouse", dag_specs(self.tables, self.warehouses, dagspec.env_key(stand)))
         prepare(self.cloud, self.stack, self.warehouses)
 
     def cleanup(self) -> None:
