@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,6 +40,47 @@ DIGEST_COUNTS = (
     "bytes_billed",
 )
 DIGEST_KEYS = (*DIGEST_COUNTS, "warehouse_job_ids")
+# The most of rivet's error text a log line, an exception or a Slack title shows, and the most of an unbounded text the
+# secrets masker is asked to read: the text shown is a prefix of at most `ERROR_TEXT_LIMIT`, far inside the window.
+ERROR_TEXT_LIMIT = 300
+MASKER_WINDOW = 65_536
+
+
+def redact(text: str) -> str:
+    """Airflow's secrets masker over the text: every Connection password and masked value this task process saw."""
+    try:  # Airflow 3.3+; 3.0-3.2; 2.x
+        from airflow.sdk._shared.secrets_masker import redact as mask
+    except ImportError:
+        try:
+            from airflow.sdk.execution_time.secrets_masker import redact as mask
+        except ImportError:
+            from airflow.utils.log.secrets_masker import redact as mask
+    return str(mask(text))
+
+
+def _printable(char: str) -> str:
+    """A control, format or line-separator character as its `\\u{..}` escape (rivet's spelling), a tab as a space."""
+    if char == "\t":
+        return " "
+    if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp"):
+        return f"\\u{{{ord(char):02x}}}"
+    return char
+
+
+def error_text(message: Any, limit: int = ERROR_TEXT_LIMIT) -> str | None:
+    """rivet's error text as one line a log, an exception or an alert may carry; `None` when it holds no text.
+
+    Operator and source text, so hostile: the secrets masker reads it first (the first `MASKER_WINDOW` characters, a
+    prefix that holds everything shown); only then is it cut, at `\\n` alone (rivet's line end, D01: `splitlines` also
+    splits on `\\r`, `\\x0b`, `\\x1c`, U+2028), its lines joined with ` | `, every other control character shown as an
+    escape, and the result bounded to `limit` characters."""
+    if not isinstance(message, str):
+        return None
+    pieces = (piece.strip() for piece in redact(message[:MASKER_WINDOW]).split("\n"))
+    text = "".join(map(_printable, " | ".join(piece for piece in pieces if piece)))
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -80,11 +122,12 @@ class ErrorObject:
         return cls(texts[0], texts[1], class_, exit_code, retryable or texts[0] in BUSY_CODES, texts[2], texts[3])
 
     def describe(self, export: str | None) -> str:
-        """The exception text: `[code] class: action (export)`, with no error message in it."""
+        """The exception text: `[code] class: action (export): rivet's error text` (`error_text`)."""
         code = f"[{self.code}] " if self.code else ""
         action = f": {self.action}" if self.action else ""
         unit = f" ({export})" if export else ""
-        return f"{code}{self.class_}{action}{unit}"
+        text = error_text(self.message)
+        return f"{code}{self.class_}{action}{unit}{f': {text}' if text else ''}"
 
 
 def error_from_exit(exit_status: int | None, signal: int | None) -> ErrorObject:
@@ -101,16 +144,17 @@ def error_from_exit(exit_status: int | None, signal: int | None) -> ErrorObject:
     return ErrorObject(None, None, "generic", 1, False, None, raw)
 
 
-def error_from_line(line: dict[str, Any], exit_status: int | None = None) -> tuple[ErrorObject | None, bool]:
-    """Read the `--json-errors` line: (object or `None` when malformed, whether it was derived from `exit_class`)."""
+def error_from_line(line: dict[str, Any], exit_status: int | None = None) -> ErrorObject | None:
+    """Read the `--json-errors` line: rivet 0.32.2 prints `{"error", "exit_class", "code"?}` and the class is the exit's;
+    a line with the contract's own keys (`class`, `retryable`) is read as the contract's object. `None` when malformed."""
     if "class" in line or "retryable" in line:
-        return ErrorObject.from_contract(line, message_key="error"), False
+        return ErrorObject.from_contract(line, message_key="error")
     known, code, text = line.get("exit_class"), line.get("code"), line.get("error")
     if type(known) is not int or known not in CLASS_BY_EXIT or exit_status not in (None, known):
-        return None, True
+        return None
     if any(value is not None and not isinstance(value, str) for value in (code, text)):
-        return None, True
-    return ErrorObject(code, None, CLASS_BY_EXIT[known], known, known == 2 or code in BUSY_CODES, None, text), True
+        return None
+    return ErrorObject(code, None, CLASS_BY_EXIT[known], known, known == 2 or code in BUSY_CODES, None, text)
 
 
 def worst(errors: list[ErrorObject]) -> ErrorObject:

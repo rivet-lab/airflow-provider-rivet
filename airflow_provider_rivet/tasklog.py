@@ -23,7 +23,6 @@ Write = Callable[[int, str], None]
 
 # What a degradation means, in words an operator reads.
 NOTES = {
-    "error_object": "rivet's failure line has no class or action: the class is read from its exit class",
     "per_unit_error": "several units failed and rivet gave one shared failure object for all of them",
     "stop_reason": "this binary reports no CDC stop reason: a max_events stop reads like caught up",
     "stderr_temp": "no state directory: rivet's stderr file is in the worker's temp directory and dies with it",
@@ -112,6 +111,11 @@ def _target(record: dict[str, Any]) -> str | None:
     return f"{text} (from config)" if record.get("target_from") == "config" else text
 
 
+def _why(text: Any) -> str:
+    """`: <rivet's reason>` after a failure line, nothing when rivet gave none."""
+    return f": {text}" if isinstance(text, str) and text else ""
+
+
 def _unit_name(unit: dict[str, Any]) -> str:
     return ".".join(str(part) for part in (unit.get("export"), unit.get("table")) if part) or "(config)"
 
@@ -152,6 +156,11 @@ class TaskLog:
 
     def _first(self, event: str) -> dict[str, Any] | None:
         return next((e for e in self.events if e.get("event") == event), None)
+
+    def _reasons(self) -> dict[str, Any]:
+        """The `rivet.error` record of a failed task: rivet's reason for the task and for each failed unit, already safe
+        to print (`result.error_text`)."""
+        return self._first("rivet.error") or {}
 
     def _unit_records(self) -> dict[tuple[Any, Any], dict[str, Any]]:
         """The `rivet.unit` record of each unit, by export and table: what XCom does not carry (names, digest)."""
@@ -258,7 +267,7 @@ class TaskLog:
         failed = [u for u in units if u.get("status") == "failed"]
         runs = [u["run_id"] for u in failed if isinstance(u.get("run_id"), str)]
         run = f" (run {runs[0]})" if len(runs) == 1 else ""
-        return (retry_level if retried else logging.ERROR), f"{head} {', '.join(parts)}{run}"
+        return (retry_level if retried else logging.ERROR), f"{head} {', '.join(parts)}{run}{_why(self._reasons().get('text'))}"
 
     def _step_lines(self, seconds: float) -> list[tuple[int, str]]:
         """One line per rivet process the task started, and one for a sealed plan an earlier try made; none for a task
@@ -296,6 +305,8 @@ class TaskLog:
         """One line per unit of a task with several, and the failed unit of a failed task."""
         lines = []
         records = self._unit_records()
+        reasons = self._reasons()
+        said = {(r.get("export"), r.get("table")): r.get("text") for r in reasons.get("units") or []}
         for unit in units:
             error = unit.get("error") or {}
             record = records.get((unit.get("export"), unit.get("table")), {})
@@ -305,6 +316,8 @@ class TaskLog:
             else:
                 text = ", ".join([str(unit.get("status")), *_counts([unit]), *_digest(record.get("digest"))])
             run = f" (run {unit['run_id']})" if isinstance(unit.get("run_id"), str) else ""
+            if unit.get("status") == "failed" and said.get((unit.get("export"), unit.get("table"))) != reasons.get("text"):
+                run += _why(said.get((unit.get("export"), unit.get("table"))))  # the headline has the reason, once
             target = _target(record)
             name = f"{_unit_name(unit)}{f' → {target}' if target else ''}"
             lines.append((logging.INFO, f"  {UNIT_WORD.get(self.command, 'export'):<8} {name}: {text}{run}"))

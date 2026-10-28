@@ -50,9 +50,13 @@ What reaches the rivet process, and how Airflow Connections become what rivet re
 - XCom carries code, class, exit_code, retryable, action, kind, counts, `stop_reason`, the
   degradations and file paths. It never carries the error `message`: redaction covers
   credentials only, and error text can embed source cell values.
-- The task log gets a readable block in the package's own words (see ["Reading the task log"](operators.md#reading-the-task-log)):
-  outcome, codes, class, action, counts, run id, step exit statuses, paths. Names the DAG gives
-  (export, table) are the only text in it the package did not write. The one-line JSON records,
+- The task log gets a readable block (see ["Reading the task log"](operators.md#reading-the-task-log)):
+  outcome, codes, class, action, counts, run id, step exit statuses, paths, and, on a failure, rivet's
+  error text on the headline and on a failed unit's line, and in the exception. That text is rivet's,
+  not the package's: Airflow's secrets masker reads it first, it is cut to one line of at most 300
+  characters, and its control characters are shown as escapes. It can still hold a source value (a
+  cell that failed to convert), which is why it is in the task log and the exception and never in XCom.
+  Names the DAG gives (export, table) are the only other text in it the package did not write. The one-line JSON records,
   `rivet.start` (argv), `rivet.step`, `rivet.unit` (one per unit), `rivet.result`, `rivet.warning`,
   `rivet.crashed`, `rivet.cdc.max_events`, `rivet.refused`, ..., are written at DEBUG, under the
   same rules.

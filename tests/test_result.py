@@ -33,17 +33,17 @@ def test_the_exit_table_ends_at_255() -> None:
 def test_a_line_with_retryable_but_no_class_is_read_by_the_contract_and_refused() -> None:
     """error_from_line mutants 5 / 6: `retryable` alone sends the line down the contract path (no class: malformed),
     never to the `exit_class` derivation that would build a retryable object from it."""
-    assert error_from_line({"retryable": True, "exit_class": 2, "error": "x"}) == (None, False)
+    assert error_from_line({"retryable": True, "exit_class": 2, "error": "x"}) is None
 
 
 @pytest.mark.parametrize("line", [{"exit_class": 1, "error": 5}, {"exit_class": 1, "code": 5}], ids=["error", "code"])
 def test_a_derived_line_whose_text_is_not_a_string_is_malformed(line: dict) -> None:
     """error_from_line mutants 22-24: the `error` text is type-checked like the code."""
-    assert error_from_line(line) == (None, True)
+    assert error_from_line(line) is None
 
 
 @pytest.mark.parametrize("known", [7, 0, True, 2.0, "2"])
 def test_a_derived_line_whose_exit_class_is_not_a_contract_exit_is_malformed(known: object) -> None:
     """error_from_line mutant 26 (`or` -> `and`): an int outside the table reached CLASS_BY_EXIT[7], a KeyError."""
-    assert error_from_line({"exit_class": known}) == (None, True)
-    assert error_from_line({"exit_class": 2})[0].retryable is True
+    assert error_from_line({"exit_class": known}) is None
+    assert error_from_line({"exit_class": 2}).retryable is True

@@ -18,6 +18,7 @@ from airflow_provider_rivet.result import (
     UnitResult,
     error_from_exit,
     error_from_line,
+    error_text,
 )
 
 
@@ -120,26 +121,26 @@ def test_no_built_object_is_retryable_unless_it_is_crashed() -> None:
 )
 def test_a_contract_line_is_read_and_nothing_is_derived(name: str) -> None:
     line = fixture(name)
-    error, derived = error_from_line(line)
-    assert not derived
+    error = error_from_line(line)
     assert (error.class_, error.retryable, error.exit_code) == (line["class"], line["retryable"], line["exit_code"])
     assert error.code == line.get("code")
     assert error.message == line["error"]
 
 
-def test_todays_line_is_read_by_its_integer_exit_class_and_says_so() -> None:
-    error, derived = error_from_line({"error": "connection reset", "exit_class": 2})
-    assert derived and error.retryable and error.class_ == "retryable" and error.code is None
-    error, derived = error_from_line({"error": "x", "exit_class": 5, "code": "RIVET_SOURCE_CDC_LOG_GAP"})
-    assert derived and not error.retryable and error.class_ == "refusal" and error.code == "RIVET_SOURCE_CDC_LOG_GAP"
+def test_todays_line_is_read_by_its_integer_exit_class() -> None:
+    """rivet 0.32.2's own shape is the normal path (see #100): read by its exit class, with its text, and no degradation."""
+    error = error_from_line({"error": "connection reset", "exit_class": 2})
+    assert error.retryable and error.class_ == "retryable" and error.code is None and error.message == "connection reset"
+    error = error_from_line({"error": "x", "exit_class": 5, "code": "RIVET_SOURCE_CDC_LOG_GAP"})
+    assert not error.retryable and error.class_ == "refusal" and error.code == "RIVET_SOURCE_CDC_LOG_GAP"
 
 
-def test_the_exception_text_has_code_class_action_and_unit_and_no_message() -> None:
+def test_the_exception_text_has_code_class_action_unit_and_the_bounded_text() -> None:
     error = ErrorObject.from_contract(fixture("error_object.json"))
     text = error.describe("orders_cdc")
     assert text.startswith("[RIVET_SOURCE_CDC_LOG_GAP] refusal: restore the missing log")
-    assert text.endswith("(orders_cdc)")
-    assert error.message not in text
+    assert f"(orders_cdc): {error_text(error.message)}" in text
+    assert text.endswith(error_text(error.message))
 
 
 def test_every_degradation_is_documented_in_the_readme_and_every_recorded_key_is_a_degradation() -> None:
@@ -151,4 +152,5 @@ def test_every_degradation_is_documented_in_the_readme_and_every_recorded_key_is
     recorded = set(re.findall(r'degraded\.add\("([a-z_]+)"\)', source)) | set(
         re.findall(r'\*payload\["degraded"\], "([a-z_]+)"', source)
     )
-    assert len(recorded) >= 8 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)
+    # 8 -> 7 on 2026-10-28 (see #100): `error_object` is gone, rivet 0.32.2's own line is the normal path, not a degradation.
+    assert len(recorded) >= 7 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)

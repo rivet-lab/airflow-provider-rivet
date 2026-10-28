@@ -95,7 +95,6 @@ rivet apply users → REFUSED [RIVET_PLAN_ARTIFACT_STALE], final
   export   users: failed [RIVET_PLAN_ARTIFACT_STALE] refusal
   stderr   <state_dir>/logs/<dag_id>/<task_id>-<hash>/<run_id>__try2.apply.stderr.log
   note     SQLite state is single-host — see https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide
-  note     rivet's failure line has no class or action: the class is read from its exit class
 ```
 
 A task of one step that took the task's time (a load, a compact, a run) has no step line: the
@@ -131,7 +130,14 @@ A task that waited for the export's lock says so when it takes it (``took the lo
   table was held by another rivet: `RIVET_STATE_LOCK_TIMEOUT`, `RIVET_STATE_RUN_IN_PROGRESS`,
   `RIVET_LOAD_TABLE_BUSY`; retried). A final failure says `final` and is
   an ERROR line; one Airflow retries says `retryable, Airflow retries it (try N of M)` and is a
-  WARNING line. The registry `action` follows when rivet printed one.
+  WARNING line. The registry `action` follows when rivet printed one, then rivet's own error text
+  after a colon: `FAILED [RIVET_LOAD_WAREHOUSE_REJECTED] generic, final (run 65ed): table 'orders':
+  BigQuery job rivet_orders_0 failed: Not found: Table p:d.orders__changes was not found in
+  location US`. A failed table's or export's line carries its own text when it differs from the
+  headline's. The text is the one rivet printed, on one line: Airflow's secrets masker reads it
+  first, then its lines (cut at `\n` only) are joined with ` | `, control characters are shown as
+  `\u{1b}`-style escapes, and it is cut at 300 characters (`…`). The same text ends the exception
+  message (`[code] class: action (export): text`); XCom still carries none of it.
 - `note` lines are INFO, except what you must act on: a `notifications:` block rivet will send
   from, a crash-retry ledger that cannot be used (WARNING).
 - No INFO or WARNING line of a successful task holds `error` or `exception`, the words Airflow

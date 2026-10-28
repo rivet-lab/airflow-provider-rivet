@@ -24,7 +24,9 @@ How rivet's exit and error object become an Airflow success, retry or stop.
 | code `RIVET_INIT_CDC_NAME_TAKEN` (rivet >= 0.32.2, exit 5; `rivet init` only, which no operator runs) | `refusal` | `AirflowFailException`: no retry |
 | the export's lock stayed held for `lock_wait` seconds ([Overlap](limits.md#overlap)) | `busy: RIVET_AIRFLOW_EXPORT_BUSY` in XCom; rivet is not started | `AirflowException`: retried under `retries` |
 
-The exception text is `[code] class: action (export)`. It never contains rivet's error message.
+The exception text is `[code] class: action (export): text`, where `text` is rivet's own error text, redacted by
+Airflow's secrets masker, on one line and cut at 300 characters ([Reading the task log](operators.md#reading-the-task-log));
+the XCom `error` object never carries it.
 
 **The crashed budget across tries.** Airflow clears a task instance's XCom at the start of every
 try, so the count cannot live there. On a local worker with SQLite state the operator keeps a small ledger file,

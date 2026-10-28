@@ -14,7 +14,6 @@ _VERSION_RE = re.compile(r"rivet\s+(\d+)\.(\d+)\.(\d+)")
 # Every `degraded` key a task can record, by how it is detected: a member the binary's output lacks, or the worker. What
 # each one means and does: docs/capabilities.md.
 DEGRADATIONS = {
-    "error_object": "output",
     "per_unit_error": "output",
     "stop_reason": "output",
     "stderr_temp": "worker",

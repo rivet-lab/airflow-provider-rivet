@@ -44,7 +44,7 @@ from .invocation import (
     worker_environment,
 )
 from .preflight import PreflightRefusal, read_config, resolve_binary
-from .result import BUSY, REFUSED, STOPPED, unstarted
+from .result import BUSY, REFUSED, STOPPED, error_text, unstarted
 from .tasklog import TaskLog
 
 XCOM_KEY = "return_value"
@@ -339,6 +339,17 @@ class RivetBaseOperator(_RivetTask):
         assert outcome.error is not None
         failed = [u.export for u in outcome.units if u.status == "failed"]
         text = outcome.error.describe(failed[0] if len(failed) == 1 else self.export)
+        self._emit(  # rivet's reason, safe to print (`error_text`): the task log's failure lines read it from here
+            {
+                "event": "rivet.error",
+                "text": error_text(outcome.error.message),
+                "units": [
+                    {"export": u.export, "table": u.table, "text": error_text(u.error.message)}
+                    for u in outcome.units
+                    if u.error is not None  # a unit has an error exactly when it failed (`Reading`)
+                ],
+            }
+        )
         if decision == "retry_crashed":
             ledger = None
             # The ledger is a file on this worker's disk: it counts every crash only while every try runs here, which

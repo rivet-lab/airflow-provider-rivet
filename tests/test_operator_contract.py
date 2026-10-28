@@ -126,7 +126,7 @@ def test_the_crashed_record_says_whether_airflow_has_a_try_left(rig: Rig) -> Non
         "airflow_tries_left": True,
         "ledger_problem": None,
     }
-    assert str(exc).startswith("crashed") and str(exc).endswith("(orders)"), str(exc)
+    assert str(exc) == "crashed (orders): rivet was killed by signal 9"
 
 
 def test_a_crash_on_a_pod_keeps_no_ledger_in_the_state_directory(rig: Rig) -> None:
