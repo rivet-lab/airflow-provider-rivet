@@ -40,6 +40,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   first `compact` of an export finds the buffer the earlier runs left to merge. To keep a change log
   (no compaction), write `layout: log_view` in `load:`.
 
+### Changed (operator input)
+
+- A load, compact or apply task given `-p` / `--param` in `extra_args` is refused before rivet starts
+  (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`, not retried): rivet 0.32.2 takes `-p` on `run`, `plan` and `check` only and ends the
+  others `unexpected argument '-p' found` after the lock and the copy of the config. Put the value in `env=`.
+
 ## 0.3.0 (2026-10-24)
 
 Against rivet 0.32.2 (the minimum) and the contract of ADR-0039 at rivet 0.32.2.

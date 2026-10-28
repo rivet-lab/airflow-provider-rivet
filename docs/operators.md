@@ -23,7 +23,7 @@ values are never stored as rendered fields. No operator builds argv: one module,
 | `cloud_credentials` | `()` | no | `"gcp"`, `"aws"`, `"azure"`: pass the worker's credential variables of that kind |
 | `connections` | `()` | no | storage and warehouse Connection ids (see ["Storage and warehouse connections"](connections-and-secrets.md#storage-and-warehouse-connections)) |
 | `deployment` | `"auto"` | no | `local` (a host that keeps its disk) or `pod` (ephemeral); `auto` reads `KUBERNETES_SERVICE_HOST` |
-| `extra_args` | `None` | yes | arguments appended to rivet's argv, e.g. `["-p", "day=2026-10-20"]` |
+| `extra_args` | `None` | yes | arguments appended to rivet's argv, e.g. `["--reconcile"]` on a run task; `-p` / `--param` (`["-p", "day=2026-10-20"]`) only on the run, CDC run and plan tasks, because only `rivet run`, `plan` and `check` take it: the load, compact and apply tasks refuse it before rivet starts (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`), and a `${name}` in their config is read from `env` |
 | `lock_wait` | `600` | no | seconds a task waits for another task holding its export's lock before it ends retryable (`RIVET_AIRFLOW_EXPORT_BUSY`) |
 | `rivet_notifications` | `False` | no | `True` keeps rivet's own `notifications:` on: `--no-notify` is not passed and nothing is warned (see [Slack](slack.md)) |
 | `crashed_retries` | `1` | no | retries of a crash (a signal, exit 129-255) on their own budget, beside Airflow's `retries` (see [Retries](retries.md)) |
