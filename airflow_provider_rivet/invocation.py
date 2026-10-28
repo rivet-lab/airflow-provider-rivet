@@ -461,23 +461,35 @@ def _tighten(path: Path) -> None:
 
 
 def _prune_stale(work: Path, now: float | None = None) -> None:
-    """Remove expired plan artifacts and crashed ledgers untouched for STALE_AFTER, and the run folders left empty (D33)."""
+    """Remove expired plan artifacts and crashed ledgers untouched for STALE_AFTER, and the run folders left empty (D33).
+
+    A run folder is removed only when it was itself untouched for STALE_AFTER before this pass: a task creates the
+    folder of its run and plans into it a moment later (`_apply` touches it on every use), and a sibling's close must
+    not take it in between."""
     cutoff = (time.time() if now is None else now) - STALE_AFTER
     for kind in (PLANS, CRASHED):
         try:
             files = [p for p in (work / kind).rglob("*") if p.is_file() and p.stat().st_mtime < cutoff]
         except OSError:
             continue
+        idle = _idle_folders(work / kind, cutoff) if kind == PLANS else []
         for path in files:
             if _unexpired(path) if kind == PLANS else not isinstance(_read_json(path), list):
                 continue  # a replayable plan, or a ledger that is not one: left until a person deletes it
             path.unlink(missing_ok=True)  # pragma: no mutate - just listed; gone only if a parallel task removed it
-        if kind == PLANS:
-            for folder in (work / kind).iterdir() if (work / kind).is_dir() else ():
-                try:
-                    folder.rmdir()
-                except OSError:
-                    pass
+        for folder in idle:
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+
+
+def _idle_folders(base: Path, cutoff: float) -> list[Path]:
+    """The folders directly below `base` that nothing has been added to or removed from since `cutoff`."""
+    try:
+        return [p for p in base.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff]
+    except OSError:
+        return []
 
 
 def _prune_logs(folder: Path, keep: int) -> None:
@@ -874,7 +886,9 @@ def _apply(s: _Session) -> Outcome:
     # success plans again instead of replaying a snapshot the successful apply already moved the cursor past (D04).
     series = () if s.req.series is None else (f"s{int(s.req.series)}",)
     name = path_name(export, s.req.label[2], *series, _plan_inputs(s, export))
-    artifact = _private_dir(s.work, PLANS, s.run) / f"{name}.json"
+    folder = _private_dir(s.work, PLANS, s.run)
+    os.utime(folder)  # in use: `_prune_stale` leaves a folder touched within STALE_AFTER, empty or not
+    artifact = folder / f"{name}.json"
     _refuse_foreign_artifact(artifact, export, cfg)
     if not _unexpired(artifact):
         plan_argv = [s.pf.binary, "plan", "--config", cfg, "--export", export, "--format", "json"]

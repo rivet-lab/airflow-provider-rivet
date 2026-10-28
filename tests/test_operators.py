@@ -1226,7 +1226,7 @@ def test_old_plan_artifacts_and_crashed_ledgers_are_pruned(rig: Rig) -> None:
     live_plan.write_text(json.dumps({"export_name": "orders", "expires_at": "2999-01-01T00:00:00+00:00"}))
     old_ledger.write_text("[[1, 2]]")
     new_ledger.write_text("[[1, 2]]")
-    for path in (old_plan, live_plan, old_ledger):
+    for path in (old_plan, live_plan, old_ledger, old_plan.parent):
         os.utime(path, (day_ago, day_ago))
     rig.run(rig.operator(RivetRunOperator, export="orders"))
     assert not old_plan.exists() and not old_plan.parent.exists(), "an expired artifact of an old run is removed"

@@ -74,7 +74,8 @@ What reaches the rivet process, and how Airflow Connections become what rivet re
   everything. Only the task's own folder is looked at; a file of an older layout is never
   removed (see "Upgrading a state directory" in [State](state.md#local-worker-setup-guide)). Under `airflow/<dag_id>/`, a sealed plan artifact
   that has expired and was last written over 24 h ago is removed (with the `plans/<run_id>/`
-  folder it leaves empty), and so is a crashed ledger untouched for 24 h (a crash of that series
+  folder it leaves empty, when the folder itself was untouched for 24 h before the pass: the folder of a run in
+  progress, even an empty one, is never removed by a sibling task's cleanup), and so is a crashed ledger untouched for 24 h (a crash of that series
   more than 24 h after its last one starts a fresh budget). A ledger that is not the ledger's JSON
   is left for a person to delete.
 - `stream_stderr=True` copies stderr into the task log when each step ends. It is the one way

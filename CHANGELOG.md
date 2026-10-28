@@ -30,6 +30,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   next task claims the path (tables and progress are not touched). Measured: a record written by the previous release
   with the link on `rev-a`, then the link on `rev-b` and the new version, is refused; after deleting the file the run
   succeeds and runs `rev-b`'s SQL.
+- **Behaviour change.** A task ending no longer removes the plan folder of a run that is in progress. Every task's
+  cleanup removed any empty `plans/<run_id>/` folder, including the one another task of the same DAG run had just
+  created for its `rivet plan --output`, so that apply failed with "output unwritable" and was retried or lost, by
+  timing. A run folder is now removed only when nothing in it, and the folder itself, changed in the 24 h before the
+  cleanup (the apply touches its folder on every use). **Upgrade:** nothing is stored and nothing to migrate; an empty
+  folder an earlier version left stays for up to 24 h longer, then the next task's cleanup removes it.
 - **Behaviour change.** Messages that named the wrong thing now name the right one. (1) The Slack title takes its
   `final` / `retryable` word and code from the error that decided the task, not from the first failed unit: a
   final refusal was titled `crashed (retryable)` when an earlier unit had crashed. (2) `run`, `cdc_run` and `apply`
