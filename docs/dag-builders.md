@@ -177,7 +177,8 @@ written, a stream with `cdc.backfill` is a base and a buffer, anything else a ch
 PostgreSQL schemas: each stream is then a group named after its export (`dbo_orders.run`, `dbo_orders.load.dbo_orders`: a load takes the warehouse name, the schema's dot folded to `_`),
 the streams running side by side. A batch DAG takes init's suggested mode per table (`full` for a small one), or the one `init_args` names
 (`--mode incremental`). One name is one config and one state database: a source in both a CDC and a batch DAG needs
-two names, or a `config_dir` and `state_root` per mode. Oracle CDC signs in as a common user (`c##…`) that LogMiner
+two names, or a `config_dir` and `state_root` per mode, and a batch DAG over a config that has a `mode: cdc` export is
+refused (below). Oracle CDC signs in as a common user (`c##…`) that LogMiner
 lets mine, with `--schema` naming the tables' owner. `init_args` are one list for every name of a call: sources that need other flags
 (`--tls require` for SQL Server, `--schema`) go in a call of their own. So
 unpausing runs `init` at once, and the stream starts at the next scheduled run (or trigger one).
@@ -185,6 +186,15 @@ unpausing runs `init` at once, and the stream starts at the next scheduled run (
 - The config folder must be one the scheduler (Airflow 3: the dag-processor) and every worker read, as the DAGs
   folder. If `init` keeps running, the file it wrote is not where the scheduler reads.
 - Edit the config like any other: the DAG follows it at the next parse. Delete it to have `init` write it again.
+- A config the builder cannot build a DAG from (not YAML, a wrong shape, no `mode: cdc` export for a CDC DAG, a
+  `mode: cdc` export under a batch DAG, no export at all) never ends the DAG file: that source's DAG keeps its id and
+  has one task, `config`, which fails without retry naming the cause (`RIVET_AIRFLOW_CONFIG_UNREADABLE` with the line
+  and column of a YAML error, `..._NO_CDC_EXPORT`, `..._HAS_CDC_EXPORT`, `..._NO_EXPORT`, `..._UNBUILDABLE`) and the
+  remedy; the other sources of the call are built as they are. Fix the config (or delete it for `init`) and the next
+  parse builds the real DAG. A wrong argument of the call itself (a bad name, `operator_kwargs`, a DAG setting) is still
+  an import error, as it is the same for every source.
+- An export whose id in the `apply` group is the id of an ordering point of a plan (`after_<heavy export>`,
+  `wave_<n>_done`) keeps its id; the ordering point gets `_barrier` appended.
 - A config moved from cron (`docs/cron-to-airflow-cdc.md`) works as it is: the source goes to the variable its
   `url_env` names.
 - `operator_kwargs` go to every task, `init` included; `env_from_connections`, `config` and `state_dir` are the

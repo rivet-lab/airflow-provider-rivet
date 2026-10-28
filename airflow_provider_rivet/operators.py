@@ -598,6 +598,24 @@ class RivetWaveBarrier(BaseOperator):
         return None
 
 
+class RivetConfigRefused(BaseOperator):
+    """The one task of a source's DAG whose config could not be built into rivet tasks: it fails, naming the refusal, so
+    the DAG is there to be seen and its run is red, and the other sources of the DAG file are built as they are."""
+
+    ui_color = "#fce8e6"
+    template_fields: Sequence[str] = ()
+
+    def __init__(self, *, refusal: str, code: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.refusal = refusal
+        self.code = code
+
+    def execute(self, context: Any) -> None:
+        """Publish the refusal as every refused task does, then fail without retry."""
+        context["ti"].xcom_push(key=XCOM_KEY, value=unstarted("config", REFUSED, self.code))
+        raise AirflowFailException(self.refusal)
+
+
 class RivetRunWatcher(BaseOperator):
     """Fails when any task of the run failed, so the DAG run is failed whichever tasks are its leaves."""
 

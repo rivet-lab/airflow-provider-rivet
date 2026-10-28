@@ -19,6 +19,7 @@ from .operators import (
     RivetBaseOperator,
     RivetCdcRunOperator,
     RivetCompactOperator,
+    RivetConfigRefused,
     RivetInitOperator,
     RivetLoadOperator,
     RivetPlanOperator,
@@ -28,7 +29,7 @@ from .operators import (
     _RivetTask,
     config_present,
 )
-from .preflight import read_config
+from .preflight import ConfigRefusal, PreflightRefusal, read_config
 
 ORDER_ONLY = "all_done"
 WATCHER_ID = "watcher"
@@ -129,6 +130,15 @@ def _dag(dag_id: str, tags: Sequence[str], dag_kwargs: Mapping[str, Any]) -> DAG
     return DAG(dag_id=dag_id, **settings)
 
 
+def _barrier_id(wanted: str, taken: set[str]) -> str:
+    """An ordering point's id in the `apply` group, which an export of that clean name already has: `after_sales` for an
+    export named so would be a duplicate task id and the DAG file would not import. The first free `<id>_barrier` instead."""
+    if wanted in taken:
+        return _barrier_id(f"{wanted}_barrier", taken)
+    taken.add(wanted)
+    return wanted
+
+
 def build_batch_dag(
     dag_id: str,
     *,
@@ -162,6 +172,7 @@ def build_batch_dag(
         raise ValueError("compact_exports needs load=True: a compaction merges what the load buffered")
     common = _common(config, state_dir, operator_kwargs)
     extract_cls = RivetApplyOperator if extract == "apply" else RivetRunOperator
+    taken = {task_name(n) for n in names}  # the ids of the group the barriers are in: no barrier takes an export's
 
     with _dag(dag_id, ("rivet", "batch"), dag_kwargs) as dag:
         # each gate is a list of at most one task, so no stand-in for "no gate yet" can become an upstream
@@ -179,10 +190,14 @@ def build_batch_dag(
                     apply_tasks[name] = task
                     [*plan, *wave_done, *order_done] >> task
                     if name in heavy and position < len(heavy + cheap) - 1:
-                        order_done = [RivetWaveBarrier(task_id=f"after_{task_name(name)}", trigger_rule=ORDER_ONLY)]
+                        order_done = [
+                            RivetWaveBarrier(task_id=_barrier_id(f"after_{task_name(name)}", taken), trigger_rule=ORDER_ONLY)
+                        ]
                         task >> order_done
                 if index < len(waves) - 1:
-                    wave_done = [RivetWaveBarrier(task_id=f"wave_{wave['wave']}_done", trigger_rule=ORDER_ONLY)]
+                    wave_done = [
+                        RivetWaveBarrier(task_id=_barrier_id(f"wave_{wave['wave']}_done", taken), trigger_rule=ORDER_ONLY)
+                    ]
                     [apply_tasks[name] for name in wave["exports"]] >> wave_done[0]
         load_tasks: dict[str, Any] = {}
         if load:
@@ -309,37 +324,85 @@ def build_source_dags(
         if not config_present(config):
             dags[dag_id] = _init_dag(dag_id, mode, [a.replace("{name}", name) for a in init_args], common)
             continue
-        doc = read_config(str(config))
-        url_env = (doc.get("source") or {}).get("url_env")
-        if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
-            kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
-        exports = entries_of(doc)
-        if mode == "cdc":
-            # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
-            streams = [
-                (
-                    name_of(e),
-                    [warehouse_table(t) for t in tables_of(e)],
-                    [warehouse_table(t) for t in tables_of(e) if compacts(doc, e, t)],  # the layout rivet resolves
-                )
-                for e in exports
-                if mode_of(e) == "cdc"
-            ]
-            if not streams:
-                raise ValueError(f"{config}: no export with `mode: cdc`")
-            task_common = _common(common["config"], common["state_dir"], kwargs)
-            dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
-            dags[dag_id] = _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
-        else:
-            batch = [e for e in exports if mode_of(e) != "cdc"]
-            dags[dag_id] = build_batch_dag(
-                dag_id,
-                exports=[name_of(e) for e in batch],
-                load=bool(doc.get("load")),
-                compact_exports=[name_of(e) for e in batch if compacts(doc, e)],  # a base_buffer export merges what it loads
-                **common,
-            )
+        try:
+            dags[dag_id] = _config_dag(dag_id, mode, config, common, kwargs, source, state)
+        except Exception as exc:  # one source's config must not take the DAG file's other sources with it
+            dags[dag_id] = _refused_dag(dag_id, mode, config, exc, common)
     return dags
+
+
+def _config_dag(
+    dag_id: str,
+    mode: str,
+    config: Path,
+    common: Mapping[str, Any],
+    kwargs: dict[str, Any],
+    source: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> DAG:
+    """The DAG built from a source's config."""
+    doc = read_config(str(config))
+    url_env = (doc.get("source") or {}).get("url_env")
+    if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
+        kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
+    exports = entries_of(doc)
+    cdc = [e for e in exports if mode_of(e) == "cdc"]
+    if mode == "cdc":
+        # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
+        if not cdc:
+            raise ConfigRefusal(
+                "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT",
+                f"{config} has no export with `mode: cdc`, so there is no stream for a CDC DAG; build this source with "
+                f"mode='batch', or delete the file to have `init` write it again with the CDC mode",
+            )
+        streams = [
+            (
+                name_of(e),
+                [warehouse_table(t) for t in tables_of(e)],
+                [warehouse_table(t) for t in tables_of(e) if compacts(doc, e, t)],  # the layout rivet resolves
+            )
+            for e in cdc
+        ]
+        task_common = _common(common["config"], common["state_dir"], kwargs)
+        dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
+        return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
+    if cdc:
+        raise ConfigRefusal(
+            "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+            f"{config} has `mode: cdc` exports ({', '.join(name_of(e) for e in cdc)}): a batch DAG over it would run on "
+            "the config and the state database of the CDC DAG, and load the same tables beside it. A source in both a "
+            "CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG "
+            "from its own",
+        )
+    if not exports:
+        raise ConfigRefusal(
+            "RIVET_AIRFLOW_CONFIG_NO_EXPORT",
+            f"{config} has no export; delete the file to have `init` write it again, or add the exports",
+        )
+    return build_batch_dag(
+        dag_id,
+        exports=[name_of(e) for e in exports],
+        load=bool(doc.get("load")),
+        compact_exports=[name_of(e) for e in exports if compacts(doc, e)],  # a base_buffer export merges what it loads
+        **common,
+    )
+
+
+def _refused_dag(dag_id: str, mode: str, config: Path, exc: Exception, common: Mapping[str, Any]) -> DAG:
+    """The DAG of a source whose config could not be built: its one task fails naming the refusal. A refusal is shown as
+    coded; any other exception (a config shape nobody foresaw) as what it is, so no config can end the DAG file."""
+    refusal = (
+        exc
+        if isinstance(exc, PreflightRefusal)
+        else PreflightRefusal(
+            "RIVET_AIRFLOW_CONFIG_UNBUILDABLE", f"cannot build a DAG from {config}: {type(exc).__name__}: {exc}"
+        )
+    )
+    settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
+    with _dag(dag_id, ("rivet", mode, "refused"), settings) as dag:
+        # Airflow 3 stores retries=None as 0 and Airflow 2.10 keeps None: its CI job asserts 0
+        RivetConfigRefused(task_id="config", refusal=str(refusal), code=refusal.code, retries=0)  # pragma: no mutate
+    return dag
 
 
 def _init_dag(dag_id: str, mode: str, init_args: list[str], common: Mapping[str, Any]) -> DAG:
