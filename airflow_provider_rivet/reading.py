@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _yaml
+from .exports import entry_named, load_mode
 from .result import DIGEST_COUNTS, DIGEST_KEYS, STATUSES, ErrorObject, UnitResult, error_from_exit, error_from_line
 
 # The `load:` keys that hold where a warehouse's tables are created, outermost first (rivet's src/config/load.rs).
@@ -54,10 +55,8 @@ def config_target(config: Mapping[str, Any], cmd: str, export: str | None, table
     base = ".".join([*(str(_yaml.text_of(load[k])) for k in keys if load.get(k) not in (None, "")), table])
     if cmd == "compact":
         return base, f"{base}__changes"
-    entry = next(
-        (e for e in config.get("exports") or [] if isinstance(e, Mapping) and _yaml.text_of(e.get("name")) == export), {}
-    )
-    return (base if _yaml.text_of(entry.get("mode")) == "full" else f"{base}__changes"), None
+    entry = entry_named(config, export)
+    return (base if entry and load_mode(config, entry) == "full" else f"{base}__changes"), None
 
 
 class Reading:

@@ -37,6 +37,7 @@ ENV_ALLOWLIST = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
 )  # fmt: skip
+COPY_NAME_BYTES = 200  # the longest name of a config's copy (`copy_name`)
 CLOUD_ENV = {
     "gcp": ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"),
     "aws": ("AWS_*",),
@@ -506,9 +507,15 @@ def _tail(path: Path) -> str:
 
 
 def copy_name(source: Path) -> str:
-    """The name of a config's copy: its own stem plus a hash of its absolute path, so two sources never share one."""
+    """The name of a config's copy: its own stem plus a hash of its absolute path, so two sources never share one.
+    A long stem is cut to keep the name within COPY_NAME_BYTES (the hash still tells two sources apart), and an
+    extension of more than 16 bytes reads as `.yaml`: a file system refuses a name of about 255 bytes, and the temp
+    file `_write_atomic` makes first adds ten."""
     digest = hashlib.sha256(str(source).encode()).hexdigest()[:8]
-    return f"{source.stem}.{digest}{source.suffix or '.yaml'}"
+    extension = source.suffix if len(source.suffix.encode()) <= 16 else ""
+    tail = f".{digest}{extension or '.yaml'}"
+    stem = source.stem.encode()[: COPY_NAME_BYTES - len(tail.encode())].decode(errors="ignore")
+    return stem + tail
 
 
 def _copy_query_files(config: Mapping[str, Any], source: Path, folder: Path, touched: str | None) -> None:

@@ -140,7 +140,7 @@ For each name `<name>`:
 | | |
 |---|---|
 | DAG | `rivet_<name>_cdc` / `rivet_<name>_batch`, paused at creation (`is_paused_upon_creation`) |
-| source | the Airflow Connection `source_connection` (default `{name}`; `rivet_{name}` for the layout of [the cron recipe](cron-to-airflow-cdc.md)); without one, the data source `[<name>]` of `odbc_ini` (default `/etc/odbc.ini`; `None` turns it off). The task log says when odbc.ini was used. odbc.ini: MySQL, PostgreSQL, SQL Server (`Server = host,port`, a SQL login) and Oracle (`ServerName = host:port/service`) drivers; MongoDB only through a Connection |
+| source | the Airflow Connection `source_connection` (default `{name}`; `rivet_{name}` for the layout of [the cron recipe](cron-to-airflow-cdc.md)); without one, the data source `[<name>]` of `odbc_ini` (default `/etc/odbc.ini`; `None` turns it off). The task log says when odbc.ini was used, and the password of the data source is masked in it. The file is read as unixODBC reads it (the name in any case, the first section and the first value win, `;` and `#` comments); a file that is missing or unreadable on the worker is refused with that cause, not as a missing data source. odbc.ini: MySQL, PostgreSQL, SQL Server (`Server = host,port`, a SQL login) and Oracle (`ServerName = host:port/service`) drivers; MongoDB only through a Connection |
 | config | `<config_dir>/<name>.yaml` |
 | state | the database `rivet_state_<name>` on the server of `state_connection`, and the folder `<state_root>/<name>` |
 
@@ -162,8 +162,13 @@ since the DAG has no `init` task then). The bucket and the
 warehouse dataset are not created: they must exist.
 
 **Once the config exists**, the next parse builds the same DAG from it: for `cdc`, each `mode: cdc` export of the
-config as a stream (`run`, then a load per table when the config has a `load:` block and a compaction when its
-`layout` is `base_buffer`); for `batch`, every export through `build_batch_dag`, with a load when it has `load:`.
+config as a stream (`run`, then a load per table when the config has a `load:` block and a compaction of each table
+whose layout rivet resolves to a base and a buffer); for `batch`, every export through `build_batch_dag`, with a load
+when it has `load:` and a compaction of each export whose layout rivet resolves the same way. The layout is read as
+rivet resolves it (ADR-0034 D7), from the config alone: BigQuery (the one warehouse that compacts), a load that
+accumulates (`incremental`, `cdc`; never `full`, and an export without `mode:` is `full`), and `layout: base_buffer`
+written at `load:`, over it at the export's `load:`, over it at the captured table's `load.tables.<t>`; with no layout
+written, a stream with `cdc.backfill` is a base and a buffer, anything else a change log with no compaction.
 `rivet init --mode cdc` writes one stream over all tables on MySQL and PostgreSQL's `public`, which keeps the
 `build_cdc_dag` shape (`run`, `load.T`, `compact.T`), and one stream per table on SQL Server, Oracle, MongoDB and other
 PostgreSQL schemas: each stream is then a group named after its export (`dbo_orders.run`, `dbo_orders.load.dbo_orders`: a load takes the warehouse name, the schema's dot folded to `_`),

@@ -23,7 +23,11 @@ What reaches the rivet process, and how Airflow Connections become what rivet re
   2. `env={NAME: value}`. It is not templated and not stored in the metadata database, but it
      is whatever your DAG file computes: do not write a secret literal there.
   3. `env_from_connections={ENV_NAME: conn_id}`, which builds a URL from an Airflow Connection's
-     fields inside `execute`, credentials and the database name percent-encoded. The scheme
+     fields inside `execute`, credentials percent-encoded, and so the database name for PostgreSQL, MySQL and
+     MongoDB. For SQL Server and Oracle the database is written as it is, because rivet reads that URL path without
+     decoding it; a name holding `@`, `?` or `#` (and `/` on Oracle) is refused
+     (`RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`) as rivet would cut it there. An IPv6 host of a SQL Server connection with no
+     port gets `:1433`, which rivet needs to split host from port. The scheme
      comes from `{ENV_NAME: (conn_id, "postgresql")}`, else the connection extra `rivet_scheme`,
      else the connection type (`postgres`, `mysql`, `mssql`, `mongo`, `oracle`); a type that
      names no rivet scheme, such as `generic`, is refused before rivet starts

@@ -5,7 +5,42 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
-### Changed
+### Fixed
+
+- **Behaviour change.** A SQL Server or Oracle `connection_url` percent-encoded the database, but rivet reads that URL
+  path as written, so `my db` reached rivet as `my%20db` and the load failed with a login error naming another
+  database. The database is now written as is for those two schemes, and PostgreSQL, MySQL and MongoDB stay encoded. A
+  name holding `@`, `?` or `#` (and `/` on Oracle) is refused with `RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`: rename the
+  database. A SQL Server connection whose host is an IPv6 literal with no port gets `:1433` (rivet read `[::1]` as port
+  `1]`). Measured live against SQL Server and by rivet's URL parsers.
+- odbc.ini is read as unixODBC reads it (`isql -v` measured): a data source name matches in any case, the first section
+  of a name and the first value of a key win, an indented `[name` is a header once a section is open, `;` and `#`
+  start comments, and a file whose first line of substance is no header is refused naming the file. A stray latin-1
+  byte in another data source no longer refuses the file; a byte in the chosen one is refused naming the data source.
+  A port above 65535 or written in non-ASCII digits is refused; an IPv6 `Server` / `ServerName` is read.
+- A missing or unreadable odbc.ini was reported as "no data source": the refusal now says the file does not exist on
+  this worker or cannot be read, and names the remedy (put a readable odbc.ini there, or correct the id).
+- The password of a data source read from odbc.ini is masked in the task log.
+- The key files of a GCP or Snowflake Connection were named after the Connection id (`gcp-<id>.json`), so an id with
+  `/` or `..`, or one of 250 characters, wrote outside the private folder or failed. The files are `gcp.json` and
+  `snowflake.p8` (one Connection per kind, so no name is shared).
+- The copy of a config with a long file name (about 250 bytes or more) failed with `File name too long`; the stem is
+  now cut by bytes, and the hash keeps two long names apart. Names under the limit are unchanged.
+
+### Changed (behaviour change)
+
+- `build_source_dags` reads each export's layout as rivet resolves it, once, for both modes. A **batch** DAG over a
+  BigQuery config with `layout: base_buffer` (what `rivet init --mode incremental` writes) now has `compact.<export>`
+  after `load.<export>`; before, it had none, so `<table>` stayed the first pass's snapshot while `<table>__changes`
+  grew with every run. A **CDC** stream with `cdc.backfill` and no `layout:` on BigQuery, and a table whose own
+  `load.tables.<t>.layout` differs from the section's, now compact (or not) as rivet resolves them. An export without
+  `mode:` is `full` (rivet's default) in every reader: its task-log target is `<table>`, not `<table>__changes`, and
+  a numeric export name (`name: 2024`) is the text `2024` in task ids instead of a `TypeError` that took the DAG file
+  down. **Upgrade:** the DAGs change shape at the next parse (new `compact.*` tasks, paused DAGs stay paused); the
+  first `compact` of an export finds the buffer the earlier runs left to merge. To keep a change log
+  (no compaction), write `layout: log_view` in `load:`.
+
+### Changed (operator input)
 
 - A load, compact or apply task given `-p` / `--param` in `extra_args` is refused before rivet starts
   (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`, not retried): rivet 0.32.2 takes `-p` on `run`, `plan` and `check` only and ends the

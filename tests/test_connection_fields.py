@@ -293,3 +293,51 @@ def test_the_host_is_bracketed_only_when_both_brackets_hold_an_ipv6_literal() ->
     assert connection_url(url_conn(host="[::1")) == "postgresql://u:p@[::1/d", "a host that is no IPv6 literal is kept"
     assert connection_url(url_conn(host="fe80::1%a/b")) == "postgresql://u:p@[fe80::1%25a%2Fb]/d"
     assert connection_url(url_conn(host="fe80::1%25x")) == "postgresql://u:p@[fe80::1%2525x]/d", "unbracketed: `25` is the zone"
+
+
+def test_a_sql_server_or_oracle_database_is_written_as_rivet_reads_it_and_the_others_stay_encoded() -> None:
+    """rivet's `parse_mssql_url` and `parse_oracle_url` take the path as written; PostgreSQL, MySQL and MongoDB decode it."""
+    assert connection_url(url_conn(conn_type="mssql", schema="my db")) == "sqlserver://u:p@h/my db"
+    assert connection_url(url_conn(conn_type="mssql", schema="100%")) == "sqlserver://u:p@h/100%"
+    assert connection_url(url_conn(conn_type="mssql", schema="a%2Fb")) == "sqlserver://u:p@h/a%2Fb"
+    assert connection_url(url_conn(conn_type="oracle", schema="ORCL PDB", extra_dejson={})) == "oracle://u:p@h/ORCL PDB"
+    assert connection_url(url_conn(conn_type="oracle", schema="x", extra_dejson={"service_name": "A%B"})) == "oracle://u:p@h/A%B"
+    for kind, scheme in (("postgres", "postgresql"), ("mysql", "mysql"), ("mongo", "mongodb")):
+        assert connection_url(url_conn(conn_type=kind, schema="my db%")) == f"{scheme}://u:p@h/my%20db%25", kind
+    assert connection_url(url_conn(conn_type="mssql", schema="d", extra_dejson={"TrustServerCertificate": "yes"})).startswith(
+        "sqlserver://u:p@h/d"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "database", "char"),
+    [
+        ("mssql", "a@b", "@"),
+        ("mssql", "a?b", "?"),
+        ("mssql", "a#b", "#"),
+        ("oracle", "a@b", "@"),
+        ("oracle", "a?b", "?"),
+        ("oracle", "a#b", "#"),
+        ("oracle", "a/b", "/"),
+    ],
+)
+def test_a_database_name_rivet_would_cut_at_is_refused_naming_the_character(kind: str, database: str, char: str) -> None:
+    refused = refusal(connection_url, url_conn(conn_type=kind, schema=database))
+    assert refused.code == "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED"
+    engine = "SQL Server" if kind == "mssql" else "Oracle"
+    assert said(refused) == (
+        f"connection `c` names the {engine} database `{database}`, which holds `{char}`: rivet's {engine} URL reads that "
+        "character as the end of the name or of the credentials, so it cannot carry this name; rename the database"
+    )
+
+
+def test_a_slash_in_a_sql_server_database_is_kept_because_rivet_takes_everything_after_the_first_slash() -> None:
+    assert connection_url(url_conn(conn_type="mssql", schema="a/b")) == "sqlserver://u:p@h/a/b"
+    assert connection_url(url_conn(conn_type="postgres", schema="a/b")) == "postgresql://u:p@h/a%2Fb", "unchanged"
+
+
+def test_a_sql_server_ipv6_host_without_a_port_gets_the_default_port_rivet_needs_to_split_it() -> None:
+    assert connection_url(url_conn(conn_type="mssql", host="::1")) == "sqlserver://u:p@[::1]:1433/d"
+    assert connection_url(url_conn(conn_type="mssql", host="::1", port=1990)) == "sqlserver://u:p@[::1]:1990/d"
+    assert connection_url(url_conn(conn_type="mssql", host="db")) == "sqlserver://u:p@db/d", "a name needs none"
+    assert connection_url(url_conn(host="::1")) == "postgresql://u:p@[::1]/d", "the other engines split by brackets"

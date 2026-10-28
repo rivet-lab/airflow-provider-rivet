@@ -12,6 +12,7 @@ from typing import Any
 
 from . import _yaml
 from .capabilities import MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
+from .exports import entries_of, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
@@ -43,12 +44,7 @@ class Preflight:
 
     def export_modes(self) -> dict[str, str]:
         """Mode by export name, as rivet reads the config (after `${...}`, names as their written text)."""
-        exports = self.config.get("exports") or []
-        return {
-            str(_yaml.text_of(e["name"])): str(_yaml.text_of(e.get("mode", "full")))
-            for e in exports
-            if isinstance(e, dict) and "name" in e
-        }
+        return {name_of(e): mode_of(e) for e in entries_of(self.config) if "name" in e}
 
 
 def state_kind(env: Mapping[str, str]) -> str:
