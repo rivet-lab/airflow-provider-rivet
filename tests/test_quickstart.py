@@ -159,7 +159,7 @@ def shape(dag) -> dict:
     }
     return {
         "dag_id": dag.dag_id,
-        "schedule": repr(dag.timetable),
+        "schedule": timetable(dag.timetable),
         "start_date": dag.start_date,
         "catchup": dag.catchup,
         "max_active_runs": dag.max_active_runs,
@@ -168,6 +168,15 @@ def shape(dag) -> dict:
         "groups": sorted(dag.task_group.children),
         "tasks": tasks,
     }
+
+
+def timetable(t) -> tuple:
+    """A timetable by value: Airflow 2's repr is its address, and the cron fields are private there."""
+    return (
+        type(t).__name__,
+        getattr(t, "expression", None) or getattr(t, "_expression", None),
+        str(getattr(t, "timezone", None) or getattr(t, "_timezone", None)),
+    )
 
 
 def test_a_stream_without_a_written_mode_or_with_a_numeric_name_is_read_as_rivet_reads_it(tmp_path: Path) -> None:

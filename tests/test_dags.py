@@ -227,7 +227,7 @@ def test_cdc_streams_dag_is_a_group_per_stream_and_one_stream_is_build_cdc_dag()
     one = build_cdc_streams_dag("c", config="c", streams=[("e", ["t"])], compact=False)
     assert sorted(one.task_ids) == sorted(build_cdc_dag("c", config="c", export="e", tables=["t"], compact=False).task_ids)
     assert "e" not in one.task_group.children, "one stream has no group"
-    with pytest.raises(ValueError, match="`streams` is empty"):
+    with pytest.raises(ValueError, match=exactly("`streams` is empty: name at least one (export, tables) stream")):
         build_cdc_streams_dag("c", config="c", streams=[])
 
 
