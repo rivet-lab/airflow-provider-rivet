@@ -70,6 +70,8 @@ RIVET_TASKS = {f"gate_batch_{s}": [f"apply.{s}_{short}" for short, _ in TABLES.v
 #: so the entry is removed when the fix lands.
 KNOWN = {
     "initial/mysql/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
+    "initial/mssql/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
+    "initial/mongodb/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
 }
 
 
