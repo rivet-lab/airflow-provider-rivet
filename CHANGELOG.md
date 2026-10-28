@@ -81,6 +81,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- **Behaviour change.** The quickstart's DAG file refused a pipeline whose config has more than one `mode: cdc` stream
+  (#98, because it built only the first). It now builds every stream: one DAG per pipeline with a group per stream
+  (`<export>.run`, `<export>.load.<table>`), through the new `build_cdc_streams_dag`, which `build_cdc_dag` now also
+  uses for its one stream. A config of one stream builds the DAG it built before (same dag_id, task ids and
+  arguments; checked against the old call). Nothing is stored and nothing to migrate.
+
 - A failed task says why. rivet's error text (the `error` of the `--json-errors` line, and for a failed unit the
   `error_message` of its `--summary-output` entry or the `message` of its error object) is on the failure headline and
   on a failed unit's line of the task log, at the end of the `AirflowException` / `AirflowFailException` text

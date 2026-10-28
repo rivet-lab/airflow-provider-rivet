@@ -227,9 +227,40 @@ def build_cdc_dag(
     **dag_kwargs: Any,
 ) -> DAG:
     """One `run` task for the stream, then load.T >> compact.T per captured table."""
-    tables = _names("tables", tables)
+    return build_cdc_streams_dag(
+        dag_id,
+        config=config,
+        streams=[(export, tables)],
+        state_dir=state_dir,
+        load=load,
+        compact=compact,
+        operator_kwargs=operator_kwargs,
+        **dag_kwargs,
+    )
+
+
+def build_cdc_streams_dag(
+    dag_id: str,
+    *,
+    config: str,
+    streams: Sequence[tuple[str, Sequence[str]]],
+    state_dir: str | None = None,
+    load: bool = True,
+    compact: bool = True,
+    operator_kwargs: Mapping[str, Any] | None = None,
+    **dag_kwargs: Any,
+) -> DAG:
+    """The CDC DAG of several streams, each an `(export, tables)` pair: a group per stream, named after its export, with
+    its `run`, `load.T` and (with `compact`) `compact.T`. One stream is `build_cdc_dag`'s DAG, with no group."""
+    if not streams:
+        raise ValueError("`streams` is empty: name at least one (export, tables) stream")
+    named = [(export, _names("tables", tables)) for export, tables in streams]
     return _cdc_dag(
-        dag_id, [(export, tables, tables if compact else [])], load, _common(config, state_dir, operator_kwargs), dag_kwargs
+        dag_id,
+        [(export, tables, tables if compact else []) for export, tables in named],
+        load,
+        _common(config, state_dir, operator_kwargs),
+        dag_kwargs,
     )
 
 

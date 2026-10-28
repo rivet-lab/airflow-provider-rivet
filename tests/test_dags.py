@@ -14,7 +14,7 @@ from conftest import DOCS, fixture
 
 from airflow_provider_rivet import __version__, get_provider_info
 from airflow_provider_rivet.callbacks import format_failure
-from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, read_plan_layout
+from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_cdc_streams_dag, read_plan_layout
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetRunOperator, RivetRunWatcher, RivetWaveBarrier
 
 
@@ -202,6 +202,33 @@ def test_cdc_dag_without_compact_or_load() -> None:
         "watcher",
     ]
     assert sorted(build_cdc_dag("c2", config="c", export="e", tables=[], load=False).task_ids) == ["run", "watcher"]
+
+
+def test_cdc_streams_dag_is_a_group_per_stream_and_one_stream_is_build_cdc_dag() -> None:
+    dag = build_cdc_streams_dag(
+        "c", config="/c/cdc.yaml", streams=[("orders_cdc", ["dbo.orders", "dbo.lines"]), ("users_cdc", ["dbo.users"])]
+    )
+    assert set(dag.task_group.children) == {"orders_cdc", "users_cdc", "watcher"}
+    assert sorted(dag.task_ids) == [
+        "orders_cdc.compact.dbo.lines",
+        "orders_cdc.compact.dbo.orders",
+        "orders_cdc.load.dbo.lines",
+        "orders_cdc.load.dbo.orders",
+        "orders_cdc.run",
+        "users_cdc.compact.dbo.users",
+        "users_cdc.load.dbo.users",
+        "users_cdc.run",
+        "watcher",
+    ]
+    assert dag.get_task("users_cdc.run").upstream_task_ids == set(), "streams run side by side"
+    assert dag.get_task("users_cdc.load.dbo.users").export == "users_cdc"
+    assert dag.get_task("users_cdc.load.dbo.users").table == "dbo.users"
+    assert dag.get_task("watcher").upstream_task_ids == set(dag.task_ids) - {"watcher"}
+    one = build_cdc_streams_dag("c", config="c", streams=[("e", ["t"])], compact=False)
+    assert sorted(one.task_ids) == sorted(build_cdc_dag("c", config="c", export="e", tables=["t"], compact=False).task_ids)
+    assert "e" not in one.task_group.children, "one stream has no group"
+    with pytest.raises(ValueError, match="`streams` is empty"):
+        build_cdc_streams_dag("c", config="c", streams=[])
 
 
 def test_the_provider_entry_point_names_the_distribution_and_the_version_has_one_source_and_the_metadata_is_exact() -> None:

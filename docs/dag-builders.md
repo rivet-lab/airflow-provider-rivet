@@ -1,6 +1,6 @@
 # DAG builders
 
-`build_batch_dag` and `build_cdc_dag` build whole DAGs from the operators.
+`build_batch_dag`, `build_cdc_dag` and `build_cdc_streams_dag` build whole DAGs from the operators.
 
 ## DAG builders
 
@@ -100,6 +100,29 @@ dag = build_cdc_dag(
   `compact=False` keeps `load.T` and drops `compact.T`. Use `compact=False` on Snowflake and
   ClickHouse, where there is nothing to compact (see ["Storage and warehouse connections"](connections-and-secrets.md#storage-and-warehouse-connections)).
 - `operator_kwargs` go to every task, as in the batch builder.
+
+### Several streams: `build_cdc_streams_dag`
+
+`rivet init` writes one stream per table on SQL Server, Oracle, MongoDB and PostgreSQL outside `public`. A DAG of
+several streams is built by `build_cdc_streams_dag`, which takes `(export, tables)` pairs and the same arguments as
+`build_cdc_dag` (`compact` applies to every stream):
+
+```python
+from airflow_provider_rivet.dags import build_cdc_streams_dag
+
+dag = build_cdc_streams_dag(
+    "rivet_erp_cdc",
+    config="/opt/pipelines/erp.yaml",
+    streams=[("dbo_orders", ["dbo.orders", "dbo.lines"]), ("dbo_customers", ["dbo.customers"])],
+    state_dir="/var/lib/rivet/erp",
+)
+```
+
+- Each stream is a `TaskGroup` named after its export, with its own `run`, `load.T` and `compact.T`, so
+  `dbo_orders.run`, `dbo_orders.load.dbo.orders` and `dbo_customers.run` are task ids. The streams have no edges between
+  them and run side by side, each under its own export's lock; the one `watcher` ends the DAG.
+- One stream gives `build_cdc_dag`'s DAG, with no group. The quickstart builds every `mode: cdc` stream of a config
+  through this builder with `compact=False`, as ClickHouse collapses a change log by key itself.
 
 ### One DAG per database: `build_source_dags`
 
