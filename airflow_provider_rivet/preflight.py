@@ -18,6 +18,8 @@ MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
 SETUP_GUIDE = "https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
 STATE_URL_ENV = "RIVET_STATE_URL"
+POSTGRES_STATE_SCHEMES = ("postgres://", "postgresql://")
+SQLITE_STATE_SCHEME = "sqlite:"
 
 
 class PreflightRefusal(Exception):
@@ -52,9 +54,24 @@ class Preflight:
 
 
 def state_kind(env: Mapping[str, str]) -> str:
-    """`postgres` when rivet would open the state `RIVET_STATE_URL` names (its own rule: the value starts with `postgres`), else `sqlite`."""
-    url = env.get(STATE_URL_ENV, "")  # pragma: no mutate - any default not starting `postgres` reads as sqlite alike
-    return "postgres" if url.startswith("postgres") else "sqlite"
+    """`postgres` when `RIVET_STATE_URL` has one of the schemes rivet opens as PostgreSQL state, else `sqlite`."""
+    url = env.get(STATE_URL_ENV, "")  # pragma: no mutate - any default without a postgres scheme reads as sqlite alike
+    return "postgres" if url.startswith(POSTGRES_STATE_SCHEMES) else "sqlite"
+
+
+def selects_state(env: Mapping[str, str]) -> bool:
+    """Whether `RIVET_STATE_URL` names a state rivet opens: a PostgreSQL URL or a `sqlite:` file (rivet 0.32.1's rule)."""
+    return env.get(STATE_URL_ENV, "").startswith((*POSTGRES_STATE_SCHEMES, SQLITE_STATE_SCHEME))
+
+
+def sqlite_state_file(env: Mapping[str, str], state_dir: Path) -> Path:
+    """The SQLite file rivet opens for a config copied into `state_dir`: the `sqlite:` path of `RIVET_STATE_URL` (an
+    absolute path as written, a relative one against the config's directory), else `.rivet_state.db` there."""
+    url = env.get(STATE_URL_ENV, "")
+    if not url.startswith(SQLITE_STATE_SCHEME):
+        return state_dir / STATE_DB_NAME
+    path = url.removeprefix(SQLITE_STATE_SCHEME).removeprefix("//")
+    return state_dir / path
 
 
 def detect_deployment(env: Mapping[str, str], declared: str) -> str:
@@ -181,19 +198,19 @@ def check_state_dir(state_dir: str | None) -> Path:
 
 
 def check_nothing_left_beside_config(
-    config_path: str, config: dict[str, Any], state_dir: Path, sqlite: bool, export: str | None
+    config_path: str, config: dict[str, Any], state_dir: Path, state_db: Path | None, export: str | None
 ) -> None:
     """Refuse when state or a CDC checkpoint sits beside the original config and the copy in `state_dir` would not see it."""
     origin = Path(config_path).resolve().parent
     if origin == state_dir.resolve():
         return
     left = origin / STATE_DB_NAME
-    if sqlite and left.exists() and not (state_dir / STATE_DB_NAME).exists():
+    if state_db is not None and left.exists() and not state_db.exists():
         raise PreflightRefusal(
             "RIVET_AIRFLOW_STATE_BESIDE_CONFIG",
-            f"{left} exists and {state_dir} has no {STATE_DB_NAME}: rivet would start from an empty state there and "
+            f"{left} exists and {state_db} does not: rivet would start from an empty state there and "
             f"treat every export as a first run. Stop every run of this config, then move the file (with its -wal and "
-            f"-shm files) into {state_dir}; or delete it if that state is not this pipeline's; see {SETUP_GUIDE}",
+            f"-shm files) to {state_db}; or delete it if that state is not this pipeline's; see {SETUP_GUIDE}",
         )
     for entry in config.get("exports") or []:
         cdc = entry.get("cdc")  # every entry is a mapping: `read_config_source` refuses any other
@@ -277,17 +294,18 @@ def run_preflight(
                 f"an upstream task of this DAG run used another state directory than {state_dir} on this worker "
                 f"(marker {others[0][:8]} against {result.marker[:8]}); every task must see the same path; see {SETUP_GUIDE}",
             )
-        check_nothing_left_beside_config(config_path, config, result.state_dir, kind == "sqlite", export)
+        state_db = sqlite_state_file(env, result.state_dir) if kind == "sqlite" else None
+        check_nothing_left_beside_config(config_path, config, result.state_dir, state_db, export)
         if kind == "sqlite" and spreads_hosts:
             raise PreflightRefusal(
                 "RIVET_AIRFLOW_STATE_SQLITE_MULTI_HOST",
-                f"SQLite state in {state_dir} lives on this worker's disk, and the {spreads_hosts} may run this DAG's "
+                f"SQLite state in {state_db} lives on this worker's disk, and the {spreads_hosts} may run this DAG's "
                 "next task on another worker, whose empty state would re-read every table and write it again; set "
                 "RIVET_STATE_URL to a PostgreSQL state, or pass single_host=True when this deployment has one worker; "
                 f"see {SETUP_GUIDE}",
             )
         if kind == "sqlite":
             result.warnings.append(
-                ("sqlite_single_host", f"SQLite state in {state_dir}: this setup is single-host; see {SETUP_GUIDE}")
+                ("sqlite_single_host", f"SQLite state in {state_db}: this setup is single-host; see {SETUP_GUIDE}")
             )
     return result

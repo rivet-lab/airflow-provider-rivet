@@ -17,19 +17,27 @@ PostgreSQL state is `RIVET_STATE_URL=postgresql://...` in the task's environment
 `env_from_connections={"RIVET_STATE_URL": "rivet_state"}`, or set it on the worker and name it in
 `env_passthrough=["RIVET_STATE_URL"]` (a worker variable is not inherited unless it is named).
 
-**A PostgreSQL `RIVET_STATE_URL` set on the worker and not passed on is refused.** If the
-worker's `RIVET_STATE_URL` is one rivet would use (it starts with `postgres`, rivet's own rule;
-an empty, blank or `sqlite:` value selects nothing and is not refused) and the task's
-environment has no entry for it
-(not in `env_passthrough`, `env` or `env_from_connections`), the task fails before rivet starts
-with `RIVET_AIRFLOW_STATE_ENV_NOT_PASSED` and is not retried: rivet would otherwise run green on
-an empty SQLite state while the real state sits in the database the worker names. The message
-names the variable and never its value. Fix it one of two ways: inherit the worker's value with
-`env_passthrough=["RIVET_STATE_URL"]`, or give the task its own value with
+**A `RIVET_STATE_URL` set on the worker and not passed on is refused.** If the worker's
+`RIVET_STATE_URL` names a state rivet would open, by rivet's own rule (it starts with
+`postgres://` or `postgresql://`, or it is a `sqlite:<path>` file), and the task's environment has
+no entry for it (not in `env_passthrough`, `env` or `env_from_connections`), the task fails before
+rivet starts with `RIVET_AIRFLOW_STATE_ENV_NOT_PASSED` and is not retried: rivet would otherwise run
+green on an empty SQLite state in `state_dir` while the real state sits in the database or file the
+worker names (an incremental export reads from the start again, a CDC stream re-anchors). An empty
+or blank value, or one with any other scheme, selects no state here and is not refused. The
+message names the variable and never its value. Fix it one of two ways: inherit the worker's
+value with `env_passthrough=["RIVET_STATE_URL"]`, or give the task its own value with
 `env_from_connections={"RIVET_STATE_URL": "<conn_id>"}` (or `env`). If the worker's variable is
 not meant for this pipeline, unset it on the worker, or declare `env={"RIVET_STATE_URL": ""}` on
 the task: a declared value, also an empty one, is the task's own decision and rivet then keeps
 SQLite state in `state_dir`.
+
+**A `sqlite:<path>` state a task passes on is honoured.** rivet opens the file the URL names: an
+absolute path as written (`sqlite:/data/rivet/state.db`, `sqlite:///data/...`), a relative one
+against the directory of the config it runs, which is `state_dir` (the copy). The checks for state
+left beside the original config look for that file instead of `state_dir/.rivet_state.db`, the
+single-host warning and the multi-host refusal name it, and a pod refuses it like any SQLite state.
+The file still lives on this worker's disk: it is single-host state.
 
 ### Local worker setup guide
 
@@ -49,9 +57,9 @@ SQLite state in `state_dir`.
      resolves the config's relative paths (its SQLite state, a `cdc.checkpoint`, a `query_file`,
      a local `destination.path`) against the config's directory, so running the copy puts all of
      them here (see 5). Edit your original; the copy is rewritten on every task. The operator
-     does not set `RIVET_STATE_URL=sqlite:` (rivet 0.32.2): the copy already keeps the state here
-     on every rivet it runs, and a `sqlite:` value in the task's environment that names another
-     file moves the state out of the directory these checks look at, so leave it unset for tasks.
+     does not set `RIVET_STATE_URL=sqlite:` itself: the copy already keeps the state here on every
+     rivet it runs. A `sqlite:` value the task passes on moves the state to the file it names (see
+     above); leave it unset for tasks unless the state must live elsewhere.
    - every relative `query_file` of the config, copied to the same relative path (see 5), and
      `.rivet_airflow_query_files.json`, which records the config directory each one came from.
    - a relative `cdc.checkpoint`, which resolves beside the copied config, that is, here.

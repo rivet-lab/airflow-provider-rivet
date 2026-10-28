@@ -7,6 +7,16 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- **Behaviour change.** A worker's `RIVET_STATE_URL=sqlite:<path>` that the task did not pass on was dropped silently:
+  rivet ran on an empty `.rivet_state.db` in `state_dir`, so an incremental export read from the start again and a CDC
+  stream re-anchored (measured with rivet 0.32.2 as the oracle: the worker's file held the cursor, the run did not see
+  it). It is now refused before rivet starts, as a PostgreSQL state already was (`RIVET_AIRFLOW_STATE_ENV_NOT_PASSED`);
+  the remedy is `env_passthrough=["RIVET_STATE_URL"]` (rivet then opens that file), or `env` / `env_from_connections`,
+  or unset the variable on the worker. A `sqlite:` state the task passes on is checked where rivet opens it: the
+  "state left beside the config" check looks for the named file (`RIVET_AIRFLOW_STATE_BESIDE_CONFIG` names it) instead
+  of `state_dir/.rivet_state.db`, and the single-host warning and refusal name it. `RIVET_STATE_URL` is classified by
+  rivet's scheme rule (`postgres://`, `postgresql://`, `sqlite:`): a worker value such as `postgres-state.db`, which
+  rivet would refuse as an unsupported scheme and which was refused here as PostgreSQL, is no longer refused here.
 - **Behaviour change.** A SQL Server or Oracle `connection_url` percent-encoded the database, but rivet reads that URL
   path as written, so `my db` reached rivet as `my%20db` and the load failed with a login error naming another
   database. The database is now written as is for those two schemes, and PostgreSQL, MySQL and MongoDB stay encoded. A
