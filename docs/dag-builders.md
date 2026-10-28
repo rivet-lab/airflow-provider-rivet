@@ -142,7 +142,7 @@ For each name `<name>`:
 | | |
 |---|---|
 | DAG | `rivet_<name>_cdc` / `rivet_<name>_batch`, paused at creation (`is_paused_upon_creation`) |
-| source | the Airflow Connection `source_connection` (default `{name}`; `rivet_{name}` for the layout of [the cron recipe](cron-to-airflow-cdc.md)); without one, the data source `[<name>]` of `odbc_ini` (default `/etc/odbc.ini`; `None` turns it off). The task log says when odbc.ini was used. odbc.ini: MySQL, PostgreSQL, SQL Server (`Server = host,port`, a SQL login) and Oracle (`ServerName = host:port/service`) drivers; MongoDB only through a Connection |
+| source | the Airflow Connection `source_connection` (default `{name}`; `rivet_{name}` for the layout of [the cron recipe](cron-to-airflow-cdc.md)); without one, the data source `[<name>]` of `odbc_ini` (default `/etc/odbc.ini`; `None` turns it off). The task log says when odbc.ini was used, and the password of the data source is masked in it. The file is read as unixODBC reads it (the name in any case, the first section and the first value win, `;` and `#` comments); a file that is missing or unreadable on the worker is refused with that cause, not as a missing data source. odbc.ini: MySQL, PostgreSQL, SQL Server (`Server = host,port`, a SQL login) and Oracle (`ServerName = host:port/service`) drivers; MongoDB only through a Connection |
 | config | `<config_dir>/<name>.yaml` |
 | state | the database `rivet_state_<name>` on the server of `state_connection`, and the folder `<state_root>/<name>` |
 

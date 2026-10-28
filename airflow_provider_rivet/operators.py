@@ -20,6 +20,7 @@ from ._compat import (
     BaseHook,
     BaseOperator,
     executor_spreading_hosts,
+    mask_secret,
 )
 from ._yaml import params_of
 from .connections import (
@@ -121,6 +122,8 @@ class _RivetTask(BaseOperator):
         source of that name in the file; its `database` instead of the one stored. Where it came from is logged."""
         conn, dsn = resolve_database(ref, airflow_connection)
         if dsn is not None:
+            if conn.password:  # an Airflow Connection's password is masked when Airflow loads it; a file's is not
+                mask_secret(conn.password)
             self.log.info("database `%s`: no such Connection, ODBC data source [%s] in %s", ref["conn_id"], dsn, ref["odbc_ini"])
         return conn
 
