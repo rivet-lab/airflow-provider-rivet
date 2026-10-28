@@ -10,6 +10,7 @@ Each test names the mutant it is RED on.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +34,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 #: stream carries every change event (the delete too); an incremental batch export the rows whose cursor moved.
 CDC_ROWS = {"initial": (1000, 5000), "delta": (30, 135), "idle": (0, 0)}
 BATCH_ROWS = {"initial": (1000, 5000), "delta": (30, 130), "idle": (0, 0)}
+#: SQL Server's DATETIME2(7) cursor: rivet keeps its high-water to the microsecond, so the initial rows of the mark's
+#: microsecond are read again by the delta's extracts (990 customers, 4965 orders: the live battery's counts).
+BATCH_TIES = {"mssql": {"delta": (990, 4965)}}
+
+
+def batch_expected(engine: sources.Engine, cycle: str) -> tuple[int, int]:
+    """The rows each table's incremental extract reads in `cycle`, at the cursor's precision (the model of the count)."""
+    ties = BATCH_TIES.get(engine.name, {}).get(cycle, (0, 0))
+    return tuple(a + b for a, b in zip(BATCH_ROWS[cycle], ties, strict=True))
+
+
 TASK = re.compile(r"^(?:(?P<group>.+)\.)?(?P<verb>run|load|compact|apply)(?:\.(?P<unit>.+))?$")
 
 
@@ -48,7 +60,13 @@ def source_at(engine: sources.Engine, cycle: str) -> dict[str, list[dict[str, An
 def faithful(leg: SourceLeg, dag: str, cycle: str) -> dict[str, int | None]:
     """What each task of `dag` reports in `cycle`: a run, the rows of its stream's tables; a load or an extract, its
     table's; a compaction no count."""
-    per = dict(zip(("customers", "orders"), (BATCH_ROWS if dag.endswith("_batch") else CDC_ROWS)[cycle], strict=True))
+    per = dict(
+        zip(
+            ("customers", "orders"),
+            batch_expected(leg.engine, cycle) if dag.endswith("_batch") else CDC_ROWS[cycle],
+            strict=True,
+        )
+    )
     out: dict[str, int | None] = {}
     for task in leg.tasks[dag]:
         m = TASK.match(task)
@@ -132,6 +150,12 @@ def played(leg: SourceLeg, monkeypatch, wrong: dict[str, dict[tuple[str, str], i
     monkeypatch.setattr(sources, "task_log", lambda stand, dag, run_id, task, attempt=None: now["rivet"].log(dag, task))
     monkeypatch.setattr(leg, "source_rows", lambda stand, added=None: source_at(leg.engine, now["cycle"]), raising=False)
     monkeypatch.setattr(leg, "grade_targets", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(
+        leg,
+        "past_rows",
+        lambda stand: dict(zip(leg.engine.tables, batch_expected(leg.engine, now["cycle"]), strict=True)),
+        raising=False,
+    )
     monkeypatch.setattr(leg, "grade_staged", lambda v, name, kinds: asked.append((name, tuple(kinds))), raising=False)
     for cycle in CYCLES:
         rivet = Rivet(leg, cycle, (wrong or {}).get(cycle))
@@ -143,6 +167,23 @@ def played(leg: SourceLeg, monkeypatch, wrong: dict[str, dict[tuple[str, str], i
 
 def failed(rows: list) -> list[str]:
     return sorted(r["cell"] for r in rows if r["status"] == "FAIL")
+
+
+def test_the_batch_expectation_is_counted_past_the_mark_at_the_cursors_precision(tmp_path: Path, monkeypatch) -> None:
+    leg = prepared(MSSQL, tmp_path, monkeypatch)
+    texts: list[str] = []
+
+    def count(self, stand, text):
+        texts.append(text)
+        return "  7\n"
+
+    monkeypatch.setattr(SourceLeg, "sql", count)
+    leg.high_water = {"gate_customers": datetime(2026, 10, 28, 12, 0, 0, 123456), "gate_orders": None}
+    # Mutant: the rows past the mark counted in Python, to the microsecond (the source's values are cut to it).
+    assert leg.past_rows(None) == {"gate_customers": 7, "gate_orders": 7}
+    marked, first = texts
+    assert marked.endswith("WHERE updated_at > CAST('2026-10-28 12:00:00.123456' AS datetime2(7));"), marked
+    assert "WHERE" in marked and "WHERE" not in first
 
 
 @pytest.mark.parametrize("engine", ENGINES, ids=lambda e: e.name)
@@ -223,6 +264,7 @@ def dags_graded(engine: sources.Engine, monkeypatch) -> tuple[list, SourceLeg]:
     for cycle in CYCLES:
         rivet = Rivet(leg, cycle)
         leg.high_water = {t: {"initial": None, "delta": 1, "idle": 2}[cycle] for t in engine.tables}
+        leg.past = dict(zip(engine.tables, batch_expected(engine, cycle), strict=True))
         monkeypatch.setattr(
             sources, "task_log", lambda stand, dag, run_id, task, attempt=None, r=rivet: log(task, r.moved[(dag, task)])
         )

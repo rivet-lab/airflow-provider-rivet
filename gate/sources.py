@@ -110,6 +110,11 @@ class Engine:
     ready_timeout: float = 300
     #: The cursor column of the batch exports (the rows an incremental extract reads are the ones past its high-water).
     cursor: str = "updated_at"
+    #: For a cursor finer than a microsecond: the count of the rows an incremental extract reads, taken by the engine at
+    #: the cursor's own precision (rivet's high-water is kept to the microsecond). `{table}`, `{where}` (`past_where`
+    #: with `{cursor}` and the mark, or empty on the first run).
+    past_count: str = ""
+    past_where: str = ""
     #: A column added mid-stream, after the cycles (the MySQL client stack's schema change).
     hot: HotDdl | None = None
     #: After the hot ALTER: a second CDC config on the first stream's checkpoint must be refused, and these changes
@@ -290,6 +295,8 @@ EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'gate_orde
     },
     json_select="SET NOCOUNT ON; SELECT {cols} FROM rivet.dbo.{table} FOR JSON PATH, INCLUDE_NULL_VALUES;",
     json_kinds={"updated_at": "ts", "placed_at": "ts", "ext_id": "uuid", "payload": "bytes", "amount": "money"},
+    past_count="SET NOCOUNT ON; SELECT COUNT(*) FROM rivet.dbo.{table}{where};",
+    past_where=" WHERE {cursor} > CAST('{mark}' AS datetime2(7))",
 )
 MONGODB = Engine(
     name="mongodb",
@@ -513,6 +520,8 @@ class SourceLeg:
         self.texts: dict[str, str] = {}
         #: Each table's cursor high-water after the last graded batch run (what the next extract reads past).
         self.high_water: dict[str, Any] = {}
+        #: Per table, the rows the next incremental extract reads as the engine counts them (`Engine.past_count`).
+        self.past: dict[str, int] = {}
         #: The DAG of the stream whose run pauses after it opened (the hot ALTER), when the engine has one.
         self.hot_dag = ""
         #: The DAG of the second of two overlapping stream runs.
@@ -867,9 +876,22 @@ class SourceLeg:
             )
         if run_id:
             ops = cycle_effect.ops(name)
+            self.past = self.past_rows(stand) if self.engine.past_count else {}
             self.grade_tasks(stand, v, name, run_id, self.dags, source, ops, baseline=name == "initial")
             self.grade_staged(v, name, self.kinds)
             self.high_water = {t: high_water(rows, self.engine.cursor) for t, rows in source.items()}
+
+    def past_rows(self, stand: Any) -> dict[str, int]:
+        """Per table, the rows an incremental extract reads now (past the previous high-water), counted by the engine at
+        the cursor's precision: rivet keeps the high-water to the microsecond, so the rows of the mark's microsecond that
+        the source keeps finer are read again, and a count in Python (to the microsecond) misses them."""
+        out = {}
+        for table in self.engine.tables:
+            mark = self.high_water.get(table)
+            where = "" if mark is None else self.engine.past_where.format(cursor=self.engine.cursor, mark=mark.isoformat(sep=" "))
+            text = self.sql(stand, self.engine.past_count.format(table=table, where=where))
+            out[table] = int(re.findall(r"^\s*(\d+)\s*$", text, re.M)[-1])
+        return out
 
     def kept_by_batch(self, cycle: str, table: str) -> int:
         """Keys of `table` the batch target keeps after `cycle` although the source deleted them."""
@@ -942,6 +964,8 @@ class SourceLeg:
             return None
         table = self.table_of(tables, unit)
         if kind == "batch":
+            if table in self.past:
+                return self.past[table]
             return rows_past(source[table], self.engine.cursor, self.high_water.get(table))
         return events[table]
 
