@@ -343,7 +343,9 @@ def _config_dag(
     """The DAG built from a source's config."""
     doc = read_config(str(config))
     url_env = (doc.get("source") or {}).get("url_env")
-    if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
+    if (doc.get("source") or {}).get("url_secret") is not None:  # rivet reads the URL from Secret Manager: no Connection is read
+        kwargs["env_from_connections"] = {"RIVET_STATE_URL": state}
+    elif url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
     exports = entries_of(doc)
     cdc = [e for e in exports if mode_of(e) == "cdc"]

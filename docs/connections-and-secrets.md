@@ -108,6 +108,66 @@ over `<table>__changes` and there is nothing to merge. rivet 0.32.2 reports that
 so a compact task whose every table is skipped ends as an Airflow skip, not green. For these warehouses
 build the CDC DAG with `compact=False` and leave such exports out of `compact_exports`.
 
+## Source credentials from Google Secret Manager
+
+A config can name its source's URL or password by a Secret Manager secret instead of a Connection, an environment
+variable or a file. rivet reads the secret when it starts; the value is never written to the plan, the state or the log.
+
+```yaml
+source:
+  type: postgres
+  url_secret: projects/my-project/secrets/shop-url          # the whole URL, latest version
+```
+
+```yaml
+source:
+  type: mysql
+  host: db.internal
+  user: rivet
+  database: shop
+  password_secret: projects/my-project/secrets/shop-mysql-pw/versions/3   # a pinned version
+```
+
+- `url_secret` takes the place of `url`, `url_env` or `url_file`: exactly one of them. `password_secret` takes the
+  place of `password` or `password_env`: at most one. A reference is `projects/<project>/secrets/<secret>` (the
+  latest version) or `.../versions/<n>`; any other shape is `RIVET_CONFIG_SOURCE_CONNECTION_INVALID`.
+- The credential is the one the GCS and BigQuery legs use: the key `GOOGLE_APPLICATION_CREDENTIALS` names, or gcloud
+  application-default credentials. It needs `roles/secretmanager.secretAccessor` on each secret, not on the project.
+  A secret rivet cannot read stops the run with `RIVET_CONFIG_GCP_SECRET_UNREADABLE`, naming the secret: HTTP 403 is the
+  missing role, 404 a wrong project, name or version. That is an environment failure, so it is not retried as a bad config.
+- The worker passes the key to rivet the way it passes it to those legs. Either a GCP Connection with a key
+  (`connections=["gcp_rivet"]`, which writes `GOOGLE_APPLICATION_CREDENTIALS` for the task) or
+  `cloud_credentials=["gcp"]` (the worker's own `GOOGLE_APPLICATION_CREDENTIALS` passed through). A worker whose
+  identity Google's default chain finds without a file (a GKE workload identity, a VM's service account) needs neither.
+- A config with `url_secret` reads no source Connection: a DAG built from it (below) needs only the state Connection.
+- **rivet version.** Secret sources need rivet 0.33.0 or newer <!-- TODO: the version rivet-lab/rivet#717 ships in -->.
+  An older rivet is refused before it starts with `RIVET_AIRFLOW_BINARY_TOO_OLD`, naming the version needed.
+
+`rivet init` writes `url_env:`. To source a config from a secret, write the file yourself, or change the written
+`url_env: <NAME>` line to `url_secret: ...` before the DAG parses it. Then the DAG for the source reads the secret:
+
+```python
+from datetime import datetime
+
+from airflow_provider_rivet.dags import build_source_dags
+
+# shop.yaml in config_dir names the secret (url_secret) and the exports; the DAG reads that file at parse time.
+globals().update(
+    build_source_dags(
+        ["shop"],
+        mode="batch",
+        config_dir="/opt/airflow/dags/rivet",
+        state_root="/opt/airflow/rivet-state",
+        state_connection="rivet_state",
+        # the worker's GOOGLE_APPLICATION_CREDENTIALS for the secret, as the GCS and BigQuery legs get it
+        operator_kwargs={"cloud_credentials": ["gcp"]},
+        schedule="0 */2 * * *",
+        start_date=datetime(2026, 1, 1),
+        catchup=False,
+    )
+)
+```
+
 ## Connections and secrets: recommended setup
 
 Where the Connections of a rivet DAG live decides who else can read them. Safest first:

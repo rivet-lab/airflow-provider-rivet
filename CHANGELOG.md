@@ -5,6 +5,15 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
+### Added
+
+- A source can name its URL or password by a Google Secret Manager secret: `url_secret` (in place of `url`, `url_env`
+  or `url_file`) and `password_secret` (in place of `password` or `password_env`), read by rivet with the credential the
+  GCS and BigQuery legs use. A DAG built from such a config reads no source Connection. A task whose rivet is older than
+  the version that reads these keys is refused before it starts, naming the version needed (`RIVET_AIRFLOW_BINARY_TOO_OLD`);
+  the version is one constant in `capabilities.py`, a placeholder until rivet releases the feature. The guide is
+  "Source credentials from Google Secret Manager" in `docs/connections-and-secrets.md`.
+
 ### Fixed
 
 - Documentation: the task releases an export lock by an explicit unlock when it ends, so a process rivet left behind

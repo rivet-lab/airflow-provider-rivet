@@ -11,13 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from . import _yaml
-from .capabilities import MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
+from .capabilities import GCP_SECRET_MIN_RIVET_VERSION, MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
 from .exports import entries_of, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
 SETUP_GUIDE = "https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
 STATE_URL_ENV = "RIVET_STATE_URL"
+# The `source:` keys that name a Google Secret Manager secret: rivet reads them from GCP_SECRET_MIN_RIVET_VERSION on.
+SECRET_SOURCE_KEYS = ("url_secret", "password_secret")
 POSTGRES_STATE_SCHEMES = ("postgres://", "postgresql://")
 SQLITE_STATE_SCHEME = "sqlite:"
 
@@ -51,6 +53,14 @@ class Preflight:
     def export_modes(self) -> dict[str, str]:
         """Mode by export name, as rivet reads the config (after `${...}`, names as their written text)."""
         return {name_of(e): mode_of(e) for e in entries_of(self.config) if "name" in e}
+
+
+def secret_sources(config: Mapping[str, Any]) -> list[str]:
+    """The `source:` keys of a config document that name a Google Secret Manager secret, in SECRET_SOURCE_KEYS order."""
+    source = config.get("source")
+    if not isinstance(source, dict):
+        return []
+    return [key for key in SECRET_SOURCE_KEYS if source.get(key) is not None]
 
 
 def state_kind(env: Mapping[str, str]) -> str:
@@ -255,6 +265,14 @@ def run_preflight(
             f"rivet {caps.version_text} at {binary} is older than {floor}, the minimum this package runs",
         )
     config, text, value_of = read_config_source(config_path, env, _yaml.params_of(extra_args))
+    secret = secret_sources(config)
+    if secret and not caps.at_least(GCP_SECRET_MIN_RIVET_VERSION):
+        need = ".".join(str(n) for n in GCP_SECRET_MIN_RIVET_VERSION)
+        raise PreflightRefusal(
+            "RIVET_AIRFLOW_BINARY_TOO_OLD",
+            f"config {config_path} names its source by `{secret[0]}`, a Google Secret Manager secret that rivet {need} "
+            f"or newer reads; rivet {caps.version_text} at {binary} does not: upgrade rivet to {need} or newer",
+        )
     where = detect_deployment(env, deployment)
     kind = state_kind(env)
     result = Preflight(binary, caps, kind, None, config, config_text=text, value_of=value_of)

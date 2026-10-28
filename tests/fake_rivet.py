@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -111,6 +112,69 @@ def read_config(argv):
         code = "RIVET_CONFIG_SECRET_UNSET" if isinstance(exc, KeyError) else "RIVET_CONFIG_YAML_INVALID"
         return {}, Path(cfg).resolve().parent, (f"config file '{cfg}': {type(exc).__name__}", code, False)
     return doc, Path(cfg).resolve().parent, None
+
+
+# rivet #717 (rivet-lab/rivet, src/config/source.rs, gcp_secret.rs): the Secret Manager source keys, the first release that
+# reads them (the package's GCP_SECRET_MIN_RIVET_VERSION), and the texts of their refusals.
+SECRET_KEYS = ("url_secret", "password_secret")
+SECRET_SINCE = (0, 33, 0)
+SECRET_NAME = re.compile(r"projects/[A-Za-z0-9_-]+/secrets/[A-Za-z0-9_-]+(/versions/(latest|[0-9]+))?")
+CONNECTION_INVALID = "RIVET_CONFIG_SOURCE_CONNECTION_INVALID"
+SECRET_UNREADABLE = "RIVET_CONFIG_GCP_SECRET_UNREADABLE"
+
+
+def secret_refused(spec, source):
+    """rivet's read of a Secret Manager reference: the refusal (text, code, prefixed), or None when it is read."""
+    for key in SECRET_KEYS:
+        ref = source.get(key)
+        if ref is None:
+            continue
+        if not SECRET_NAME.fullmatch(str(ref).strip()):
+            hint = "write `projects/<project>/secrets/<secret>` (the latest version) or `projects/<project>/secrets/<secret>/versions/<n>`"
+            return (f"source: '{ref}' is not a Secret Manager secret name.\n  Hint: {hint}", CONNECTION_INVALID, True)
+        if not (spec.get("adc", True) or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ):
+            hint = "point GOOGLE_APPLICATION_CREDENTIALS at a service-account key file (or run `gcloud auth application-default login`)"
+            return (f"source: no Google credentials to read Secret Manager secret '{ref}' — {hint}", SECRET_UNREADABLE, True)
+        status = (spec.get("secrets") or {}).get(str(ref).strip())
+        if status:
+            hint = {
+                403: "grant the credential rivet runs as `roles/secretmanager.secretAccessor` on this secret",
+                404: "check the project, secret name and version",
+            }[status]
+            return (f"source: Secret Manager refused '{ref}' (HTTP {status}).\n  Hint: {hint}", SECRET_UNREADABLE, True)
+    return None
+
+
+def source_refusal(spec, doc):
+    """rivet's checks of the `source:` block that the secret keys touch: the refusal (text, code, prefixed) or None.
+    Before #717 (`SECRET_SINCE`) a secret key is an unknown field, as serde refuses it; from it the one-of rules apply."""
+    source = doc.get("source")
+    if not isinstance(source, dict) or not any(k in source for k in SECRET_KEYS):
+        return None
+    if tuple(int(n) for n in spec["version"].split(".")) < SECRET_SINCE:
+        key = next(k for k in SECRET_KEYS if k in source)
+        return (
+            f"source: unknown field `{key}`, expected one of `type`, `url`, `url_env`, `url_file`, `host`",
+            "RIVET_CONFIG_YAML_INVALID",
+            True,
+        )
+    methods = [k for k in ("url", "url_env", "url_file", "url_secret") if source.get(k) is not None]
+    if len(methods) > 1:
+        return (
+            f"source: specify exactly one of 'url', 'url_env', 'url_file' or 'url_secret' (got {len(methods)} set).",
+            CONNECTION_INVALID,
+            True,
+        )
+    if source.get("url_secret") is not None and source.get("password_secret") is not None:
+        return (
+            "source: pick either URL-based config (url/url_env/url_file/url_secret) OR structured fields (host/user/database/port/password_env/password_secret), not both.",
+            CONNECTION_INVALID,
+            True,
+        )
+    passwords = [k for k in ("password", "password_env", "password_secret") if source.get(k) is not None]
+    if len(passwords) > 1:
+        return ("source: specify one of 'password', 'password_env' or 'password_secret', not both.", CONNECTION_INVALID, True)
+    return secret_refused(spec, source)
 
 
 def query_files(sub, argv, doc, base):
@@ -245,7 +309,7 @@ def main():
         return 0
     doc, base, unreadable = read_config(argv)
     refusal, sql = query_files(sub, argv, doc, base) if base else (None, {})
-    refusal = unreadable or refusal
+    refusal = unreadable or refusal or (source_refusal(spec, doc) if doc else None)
     export, table = unit_of(sub, argv, doc)
     seen = {k: os.environ.get(k) for k in spec.get("record_env", [])}
     call = {"argv": argv, "env": seen, "env_keys": sorted(os.environ), "cwd": os.getcwd(), "sql": sql, "export": export}
