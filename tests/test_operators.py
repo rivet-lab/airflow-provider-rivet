@@ -48,9 +48,10 @@ def mode(path: object) -> int:
 
 
 def assert_no_secret(rig: Rig, payload: object) -> None:
-    """Neither the URL nor rivet's error text reaches XCom or the structured log."""
+    """The URL reaches neither XCom nor the structured log, and rivet's error text (a source cell value in it) not XCom:
+    the task log and the exception carry the redacted, bounded text since #100, XCom never does."""
     blob = json.dumps(payload) + json.dumps(rig.records)
-    assert SECRET not in blob and "s3cr3t" not in blob and "4111-1111" not in blob
+    assert SECRET not in blob and "s3cr3t" not in blob and "4111-1111" not in json.dumps(payload)
 
 
 def test_apply_success_on_todays_binary(rig: Rig) -> None:
@@ -112,14 +113,14 @@ def test_a_retry_reuses_the_sealed_plan_artifact(rig: Rig) -> None:
     assert [c["argv"][0] for c in rig.calls()].count("apply") == 2
 
 
-def test_a_coded_refusal_fails_without_retry_and_keeps_the_message_out(rig: Rig) -> None:
+def test_a_coded_refusal_fails_without_retry_and_keeps_the_message_out_of_xcom(rig: Rig) -> None:
     line = {"error": "export 'orders': row 4111-1111 refused", "exit_class": 5, "code": "RIVET_SOURCE_CDC_LOG_GAP"}
     rig.scenario(apply={"exit": 5, "line": line})
     exc, ti = rig.run(rig.operator(RivetApplyOperator, export="orders"))
     assert isinstance(exc, AirflowFailException)
-    assert str(exc) == "[RIVET_SOURCE_CDC_LOG_GAP] refusal (orders)"
+    assert str(exc) == "[RIVET_SOURCE_CDC_LOG_GAP] refusal (orders): export 'orders': row 4111-1111 refused"
     payload = ti.store[("task", "return_value")]
-    assert payload["decision"] == "fail" and "error_object" in payload["degraded"]
+    assert payload["decision"] == "fail" and "error_object" not in payload["degraded"]
     assert payload["units"][0]["error"] == {
         "code": "RIVET_SOURCE_CDC_LOG_GAP",
         "kind": None,
@@ -143,7 +144,7 @@ def test_a_contract_refusal_carries_its_action_into_the_exception(rig: Rig) -> N
     payload = ti.store[("task", "return_value")]
     assert [u["error"]["class"] for u in payload["units"]] == ["refusal", "retryable"]
     assert payload["units"][0] == fixture("xcom_unit.json")
-    assert "per_unit_error" not in payload["degraded"] and "error_object" not in payload["degraded"]
+    assert "per_unit_error" not in payload["degraded"]
 
 
 def test_exit_2_with_an_object_is_retried(rig: Rig) -> None:
@@ -282,7 +283,7 @@ def test_one_failed_and_one_successful_export_in_one_summary(rig: Rig) -> None:
     assert run[:3] == ["run", "--config", str(rig.copy())] and "--export" not in run
     assert run[3] == "--summary-output" and run[5:] == ["--reconcile", "--json-errors"]
     assert not Path(run[4]).exists(), "the summary file is removed after it is read"
-    assert isinstance(exc, AirflowFailException) and str(exc) == "generic (orders)"
+    assert isinstance(exc, AirflowFailException) and str(exc) == "generic (orders): db error: relation missing"
     payload = ti.store[("task", "return_value")]
     assert [(u["export"], u["status"], u["rows"]) for u in payload["units"]] == [
         ("users", "success", 500),
@@ -673,7 +674,7 @@ def test_env_is_not_a_templated_field() -> None:
 def test_exit_0_with_a_failed_unit_in_the_summary_is_a_failed_task(rig: Rig) -> None:
     rig.scenario(run={"exit": 0, "summary": {"per_export": [entry("users", rows=5), entry("orders", "failed")]}})
     exc, ti = rig.run(rig.operator(RivetRunOperator))
-    assert isinstance(exc, AirflowFailException) and str(exc) == "generic (orders)"
+    assert isinstance(exc, AirflowFailException) and str(exc) == "generic (orders): cell value 4111-1111"
     payload = ti.store[("task", "return_value")]
     assert payload["decision"] == "fail" and "exit_zero_failed_unit" in payload["degraded"]
     assert payload["error"] == payload["units"][1]["error"] and payload["error"]["class"] == "generic"

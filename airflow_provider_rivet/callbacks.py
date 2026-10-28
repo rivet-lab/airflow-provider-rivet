@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .operators import XCOM_KEY
-from .result import REFUSED
+from .result import REFUSED, error_text, redact
 
 MAX_UNITS = 10
 # the thread's code block; a webhook message carries title and link too, and stays under Slack's 4000
@@ -22,6 +22,9 @@ THREAD_TEXT_LIMIT = 3500
 WEBHOOK_TEXT_LIMIT = 3000
 # how much of the end of rivet's stderr file is read for its error lines
 STDERR_TAIL = 65_536
+# how much of rivet's error text `format_failure` carries (the thread has the text whole, up to its own limit; the title,
+# a channel's list of titles, holds none of it: error text can hold source values)
+MESSAGE_REASON_LIMIT = 300
 # a child of Airflow's task logger: the line lands in the task log on Airflow 2 and 3 alike
 log = logging.getLogger("airflow.task.rivet_slack")
 
@@ -47,9 +50,11 @@ def _class_and_retry(error: Mapping[str, Any]) -> str:
 
 
 def format_failure(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, run_id: str, log_url: str = "") -> str:
-    """A Slack message from the XCom payload: code, class, action and unit; never rivet's error text."""
+    """A Slack message from the XCom payload: code, class, action and unit, and rivet's error text on one line."""
     lines = [f":x: *{dag_id}.{task_id}* failed (run `{run_id}`)"]
     payload = payload or {}
+    if reason := _reason(payload):
+        lines.append(f"rivet said: {reason}")
     if payload.get(REFUSED):
         lines.append(f"refused before rivet started: `{payload[REFUSED]}`")
     failed = _failed_units(payload)
@@ -74,7 +79,7 @@ def format_failure(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: s
 
 
 def format_title(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, exception: Any = None) -> str:
-    """`dag.task — <error type>`: the rivet code and final / retryable, else the exception's class."""
+    """`dag.task — <error type>`: the rivet code and final / retryable, else the exception's class; no error text."""
     payload = payload or {}
     if payload.get(REFUSED):
         kind = f"{payload[REFUSED]} (final)"
@@ -91,22 +96,11 @@ def format_title(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str
     return f"{dag_id}.{task_id} — {kind}"
 
 
-def _redact(text: str) -> str:
-    """Airflow's secrets masker over the text: every Connection password and masked value this task process saw."""
-    try:  # Airflow 3.3+; 3.0-3.2; 2.x
-        from airflow.sdk._shared.secrets_masker import redact
-    except ImportError:
-        try:
-            from airflow.sdk.execution_time.secrets_masker import redact
-        except ImportError:
-            from airflow.utils.log.secrets_masker import redact
-    return str(redact(text))
+def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
+    """rivet's error lines in the failed step's stderr file as (code, text): its `--json-errors` objects, else `Error:`
+    lines (no code).
 
-
-def _rivet_errors(payload: Mapping[str, Any]) -> list[str]:
-    """rivet's error lines in the failed step's stderr file: its `--json-errors` objects, else `Error:` lines.
-
-    Only the end of the file is read: the error is the last thing rivet writes.
+    Only the end of the file is read: the error is the last thing rivet writes. Lines end at `\\n` alone (D01).
     """
     path = payload.get("stderr_path")
     if not path:
@@ -114,23 +108,30 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[str]:
     try:
         with open(path, "rb") as f:
             f.seek(max(f.seek(0, 2) - STDERR_TAIL, 0))
-            lines = f.read().decode(errors="replace").splitlines()  # UTF-8, the default
+            lines = f.read().decode(errors="replace").split("\n")  # UTF-8, the default
     except OSError:
         return []
-    found, plain = [], []
+    found: list[tuple[str | None, str]] = []
+    plain: list[tuple[str | None, str]] = []
     for line in lines:
         try:
             obj = json.loads(line)
         except ValueError:  # no JSON value starts with `e`, so an `Error:` line is never one
             if line.lstrip().lower().startswith("error:"):
-                plain.append(line.strip())
+                plain.append((None, line.strip()))
             continue
         if isinstance(obj, dict):
             text = obj.get("error") if isinstance(obj.get("error"), str) else obj.get("message")
             if isinstance(text, str) and text:
                 code = obj.get("code")
-                found.append(f"[{code}] {text}" if isinstance(code, str) and code and code not in text else text)
+                found.append((code if isinstance(code, str) and code and code not in text else None, text))
     return found or plain  # the human `Error:` line repeats the object when both are printed
+
+
+def _reason(payload: Mapping[str, Any], limit: int = MESSAGE_REASON_LIMIT) -> str | None:
+    """rivet's error text of the failed step on one line (`result.error_text`): its last error line."""
+    errors = _rivet_errors(payload)
+    return error_text(errors[-1][1], limit) if errors else None
 
 
 def format_error_text(payload: Mapping[str, Any] | None, *, exception: Any = None, limit: int, log_url: str = "") -> str:
@@ -138,10 +139,10 @@ def format_error_text(payload: Mapping[str, Any] | None, *, exception: Any = Non
 
     No traceback and no other stderr. When the text is cut, the last line says so and points at the task log.
     """
-    lines = _rivet_errors(payload or {})
+    lines = [f"[{code}] {text}" if code else text for code, text in _rivet_errors(payload or {})]
     if not lines and exception is not None:
         lines = [str(exception) or type(exception).__name__]
-    text = _redact("\n".join(lines) or "no error text: the task failed without a rivet result or an exception")
+    text = redact("\n".join(lines) or "no error text: the task failed without a rivet result or an exception")
     if len(text) <= limit:
         return text
     tail = f"\n… truncated, full log: {log_url or 'the task log'}"
@@ -170,7 +171,7 @@ class _Alert:
 
     @property
     def title(self) -> str:
-        return _redact(format_title(self.payload, dag_id=self.dag_id, task_id=self.task, exception=self.exception))
+        return redact(format_title(self.payload, dag_id=self.dag_id, task_id=self.task, exception=self.exception))
 
     @property
     def context_line(self) -> str:

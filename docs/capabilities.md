@@ -23,7 +23,6 @@ so the "rivet >=" column is the first release that carries that section.
 |---|---|---|---|
 | `no_notify` | global `--no-notify` | does not pass it; warns when the config has a `notifications:` block | D9, rivet >= unreleased |
 | `lock_wait` | global `--lock-wait` and the per-export run lease | does not pass it; the builders set `max_active_runs=1` and `max_active_tis_per_dag=1` | D7, rivet >= unreleased |
-| `error_object` | `class`, `retryable`, `kind`, `action` on the `--json-errors` line | derives `class` and `retryable` from the printed line's integer `exit_class`; `kind` and `action` are null | D1/D2, rivet >= unreleased |
 | `per_unit_error` | `failures[]` and `per_export[].error` | when several units of one process failed, each carries the process-level object | D2/D3, rivet >= unreleased |
 | `stop_reason` | CDC `stop_reason` and `tables[]` | `stop_reason` is null: a `max_events` stop cannot be told from `caught_up` | D4, rivet >= unreleased |
 | `load_filter` | `--export` on `rivet load` / `rivet compact` | writes a single-export copy of the config and loads that: the other `- name:` items are cut out of the original text, so what stays (quoted `${VAR}`, comments, anchors) is byte-exact; a stream keeps the batch exports its `cdc.backfill` reads; a text that cannot be cut safely (an anchor a kept item reads, an item sharing a line) is refused before rivet starts (`RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE`) | D3, rivet >= unreleased |

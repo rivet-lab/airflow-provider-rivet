@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -87,10 +87,8 @@ class Reading:
         if step.signal is None and step.exit_status == 0:
             return None
         if step.signal is None and step.line is not None:
-            error, derived = error_from_line(step.line, step.exit_status)
+            error = error_from_line(step.line, step.exit_status)
             if error is not None:
-                if derived:
-                    self.degraded.add("error_object")
                 return error
             self.degraded.add("result_malformed")
         elif step.signal is None and step.broken:
@@ -120,9 +118,12 @@ class Reading:
             self.degraded.add("result_malformed")
         return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
 
-    def unit_error(self, step: _Step, error: ErrorObject | None, own: Any, export: str | None, table: str | None) -> ErrorObject:
+    def unit_error(
+        self, step: _Step, error: ErrorObject | None, own: Any, export: str | None, table: str | None, said: Any = None
+    ) -> ErrorObject:
         """A failed unit's object: its own, its `failures[]` entry, or the process-level one (recorded): rivet's printed
-        object, else the exit's, else (exit 0) `EXIT_ZERO`."""
+        object, else the exit's, else (exit 0) `EXIT_ZERO`; the process-level one speaks with the unit's own `said`
+        (a `per_export` entry's `error_message`) when the entry has one."""
         failures = (step.line or {}).get("failures")
         candidates = [own] if own is not None else []
         for entry in failures if isinstance(failures, list) else []:
@@ -136,7 +137,8 @@ class Reading:
                 return parsed
             self.degraded.add("result_malformed")
         self.degraded.add("per_unit_error")
-        return error or EXIT_ZERO  # no process-level object only after a clean exit 0 (`classify`)
+        shared = error or EXIT_ZERO  # no process-level object only after a clean exit 0 (`classify`)
+        return replace(shared, message=said) if isinstance(said, str) and said else shared
 
     def settled(self, units: list[UnitResult]) -> list[UnitResult]:
         """The units; one failed unit has the process's error as its own, so the fallback is no degradation then."""
@@ -156,7 +158,7 @@ class Reading:
             name, status = self.malformed(entry.get("export_name"), str), self.status(entry.get("status"))
             unit_error = None  # pragma: no mutate - a unit not failed is read by its status, its error by truthiness
             if status == "failed":
-                unit_error = self.unit_error(step, error, entry.get("error"), name, None)
+                unit_error = self.unit_error(step, error, entry.get("error"), name, None, entry.get("error_message"))
             if entry.get("mode") == "cdc" and status == "success" and "stop_reason" not in entry:
                 self.degraded.add("stop_reason")
             units.append(

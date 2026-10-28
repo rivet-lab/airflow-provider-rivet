@@ -226,10 +226,13 @@ def test_no_password_reaches_the_metadata_database_the_logs_or_an_exception(
     assert "AIRFLOW_CONN_RIVET_PG" not in batch.calls()[-1]["env_keys"]
     captured = capfd.readouterr()
     text = captured.out + captured.err + "\n".join(r.getMessage() + str(r.exc_info or "") for r in caplog.records)
-    for secret in (b"c0nn-s3cr3t", b"s3cr3t-pw", b"4111-1111"):
+    for secret in (b"c0nn-s3cr3t", b"s3cr3t-pw"):
         assert scan(batch.home, secret) == [], f"{secret!r} is in a file of the Airflow home (metadata DB or task log)"
         assert secret.decode() not in text, f"{secret!r} reached a log record or the process's stdout / stderr"
         assert scan(batch.state_dir / "logs", secret), "the fake did print it to its stderr file"
+    # rivet's error text (a source value in it) is in the task log lines since #100, in no file of the Airflow home
+    assert scan(batch.home, b"4111-1111") == [], "no metadata DB row or XCom carries rivet's error text"
+    assert "refused: row 4111-1111" in text, "the task log lines carry it"
     assert scan(batch.home, str(batch.state_dir).encode()), "the scan sees the rendered fields: state_dir is in them"
     assert "rivet apply a → OK" in text, "the scan sees the task's log lines (the JSON records are at DEBUG)"
 

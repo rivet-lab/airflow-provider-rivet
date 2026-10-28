@@ -7,6 +7,20 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- A failed task says why. rivet's error text (the `error` of the `--json-errors` line, and for a failed unit the
+  `error_message` of its `--summary-output` entry or the `message` of its error object) is on the failure headline and
+  on a failed unit's line of the task log, at the end of the `AirflowException` / `AirflowFailException` text
+  (`[code] class: action (export): text`), and in `format_failure`'s `rivet said:` line. It is read as hostile text:
+  Airflow's secrets masker reads it first, then it is cut at `\n` only, joined on one line, its control characters
+  shown as `\u{1b}`-style escapes, and bounded to 300 characters. The Slack title still holds none of it, and
+  XCom still never carries it. rivet's text can hold a **source value** (a cell that failed to convert), which the task
+  log and the exception now show; the masker knows credentials, not data. rivet 0.32.2's own `--json-errors` shape
+  (`error`, `exit_class`, `code`) is the normal path: the `error_object` degradation and its note ("rivet's failure line
+  has no class or action") are gone from the XCom `degraded` list, the task log and `docs/capabilities.md`; a line with
+  the contract's own keys (`class`, `retryable`) or a malformed one is read as before. **Upgrade:** nothing is stored
+  and nothing to migrate; a log reader that matched the old exception text exactly (`[code] class (export)`) now sees
+  `: text` after it, and one that read the `error_object` key finds it absent.
+
 - `build_source_dags` reads each export's layout as rivet resolves it, once, for both modes. A **batch** DAG over a
   BigQuery config with `layout: base_buffer` (what `rivet init --mode incremental` writes) now has `compact.<export>`
   after `load.<export>`; before, it had none, so `<table>` stayed the first pass's snapshot while `<table>__changes`

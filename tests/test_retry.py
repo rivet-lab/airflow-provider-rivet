@@ -364,6 +364,6 @@ def test_rivet_0322_codes_end_the_task_by_their_printed_class(
     rig.scenario(flags=NEW_FLAGS, **{sub: {"exit": exit_code, "line": line}})
     exc, ti = rig.run(rig.operator(command, export=export, **kwargs))
     assert type(exc) is raised, exc
-    assert str(exc) == f"[{code}] {class_}: the registry's remedy ({export})"
+    assert str(exc) == f"[{code}] {class_}: the registry's remedy ({export}): x"
     payload = ti.store[("task", "return_value")]
     assert payload["decision"] == ("retry" if retryable else "fail") and payload["error"]["code"] == code

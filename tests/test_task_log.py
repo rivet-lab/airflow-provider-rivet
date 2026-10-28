@@ -229,8 +229,14 @@ def test_golden_rivet_answers_a_replay_of_an_applied_plan(rig: Rig, log: Recorde
 # --- golden: failures -----------------------------------------------------------------------------------------------
 
 
+FIXTURE_TEXT = (
+    "2 export(s) failed; representative error follows (also: export 'events': connection reset by peer): "
+    "exit class 5: export 'orders_cdc': the checkpoint position is no longer in the source log"
+)
+
+
 def test_golden_refused_final_with_its_action(rig: Rig, log: Recorder) -> None:
-    """A refusal: one ERROR headline, REFUSED, its code, `final`, the registry action; the stderr path, never its text."""
+    """A refusal: one ERROR headline, REFUSED, its code, `final`, the registry action, rivet's own text; the stderr path."""
     line = fixture("json_errors.json")
     rig.scenario(flags=NEW_FLAGS, apply={"exit": 5, "line": line})
     exc, ti = rig.run(rig.operator(RivetApplyOperator, export="orders"))
@@ -239,7 +245,7 @@ def test_golden_refused_final_with_its_action(rig: Rig, log: Recorder) -> None:
     error = payload["error"]
     assert error["class"] == "refusal" and error["action"]
     assert log.shown() == [
-        f"ERROR rivet apply orders → REFUSED [{error['code']}], final, action: {error['action']}",
+        f"ERROR rivet apply orders → REFUSED [{error['code']}], final, action: {error['action']}: {FIXTURE_TEXT}",
         "INFO   plan     sealed, strategy full in 1.0 s",
         "INFO   apply    exit 5 in 1.0 s",
         f"INFO   export   orders: failed [{error['code']}] refusal",
@@ -260,13 +266,12 @@ def test_golden_stale_plan_refused_on_todays_binary(rig: Rig, log: Recorder) -> 
     assert isinstance(exc, AirflowFailException)
     payload = ti.store[("task", "return_value")]
     assert log.shown() == [
-        "ERROR rivet apply users → REFUSED [RIVET_PLAN_ARTIFACT_STALE], final",
+        "ERROR rivet apply users → REFUSED [RIVET_PLAN_ARTIFACT_STALE], final: plan 'users': cursor has drifted since plan was generated",
         "INFO   plan     replayed the sealed plan of an earlier try",
         "INFO   apply    exit 5 in 1.0 s",
         "INFO   export   users: failed [RIVET_PLAN_ARTIFACT_STALE] refusal",
         f"INFO   stderr   {payload['stderr_path']}",
         f"INFO {SQLITE}",
-        "INFO   note     rivet's failure line has no class or action: the class is read from its exit class",
     ]
 
 
@@ -278,7 +283,7 @@ def test_golden_transient_failure_says_it_is_retried(rig: Rig, log: Recorder) ->
     assert type(exc) is AirflowException
     payload = ti.store[("task", "return_value")]
     assert log.shown() == [
-        "WARNING rivet run orders → FAILED [RIVET_SOURCE_CONNECT], retryable, Airflow retries it (try 1 of 3)",
+        "WARNING rivet run orders → FAILED [RIVET_SOURCE_CONNECT], retryable, Airflow retries it (try 1 of 3): connection reset",
         "INFO   run      exit 2 in 1.0 s",
         "INFO   export   orders: failed [RIVET_SOURCE_CONNECT] retryable",
         f"INFO   stderr   {payload['stderr_path']}",
@@ -286,7 +291,10 @@ def test_golden_transient_failure_says_it_is_retried(rig: Rig, log: Recorder) ->
     ]
     log.lines.clear()
     rig.run(rig.operator(RivetRunOperator, export="orders"), FakeTI(try_number=3, max_tries=2))
-    assert log.shown()[0] == "ERROR rivet run orders → FAILED [RIVET_SOURCE_CONNECT], retryable, no try left (try 3 of 3)"
+    assert (
+        log.shown()[0]
+        == "ERROR rivet run orders → FAILED [RIVET_SOURCE_CONNECT], retryable, no try left (try 3 of 3): connection reset"
+    )
 
 
 def test_golden_crashed_by_a_signal(rig: Rig, log: Recorder) -> None:
@@ -479,13 +487,16 @@ def test_every_degradation_reads_as_words_without_a_red_keyword() -> None:
     assert not [t for t in texts if any(word in t.lower() for word in words)]
 
 
-def test_the_readable_lines_hold_no_secret_and_no_rivet_text(rig: Rig, log: Recorder) -> None:
-    """rivet's stderr (which leaks the URL here) and its error message stay out of every line, DEBUG included."""
+def test_the_readable_lines_hold_no_secret_and_rivet_says_why(rig: Rig, log: Recorder) -> None:
+    """rivet's stderr (which leaks the URL here) stays out of every line, DEBUG included; its error text is in the
+    headline (see #100), a source value in it with it: XCom is where it never goes."""
     line = {"error": "row 4111-1111 refused", "exit_class": 5, "code": "RIVET_X"}
     rig.scenario(run={"exit": 5, "line": line})
-    rig.run(rig.operator(RivetRunOperator, export="orders"))
+    _, ti = rig.run(rig.operator(RivetRunOperator, export="orders"))
     blob = "\n".join(text for _, text in log.lines)
-    assert SECRET not in blob and "4111-1111" not in blob and not re.search(r"connecting with", blob)
+    assert SECRET not in blob and not re.search(r"connecting with", blob)
+    assert "rivet run orders → REFUSED [RIVET_X], final: row 4111-1111 refused" in blob
+    assert "4111-1111" not in json.dumps(ti.store[("task", "return_value")])
 
 
 LOAD_BLOCK = "load:\n  target: bigquery\n  project: rivet-data-tool\n  dataset: demo_cdc\n"
@@ -572,3 +583,118 @@ def test_golden_load_of_several_tables_counts_tables_rows_and_jobs(rig: Rig, log
     )
     failed = [line for line in shown if line.startswith("INFO   table    events.events")]
     assert failed and failed[0].endswith(", job rivet_load_events_1 (run 20261006T101900.456-load)")
+
+
+# --- #100: rivet's reason on the failure lines -----------------------------------------------------------------------
+
+# rivet 0.32.2's `--json-errors` line (src/cli/mod.rs `run_binary`): `error`, `exit_class` and, for a coded error, `code`
+WAREHOUSE_REASON = "BigQuery job rivet_t_0 failed: Not found: Table p:d.t__changes was not found in location US"
+WAREHOUSE_LINE = {"error": f"table 'orders': {WAREHOUSE_REASON}", "exit_class": 1, "code": "RIVET_LOAD_WAREHOUSE_REJECTED"}
+
+
+def rejected_compact() -> dict:
+    """The compact result of the pinned fixture with its one failed table: the object `redact::error_object` prints."""
+    table = {
+        **fixture("compact_result.json")["per_table"][-1],
+        "export": "orders_cdc",
+        "table": "orders",
+        "target": "p.d.t",
+        "buffer": "p.d.t__changes",
+    }
+    table["error"] = {
+        "code": "RIVET_LOAD_WAREHOUSE_REJECTED",
+        "kind": "rejected",
+        "class": "generic",
+        "exit_code": 1,
+        "retryable": False,
+        "action": "read the warehouse's reason in the message",
+        "message": f"table 'orders': {WAREHOUSE_REASON}",
+    }
+    return {"run_id": "65ed", "per_table": [table]}
+
+
+def test_golden_compact_rejected_by_the_warehouse_says_why(rig: Rig, log: Recorder) -> None:
+    """#100: the headline and the failed table's line carry rivet's reason; the 0.32.2 line is no degradation."""
+    rig.scenario(flags=NEW_FLAGS, compact={"exit": 1, "line": WAREHOUSE_LINE, "summary": rejected_compact()})
+    exc, ti = rig.run(rig.operator(RivetCompactOperator, export="orders_cdc", table="orders"))
+    payload = ti.store[("task", "return_value")]
+    assert type(exc) is AirflowFailException, (exc, payload)
+    assert "error_object" not in payload["degraded"]
+    why = f"table 'orders': {WAREHOUSE_REASON}"
+    assert log.shown() == [
+        f"ERROR rivet compact orders_cdc table orders → p.d.t__changes into p.d.t: FAILED [RIVET_LOAD_WAREHOUSE_REJECTED] generic, final (run 65ed): {why}",
+        "INFO   compact  exit 1 in 1.0 s",
+        "INFO   table    orders_cdc.orders → p.d.t__changes into p.d.t: failed [RIVET_LOAD_WAREHOUSE_REJECTED] generic (run 65ed)",
+        f"INFO   stderr   {payload['stderr_path']}",
+        f"INFO {SQLITE}",
+    ]
+    assert str(exc) == f"[RIVET_LOAD_WAREHOUSE_REJECTED] generic (orders_cdc): {why}"
+
+
+PLANTED = "hunter2-planted-by-a-connection"
+
+
+@pytest.fixture
+def planted() -> str:
+    """A value registered with Airflow's secrets masker, as a Connection's password is when a task reads it."""
+    try:
+        from airflow.sdk.log import mask_secret
+    except ImportError:
+        from airflow.utils.log.secrets_masker import mask_secret
+    mask_secret(PLANTED)
+    return PLANTED
+
+
+def test_a_planted_credential_in_rivets_line_reaches_neither_the_log_nor_the_exception(
+    rig: Rig, log: Recorder, planted: str
+) -> None:
+    line = {"error": f"load failed with {planted}", "exit_class": 1, "code": "RIVET_LOAD_WAREHOUSE_REJECTED"}
+    rig.scenario(flags=NEW_FLAGS, run={"exit": 1, "line": line})
+    exc, ti = rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert isinstance(exc, AirflowFailException)
+    blob = "\n".join(text for _, text in log.lines) + str(exc) + json.dumps(rig.records) + json.dumps(list(ti.store.values()))
+    assert planted not in blob
+    assert str(exc) == "[RIVET_LOAD_WAREHOUSE_REJECTED] generic (orders): load failed with ***"
+    assert "FAILED [RIVET_LOAD_WAREHOUSE_REJECTED] generic, final: load failed with ***" in "\n".join(t for _, t in log.lines)
+
+
+def test_a_multi_line_text_is_one_headline(rig: Rig, log: Recorder) -> None:
+    line = {
+        "error": "1 export(s) could not be typed:\n  - export 'orders': no spec",
+        "exit_class": 1,
+        "code": "RIVET_LOAD_SPEC_MISSING",
+    }
+    rig.scenario(flags=NEW_FLAGS, run={"exit": 1, "line": line})
+    exc, _ = rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert str(exc) == "[RIVET_LOAD_SPEC_MISSING] generic (orders): 1 export(s) could not be typed: | - export 'orders': no spec"
+    assert all("\n" not in text for _, text in log.lines)
+
+
+def test_a_failed_units_own_text_is_on_its_line_when_it_differs_from_the_headline(rig: Rig, log: Recorder) -> None:
+    summary = {
+        "per_export": [
+            {"export_name": "users", "status": "success", "rows": 5, "files": 1, "mode": "full", "run_id": "u1"},
+            {"export_name": "orders", "status": "failed", "run_id": "o1", "error_message": "cell   value 4111-1111"},
+        ]
+    }
+    rig.scenario(flags=NEW_FLAGS, run={"exit": 1, "line": {"error": "run failed", "exit_class": 1}, "summary": summary})
+    exc, ti = rig.run(rig.operator(RivetRunOperator))
+    shown = [text for _, text in log.lines]
+    assert str(exc) == "generic (orders): run failed"
+    assert "  export   orders: failed generic (run o1): cell \\u{2028} value 4111-1111" in shown
+    assert any(text.endswith("generic, final (run o1): run failed") for text in shown), shown
+    assert "4111-1111" not in json.dumps(list(ti.store.values()))
+
+
+def test_a_unit_whose_text_is_the_headlines_says_it_once(rig: Rig, log: Recorder) -> None:
+    summary = {"per_export": [{"export_name": "orders", "status": "failed", "run_id": "o1", "error_message": "same words"}]}
+    rig.scenario(flags=NEW_FLAGS, run={"exit": 1, "line": {"error": "same words", "exit_class": 1}, "summary": summary})
+    rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert sum("same words" in line for line in log.shown()) == 1, log.shown()
+
+
+def test_a_successful_task_has_no_error_record_and_no_text(rig: Rig, log: Recorder) -> None:
+    rig.scenario(flags=NEW_FLAGS, run={"summary": {"per_export": [{"export_name": "orders", "status": "success", "rows": 3}]}})
+    rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert rig.events("rivet.error") == []
+    assert not any("FAILED" in line for line in log.shown()) and log.shown()[0].startswith("INFO rivet run orders")
