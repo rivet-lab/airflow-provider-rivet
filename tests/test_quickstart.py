@@ -71,6 +71,7 @@ def test_a_cdc_config_of_one_table_and_own_storage_and_warehouse(tmp_path: Path)
     (dags / "rivet" / "billing_cdc.yaml").write_text(
         "source: {type: postgres, url_env: RIVET_SOURCE_URL}\n"
         "exports:\n  - name: invoices_cdc\n    table: invoices\n    mode: cdc\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: billing_cdc}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     line = '    "billing_cdc": {"source": "rivet_billing", "storage": "rivet_s3_aws", "warehouse": "rivet_clickhouse_own"},\n'
@@ -88,6 +89,7 @@ def test_a_config_of_several_streams_builds_a_group_per_stream_with_each_tables_
         "exports:\n"
         "  - {name: dbo_orders, tables: [dbo.orders, dbo.lines], mode: cdc}\n"
         "  - {name: dbo_customers, table: dbo.customers, mode: cdc}\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: erp_cdc}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     (dags / "rivet_quickstart.py").write_text(
@@ -97,13 +99,13 @@ def test_a_config_of_several_streams_builds_a_group_per_stream_with_each_tables_
     assert set(dag.task_group.children) == {"dbo_orders", "dbo_customers", "watcher"}
     assert set(dag.task_ids) == {
         "dbo_orders.run",
-        "dbo_orders.load.dbo.orders",
-        "dbo_orders.load.dbo.lines",
+        "dbo_orders.load.dbo_orders",
+        "dbo_orders.load.dbo_lines",
         "dbo_customers.run",
-        "dbo_customers.load.dbo.customers",
+        "dbo_customers.load.dbo_customers",
         "watcher",
-    }  # ClickHouse: no compact, as for one stream
-    for stream, tables in (("dbo_orders", ("dbo.orders", "dbo.lines")), ("dbo_customers", ("dbo.customers",))):
+    }  # ClickHouse: no compact, as for one stream; the warehouse names, as build_source_dags builds them
+    for stream, tables in (("dbo_orders", ("dbo_orders", "dbo_lines")), ("dbo_customers", ("dbo_customers",))):
         run = dag.get_task(f"{stream}.run")
         assert run.export == stream and run.upstream_task_ids == set()
         for table in tables:
@@ -183,7 +185,8 @@ def test_a_stream_without_a_written_mode_or_with_a_numeric_name_is_read_as_rivet
     dags = tmp_path / "dags"
     shutil.copytree(DAG_FILE.parent, dags)
     (dags / "rivet" / "num_batch.yaml").write_text(
-        "source: {type: postgres, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: 2024, table: t}\n  - not an export\n"
+        "source: {type: postgres, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: 2024, table: t}\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: num_batch}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     (dags / "rivet_quickstart.py").write_text(

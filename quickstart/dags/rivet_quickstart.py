@@ -13,10 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
-from airflow_provider_rivet.dags import build_batch_dag, build_cdc_streams_dag
-from airflow_provider_rivet.exports import entries_of, mode_of, name_of, tables_of
+from airflow_provider_rivet.dags import build_config_dag
 
 #: pipeline name -> its Connections: `source` (required), `storage` and `warehouse` (default: the stack's own)
 PIPELINES = {
@@ -31,8 +28,6 @@ SCHEDULE = "*/10 * * * *"
 
 for pipeline, conns in PIPELINES.items():
     config = CONFIG_DIR / f"{pipeline}.yaml"
-    exports = entries_of(yaml.safe_load(config.read_text()))
-    streams = [e for e in exports if mode_of(e) == "cdc"]
     common = {
         "config": str(config),
         "state_dir": str(STATE_ROOT / pipeline),
@@ -44,12 +39,6 @@ for pipeline, conns in PIPELINES.items():
             "connections": [conns.get("storage", "rivet_s3"), conns.get("warehouse", "rivet_clickhouse")],
         },
     }
-    if streams:
-        # ClickHouse collapses a change log by key itself: there is nothing to compact.
-        # init writes one stream per table outside PostgreSQL `public`, on SQL Server, Oracle and MongoDB: a group each
-        dag = build_cdc_streams_dag(
-            f"rivet_{pipeline}", streams=[(name_of(e), tables_of(e)) for e in streams], compact=False, **common
-        )
-    else:
-        dag = build_batch_dag(f"rivet_{pipeline}", exports=[name_of(e) for e in exports], **common)
+    # ClickHouse collapses a change log by key itself: the config's target leaves nothing to compact
+    dag = build_config_dag(f"rivet_{pipeline}", **common)
     globals()[dag.dag_id] = dag

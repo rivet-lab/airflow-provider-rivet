@@ -227,40 +227,9 @@ def build_cdc_dag(
     **dag_kwargs: Any,
 ) -> DAG:
     """One `run` task for the stream, then load.T >> compact.T per captured table."""
-    return build_cdc_streams_dag(
-        dag_id,
-        config=config,
-        streams=[(export, tables)],
-        state_dir=state_dir,
-        load=load,
-        compact=compact,
-        operator_kwargs=operator_kwargs,
-        **dag_kwargs,
-    )
-
-
-def build_cdc_streams_dag(
-    dag_id: str,
-    *,
-    config: str,
-    streams: Sequence[tuple[str, Sequence[str]]],
-    state_dir: str | None = None,
-    load: bool = True,
-    compact: bool = True,
-    operator_kwargs: Mapping[str, Any] | None = None,
-    **dag_kwargs: Any,
-) -> DAG:
-    """The CDC DAG of several streams, each an `(export, tables)` pair: a group per stream, named after its export, with
-    its `run`, `load.T` and (with `compact`) `compact.T`. One stream is `build_cdc_dag`'s DAG, with no group."""
-    if not streams:
-        raise ValueError("`streams` is empty: name at least one (export, tables) stream")
-    named = [(export, _names("tables", tables)) for export, tables in streams]
+    tables = _names("tables", tables)
     return _cdc_dag(
-        dag_id,
-        [(export, tables, tables if compact else []) for export, tables in named],
-        load,
-        _common(config, state_dir, operator_kwargs),
-        dag_kwargs,
+        dag_id, [(export, tables, tables if compact else [])], load, _common(config, state_dir, operator_kwargs), dag_kwargs
     )
 
 
@@ -376,6 +345,33 @@ def _config_dag(
     url_env = (doc.get("source") or {}).get("url_env")
     if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
+    return _dag_of_config(dag_id, mode, config, doc, common)
+
+
+def build_config_dag(
+    dag_id: str,
+    *,
+    config: str,
+    mode: str | None = None,
+    state_dir: str | None = None,
+    operator_kwargs: Mapping[str, Any] | None = None,
+    **dag_kwargs: Any,
+) -> DAG:
+    """The DAG of a rivet config, built as build_source_dags builds it: every `mode: cdc` stream (a group per stream
+    when there are several) with a load and, where the target merges, a compaction per table, or every batch export
+    with its load. `mode` is inferred from the config when not given: 'cdc' if it has a `mode: cdc` export. Reads only
+    the config at parse time."""
+    if mode not in (None, "cdc", "batch"):
+        raise ValueError("`mode` is 'cdc', 'batch' or None (read from the config)")
+    doc = read_config(config)
+    if mode is None:
+        mode = "cdc" if any(mode_of(e) == "cdc" for e in entries_of(doc)) else "batch"
+    common = {"config": config, "state_dir": state_dir, "operator_kwargs": dict(operator_kwargs or {}), **dag_kwargs}
+    return _dag_of_config(dag_id, mode, Path(config), doc, common)
+
+
+def _dag_of_config(dag_id: str, mode: str, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
+    """The DAG of a config read as `doc`, in `mode`; a config with no export for the mode is refused, coded."""
     exports = entries_of(doc)
     cdc = [e for e in exports if mode_of(e) == "cdc"]
     if mode == "cdc":
@@ -394,7 +390,7 @@ def _config_dag(
             )
             for e in cdc
         ]
-        task_common = _common(common["config"], common["state_dir"], kwargs)
+        task_common = _common(common["config"], common["state_dir"], common["operator_kwargs"])
         dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
         return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
     if cdc:
