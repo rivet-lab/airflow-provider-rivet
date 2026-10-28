@@ -41,14 +41,6 @@ def doc_section(heading: str) -> str:
 RIVET_SRC = Path(os.environ.get("RIVET_SRC") or PACKAGE_ROOT.parent / "rivet").resolve()
 FIXTURES = RIVET_SRC / "tests" / "fixtures" / "scheduler"
 SECRET = "postgresql://rivet:s3cr3t-pw@db.internal:5432/app"
-#: The flags a 0.32.1 binary lacks against the floor (tests/fake_rivet.py models 0.32.2). A test marked
-#: `@pytest.mark.before_0_32_2` runs against a fake without them: it pins a degradation no admitted binary can produce,
-#: kept until the probes it covers are retired (`grep -rn before_0_32_2` lists them all).
-BEFORE_0_32_2 = {
-    "*": ["--no-notify", "--lock-wait"],
-    "load": ["--export", "--table", "--summary-output"],
-    "compact": ["--export", "--table", "--summary-output"],
-}
 #: A config rivet 0.32.2 itself reads (tests/test_fake_rivet.py runs the real binary over it): the fake does not parse
 #: configs as strictly, so a field rivet requires is not seen missing here until that guard runs.
 CONFIG = """\
@@ -133,9 +125,8 @@ class LazyPull:
 class Rig:
     """A fake binary, a config, a state directory, and the calls and log records of one test."""
 
-    def __init__(self, tmp: Path, before_0_32_2: bool = False) -> None:
+    def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
-        self.before_0_32_2 = before_0_32_2
         self.bin = tmp / "bin"
         self.bin.mkdir()
         body = (Path(__file__).parent / "fake_rivet.py").read_text()
@@ -159,7 +150,6 @@ class Rig:
             "version": ".".join(map(str, MIN_RIVET_VERSION)),
             "record_env": ["RIVET_PG_URL", "RIVET_STATE_URL"],
             "leak_env": ["RIVET_PG_URL"],
-            **({"without": BEFORE_0_32_2} if self.before_0_32_2 else {}),
             **spec,
         }
         (self.bin / "scenario.json").write_text(json.dumps(self.spec))
@@ -221,9 +211,9 @@ def own_temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def rig(tmp_path: Path, request: pytest.FixtureRequest) -> Rig:
-    """A fresh rig per test; a test marked `before_0_32_2` gets the fake of a binary without 0.32.2's flags."""
-    return Rig(tmp_path, before_0_32_2=request.node.get_closest_marker("before_0_32_2") is not None)
+def rig(tmp_path: Path) -> Rig:
+    """A fresh rig per test."""
+    return Rig(tmp_path)
 
 
 @pytest.fixture(scope="session")

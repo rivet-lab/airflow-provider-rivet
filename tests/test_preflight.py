@@ -7,12 +7,10 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 from airflow.exceptions import AirflowFailException
 from conftest import RIVET_SRC, FakeTI, Rig
 
 from airflow_provider_rivet import _yaml
-from airflow_provider_rivet.capabilities import probe
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetCdcRunOperator, RivetLoadOperator, RivetRunOperator
 from airflow_provider_rivet.preflight import detect_deployment
 
@@ -130,14 +128,6 @@ def test_a_missing_binary_config_or_export_is_refused(rig: Rig) -> None:
     assert refused(rig, rig.operator(RivetApplyOperator, export="not_in_config")) == "RIVET_AIRFLOW_EXPORT_UNKNOWN"
 
 
-@pytest.mark.before_0_32_2
-def test_a_notifications_block_is_warned_about_until_the_binary_has_no_notify(rig: Rig) -> None:
-    rig.config.write_text(rig.config.read_text() + "notifications:\n  slack:\n    on: [failure]\n")
-    rig.run(rig.operator(RivetRunOperator, export="orders"))
-    assert [w["warning"] for w in rig.events("rivet.warning")] == ["sqlite_single_host", "notifications_block"]
-    assert "--no-notify" not in rig.argv("run")
-
-
 def test_with_no_notify_the_flag_is_passed_and_the_warning_is_gone(rig: Rig) -> None:
     rig.scenario()
     rig.config.write_text(rig.config.read_text() + "notifications:\n  slack:\n    on: [failure]\n")
@@ -151,35 +141,9 @@ def test_postgres_state_on_a_local_worker_does_not_warn_about_sqlite(rig: Rig) -
     assert not rig.events("rivet.warning")
 
 
-@pytest.mark.before_0_32_2
-def test_flags_are_probed_from_help_as_whole_words(rig: Rig) -> None:
-    rig.scenario(flags={"load": ["--export-all"]})
-    caps = probe(str(rig.bin / "rivet"))
-    assert caps.version == (0, 32, 2)
-    assert caps.has_flag("run", "--export") and not caps.has_flag("load", "--export")
-    assert not caps.has_flag("run", "--no-notify")
-
-
 def with_query_file(rig: Rig, ref: str = "sql/orders.sql") -> None:
     """Point the `orders` export at a query file."""
     rig.config.write_text(rig.config.read_text().replace("query: SELECT * FROM orders", f"query_file: {ref}"))
-
-
-@pytest.mark.before_0_32_2
-def test_a_relative_query_file_stays_relative_and_is_copied_beside_the_materialised_config(rig: Rig) -> None:
-    (rig.config_dir / "sql").mkdir()
-    (rig.config_dir / "sql" / "orders.sql").write_text("SELECT 42")
-    with_query_file(rig)
-    payload, _ = rig.run(rig.operator(RivetRunOperator, export="orders"))
-    assert payload["decision"] == "success", rig.calls()
-    assert rig.copy().read_text() == rig.config.read_text(), "the copy is the config as written, comments and all"
-    assert _yaml.load(rig.copy().read_text())["exports"][0]["query_file"] == "sql/orders.sql"
-    assert rig.calls()[-1]["sql"] == {"orders": "SELECT 42"}, "rivet read the SQL through the relative path"
-    (rig.config_dir / "sql" / "orders.sql").write_text("SELECT 43")
-    rig.run(rig.operator(RivetRunOperator, export="orders"))
-    assert rig.calls()[-1]["sql"] == {"orders": "SELECT 43"}, "an edit of the original reaches the next task"
-    rig.run(rig.operator(RivetLoadOperator, export="orders"))
-    assert _yaml.load(rig.copy("orders").read_text())["exports"][0]["query_file"] == "sql/orders.sql"
 
 
 def test_the_fake_binary_refuses_a_query_file_by_rivets_own_rule(rig: Rig) -> None:
@@ -316,3 +280,17 @@ def test_a_relative_destination_path_is_left_as_written_and_resolves_against_the
 def test_the_config_reader_keeps_yaml_1_1_words_as_strings() -> None:
     doc = _yaml.load("notifications:\n  on: [failure]\nat: 12:30:00\nday: 2026-01-01\nn: 100000\nflag: true\n")
     assert doc == {"notifications": {"on": ["failure"]}, "at": "12:30:00", "day": "2026-01-01", "n": 100000, "flag": True}
+
+
+def test_a_relative_query_file_stays_relative_and_is_copied_beside_the_materialised_config(rig: Rig) -> None:
+    (rig.config_dir / "sql").mkdir()
+    (rig.config_dir / "sql" / "orders.sql").write_text("SELECT 42")
+    with_query_file(rig)
+    payload, _ = rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert payload["decision"] == "success", rig.calls()
+    assert rig.copy().read_text() == rig.config.read_text(), "the copy is the config as written, comments and all"
+    assert _yaml.load(rig.copy().read_text())["exports"][0]["query_file"] == "sql/orders.sql"
+    assert rig.calls()[-1]["sql"] == {"orders": "SELECT 42"}, "rivet read the SQL through the relative path"
+    (rig.config_dir / "sql" / "orders.sql").write_text("SELECT 43")
+    rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert rig.calls()[-1]["sql"] == {"orders": "SELECT 43"}, "an edit of the original reaches the next task"

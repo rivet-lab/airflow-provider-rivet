@@ -285,8 +285,8 @@ class _Session:
         if self.req.log_keep is not None:
             _prune_logs(self.logs, max(1, self.req.log_keep))
 
-    def config_for(self, only_export: str | None) -> str:
-        """The config path rivet reads: a copy in the state directory, narrowed to one export when asked. rivet resolves
+    def config_for(self) -> str:
+        """The config path rivet reads: the config itself, or a copy in the state directory. rivet resolves
         the config's relative paths (its SQLite state, a `cdc.checkpoint`, a `query_file`, a local destination) against
         the config's directory, so the copy puts all of them in the state directory (docs/state.md).
 
@@ -296,29 +296,17 @@ class _Session:
         source = Path(self.req.config).resolve()
         named = Path(os.path.abspath(self.req.config))
         target_dir = self.pf.state_dir
-        if only_export is None and (target_dir is None or source.parent == target_dir.resolve()):
+        if target_dir is None or source.parent == target_dir.resolve():
             return str(source)
-        folder = target_dir if target_dir is not None else self.work
-        if folder.resolve() != source.parent:
-            _copy_query_files(self.pf.config, source, folder, self.req.export)
-        if only_export is None:
-            return _write_atomic(folder / copy_name(named), source.read_bytes())
-        return _write_atomic(folder / copy_name(named, only_export), narrowed_config(self.pf, str(source), only_export).encode())
+        _copy_query_files(self.pf.config, source, target_dir, self.req.export)
+        return _write_atomic(target_dir / copy_name(named), source.read_bytes())
 
-    def globals_for(self, subcommand: str) -> list[str]:
-        """The global flags this binary accepts; a missing one is recorded, never passed."""
+    def globals_for(self) -> list[str]:
+        """The global flags of every rivet step (rivet >= 0.32.2 has all three on every subcommand)."""
         flags = ["--json-errors"]
-        if self.req.rivet_notifications:
-            pass  # the user keeps rivet's own `notifications:` on
-        elif self.pf.caps.has_flag(subcommand, "--no-notify"):
+        if not self.req.rivet_notifications:  # else the user keeps rivet's own `notifications:` on
             flags.append("--no-notify")
-        else:
-            self.degraded.add("no_notify")
-        if self.pf.caps.has_flag(subcommand, "--lock-wait"):
-            flags += ["--lock-wait", str(self.req.lock_wait)]
-        else:
-            self.degraded.add("lock_wait")
-        return flags
+        return [*flags, "--lock-wait", str(self.req.lock_wait)]
 
     def step(self, name: str, argv: list[str], stdout_to: Path | None = None) -> _Step:
         """Run one rivet process with stdout and stderr sent to private files, and read its error line.
@@ -352,12 +340,10 @@ class _Session:
         signal = -code if code < 0 else None
         return _Step(None if signal else code, signal, _error_line(lines), _has_broken_object(lines))
 
-    def step_with_result(self, name: str, argv: list[str], result: Path | None) -> tuple[_Step, ErrorObject | None, Any]:
-        """Run a step asked to write `result` (`None`: no result file), classify its exit, read and remove the file."""
+    def step_with_result(self, name: str, argv: list[str], result: Path) -> tuple[_Step, ErrorObject | None, Any]:
+        """Run a step asked to write `result`, classify its exit, read and remove the file."""
         step = self.step(name, argv)
         error = self.read.classify(step)
-        if result is None:
-            return step, error, None
         doc = self.read.result_file(result, step)
         result.unlink(missing_ok=True)
         return step, error, doc
@@ -520,60 +506,14 @@ def _tail(path: Path) -> str:
     return data.decode(errors="replace")
 
 
-def narrowed_exports(exports: list[Any], only_export: str) -> set[int]:
-    """The positions of the export and of the batch exports its `cdc.backfill` reads its baseline through: rivet refuses
-    a stream whose recipes are missing (`backfill: auto` pairs by `table:`, a list names them). Names compare as the
-    text rivet reads (D07: `name: 2024` is `"2024"`)."""
-    text = _yaml.text_of
-    entries = {i: e for i, e in enumerate(exports) if isinstance(e, dict)}
-    chosen = [e for e in entries.values() if text(e.get("name")) == only_export]
-    cdc = chosen[0].get("cdc") if chosen else None
-    backfill = cdc.get("backfill") if isinstance(cdc, dict) else None
-    if text(backfill) == "auto":
-        tables = {text(t) for t in chosen[0].get("tables") or []}
-        recipes = {
-            text(e.get("name")) for e in entries.values() if text(e.get("mode")) != "cdc" and text(e.get("table")) in tables
-        }
-    elif isinstance(backfill, list):
-        recipes = {text(b) for b in backfill}
-    else:
-        recipes = set()
-    return {i for i, e in entries.items() if text(e.get("name")) == only_export or text(e.get("name")) in recipes}
-
-
-def narrowed_config(pf: Preflight, source: str, only_export: str) -> str:
-    """The config text narrowed to one export (and its backfill recipes) by cutting the other items out of the original
-    text (D09): rivet splices `${...}` into the raw text before parsing, so a re-serialised copy changes what a quoted
-    value reads as. A cut that does not read back as the intended document is refused, never guessed."""
-    exports = pf.config.get("exports") or []
-    keep = narrowed_exports(exports, only_export)
-    expected = {**pf.config, "exports": [exports[i] for i in sorted(keep)]}
-
-    def check(cut: str) -> None:
-        doc, _ = _yaml.resolve_and_load(cut, pf.value_of)
-        if doc != expected:
-            raise ValueError("the narrowed document differs from the chosen exports of the original")
-
-    try:
-        return _yaml.narrow_text(pf.config_text, keep, len(exports), check)
-    except _yaml.NarrowRefused as exc:
-        raise PreflightRefusal(
-            "RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE",
-            f"this rivet has no `--export` on load/compact, so the task loads from a copy of {source} cut down to "
-            f"`{only_export}`, and the text cannot be cut safely: {exc}. Write `exports:` as a plain list whose items "
-            f"each start their own `- name:` line, with no anchor another item uses",
-        ) from exc
-
-
-def copy_name(source: Path, only_export: str | None = None) -> str:
+def copy_name(source: Path) -> str:
     """The name of a config's copy: its own stem plus a hash of its absolute path, so two sources never share one.
     A long stem is cut to keep the name within COPY_NAME_BYTES (the hash still tells two sources apart), and an
     extension of more than 16 bytes reads as `.yaml`: a file system refuses a name of about 255 bytes, and the temp
     file `_write_atomic` makes first adds ten."""
     digest = hashlib.sha256(str(source).encode()).hexdigest()[:8]
-    suffix = f"--{path_name(only_export)}" if only_export is not None else ""
     extension = source.suffix if len(source.suffix.encode()) <= 16 else ""
-    tail = f".{digest}{suffix}{extension or '.yaml'}"
+    tail = f".{digest}{extension or '.yaml'}"
     stem = source.stem.encode()[: COPY_NAME_BYTES - len(tail.encode())].decode(errors="ignore")
     return stem + tail
 
@@ -646,7 +586,7 @@ def _lock_path(s: _Session) -> tuple[Path, str] | None:
     """The export's lock file and what it covers; `None` for `plan` (read-only) and without a state directory.
 
     run / cdc_run / apply share one lock per export (rivet's run lease covers the three); load / compact take one per
-    table where the binary narrows to a table, else one per export, as the load lease covers (G2)."""
+    table, else one per export, as the load lease covers (G2)."""
     cmd, export, table = s.req.command, s.req.export, s.req.table
     scope = LOCK_SCOPE[cmd]  # a command with no row is a KeyError, never a silent run lock
     if s.pf.state_dir is None or scope is None:
@@ -654,7 +594,7 @@ def _lock_path(s: _Session) -> tuple[Path, str] | None:
     locks = _private_dir(s.pf.state_dir, WORK, LOCKS)
     whole = hashed_name("config", os.path.abspath(s.req.config))
     if scope == "load":
-        if table and s.pf.caps.has_flag(cmd, "--table"):
+        if table:
             return _private_dir(locks, "table") / f"{hashed_name(export or '', table)}.lock", f"table `{table}` of `{export}`"
         return locks / f"{path_name(export) if export else whole}.lock", f"export `{export}`" if export else "the config"
     return _private_dir(locks, "run") / f"{path_name(export) if export else whole}.lock", (
@@ -886,12 +826,12 @@ def _refuse_foreign_artifact(artifact: Path, export: str, config: str) -> None:
 
 def _run(s: _Session) -> Outcome:
     """`rivet run`, for one export or the whole config."""
-    cfg = s.config_for(None)
+    cfg = s.config_for()
     summary = s.work / f"{s.name}.summary.json"
     argv = [s.pf.binary, "run", "--config", cfg]
     if s.req.export:
         argv += ["--export", s.req.export]
-    argv += ["--summary-output", str(summary), *s.req.extra_args, *s.globals_for("run")]
+    argv += ["--summary-output", str(summary), *s.req.extra_args, *s.globals_for()]
     step, error, doc = s.step_with_result("run", argv, summary)
     return s.outcome(step, s.read.run_units(step, doc, error, s.req.export), error)
 
@@ -899,7 +839,7 @@ def _run(s: _Session) -> Outcome:
 def _apply(s: _Session) -> Outcome:
     """`rivet plan -e X -o artifact` when no unexpired artifact exists, then `rivet apply artifact`."""
     export = s.req.export or ""
-    cfg = s.config_for(None)
+    cfg = s.config_for()
     # One sealed plan per try series (Airflow's `max_tries`, which a clear moves): a retry replays it, a clear after a
     # success plans again instead of replaying a snapshot the successful apply already moved the cursor past (D04).
     series = () if s.req.series is None else (f"s{int(s.req.series)}",)
@@ -925,7 +865,7 @@ def _apply(s: _Session) -> Outcome:
         )
     summary = s.work / f"{s.name}.summary.json"
     argv = [s.pf.binary, "apply", str(artifact), "--summary-output", str(summary), *s.req.extra_args]
-    step, error, doc = s.step_with_result("apply", [*argv, *s.globals_for("apply")], summary)
+    step, error, doc = s.step_with_result("apply", [*argv, *s.globals_for()], summary)
     units = s.read.run_units(step, doc, error, s.req.export)
     for unit in units:
         # rivet >= 0.32 answers a replay of a plan it already applied with the run that applied it (an earlier try's
@@ -944,7 +884,7 @@ def _plan(s: _Session) -> Outcome:
     """`rivet plan --format json` for the whole config, swapped into `plan_file` only when a builder can read it."""
     target = Path(str(s.req.plan_file))
     scratch = target.with_name(f"{target.name}.{s.global_name}.tmp")
-    argv = [s.pf.binary, "plan", "--config", s.config_for(None), "--format", "json", *s.req.extra_args, "--json-errors"]
+    argv = [s.pf.binary, "plan", "--config", s.config_for(), "--format", "json", *s.req.extra_args, "--json-errors"]
     step = s.step("plan", argv, stdout_to=scratch)
     error = s.read.classify(step)
     if error is None:
@@ -959,27 +899,16 @@ def _plan(s: _Session) -> Outcome:
 
 
 def _load(s: _Session) -> Outcome:
-    """`rivet load` / `rivet compact` for one export and, where the binary can, one table."""
+    """`rivet load` / `rivet compact` for one export and, when asked, one table."""
     cmd, export, table = s.req.command, s.req.export, s.req.table
-    by_export = s.pf.caps.has_flag(cmd, "--export")
-    by_table = s.pf.caps.has_flag(cmd, "--table")
-    has_result = s.pf.caps.has_flag(cmd, "--summary-output")
-    if export and not by_export:
-        s.degraded.add("load_filter")
-    argv = [s.pf.binary, cmd, "--config", s.config_for(export if export and not by_export else None)]
-    if export and by_export:
+    argv = [s.pf.binary, cmd, "--config", s.config_for()]
+    if export:
         argv += ["--export", export]
-    if table and by_table:
+    if table:
         argv += ["--table", table]
     result = s.work / f"{s.name}.result.json"
-    if has_result:
-        argv += ["--summary-output", str(result)]
-    else:
-        s.degraded.add("load_result")
-    argv += [*s.req.extra_args, *s.globals_for(cmd)]
-    if table and not by_table:
-        s.degraded.add("load_table_filter")  # the whole export is loaded, under the export's lock (`_lock_path`)
-    step, error, doc = s.step_with_result(cmd, argv, result if has_result else None)
+    argv += ["--summary-output", str(result), *s.req.extra_args, *s.globals_for()]
+    step, error, doc = s.step_with_result(cmd, argv, result)
     return s.outcome(step, s.read.load_units(step, doc, error, export, table), error)
 
 
@@ -1019,7 +948,7 @@ def refuse_param(command: str, extra_args: Sequence[str]) -> None:
 
 
 def _invoke(request: Request, emit: Emit, on_process: Callable | None, stopped: Callable[[], bool] | None) -> Outcome:
-    """`invoke` with the probes' failures still raw: the binary's `<sub> --help` is read lazily while argv is built."""
+    """`invoke` with the probe's failure still raw: the binary's `--version` is read by the preflight."""
     refuse_param(request.command, request.extra_args)
     pf = run_preflight(
         rivet_bin=request.rivet_bin,
@@ -1032,7 +961,6 @@ def _invoke(request: Request, emit: Emit, on_process: Callable | None, stopped: 
         cdc=request.command == "cdc_run",
         upstream_markers=tuple(request.upstream_markers),
         extra_args=tuple(request.extra_args),
-        rivet_notifications=request.rivet_notifications,
     )
     for key, text in pf.warnings:
         emit({"event": "rivet.warning", "warning": key, "text": text})

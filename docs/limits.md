@@ -21,8 +21,7 @@ exact one). The lock's descriptor is passed to every rivet process the task star
 outlives its task keeps the lock until it exits. A task that finds the lock held waits up to
 `lock_wait` seconds, then starts no rivet and ends retryable (`RIVET_AIRFLOW_EXPORT_BUSY`; the
 waiting is logged when it starts, `waiting up to <lock_wait> s for the lock of ...`, record `rivet.lock.wait`). The task releases the lock by an explicit unlock once its
-rivet has exited. With `load_table_filter` degraded, the per-table tasks of one export share the
-export's lock and wait for one another, now up to `lock_wait` seconds, then retry.
+rivet has exited.
 
 On Linux each rivet process gets SIGTERM when the task process that started it dies
 (`PR_SET_PDEATHSIG`), so a task runner killed outright (OOM, SIGKILL) no longer leaves rivet
@@ -31,25 +30,18 @@ started rivet; a rivet that does not stop on SIGTERM) the lock above still keeps
 starting a second rivet until the first has exited.
 
 **Without a state directory (a pod) there is no lock file.** Only rivet's own lease protects the
-export: rivet (>= 0.32.0) refuses the second holder with `RIVET_STATE_RUN_IN_PROGRESS` (exit class 2) /
-`RIVET_LOAD_TABLE_BUSY` (exit 5), which the task retries ([Retries](retries.md)); a plain `mode: full` run takes the
+export: rivet (>= 0.32.2) refuses the second holder with `RIVET_STATE_RUN_IN_PROGRESS` /
+`RIVET_LOAD_TABLE_BUSY` (both kind `busy`, exit 2), which the task retries ([Retries](retries.md)); a plain `mode: full` run takes the
 run lease too (measured on 0.32.0).
 
 ## Known limits
 
 - The Kubernetes mode has unit tests only (no pod was run).
-- On rivet 0.31.0 the `rows` / `files` of a CDC `run` task leave out its `initial: snapshot`: the first
-  run of a CDC DAG reports 0 rows while the snapshot files hold the whole table (the binary's
-  `--summary-output` counts the stream only; found by the live gate).
 - This package's tests run `load` and `compact` only through the fake binary, which replays
   rivet's output and talks to no warehouse. A live run against BigQuery, Snowflake and ClickHouse
   exists only as the warehouse leg of the live gate (`python -m gate --warehouses ...`, see "Live
   gate"), which reads each warehouse back through a second client and compares it with the source.
-- On Snowflake and ClickHouse a compact task is green as `compacted` while rivet merged nothing
-  (see ["Storage and warehouse connections"](connections-and-secrets.md#storage-and-warehouse-connections)).
-- With `load_table_filter` degraded, the per-table tasks of a multi-table CDC export each load
-  the whole export; the first does the work, the others find the ledger up to date.
-- rivet 0.32.0's apply summary carries no `skip_reason`: a `skip_empty` apply that delivered
-  nothing is `SKIPPED` without the reason.
+- The package does not read the `skip_reason` of a `run` / `apply` entry (only a `compact` row's): a
+  `skip_empty` apply that delivered nothing is `SKIPPED` without the reason.
 - A failure callback runs where Airflow runs task callbacks, in the task's process on the worker;
   exercised live on Airflow 2.10.5 and 3.3.2 by hand (docs/slack.md), not by the live gate.

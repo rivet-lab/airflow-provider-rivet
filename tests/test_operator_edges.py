@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from airflow.exceptions import AirflowException
 from conftest import FakeTI, Rig
-from rivet_shapes import run_entry
+from rivet_shapes import load_row, run_entry
 
 from airflow_provider_rivet import invocation, result
 from airflow_provider_rivet.invocation import crashed_retry_allowed
@@ -109,7 +109,7 @@ def test_one_failed_unit_without_its_own_error_is_not_per_unit_error(rig: Rig) -
 
 def test_two_failed_tables_without_their_errors_are_per_unit_error(rig: Rig) -> None:
     """Two failed tables share one process-level error, recorded (load 196)."""
-    rows = [{"export": "orders", "table": t, "status": "failed", "error": None} for t in ("users", "items")]
+    rows = [load_row("orders", t, "failed") for t in ("users", "items")]
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": rows}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="orders"))
     assert [u["status"] for u in payload["units"]] == ["failed", "failed"]
@@ -118,7 +118,7 @@ def test_two_failed_tables_without_their_errors_are_per_unit_error(rig: Rig) -> 
 
 def test_a_load_result_with_a_non_object_entry_is_recorded_malformed(rig: Rig) -> None:
     """(load 81)"""
-    rows = ["junk", {"export": "orders", "table": "users", "status": "success", "rows": 1}]
+    rows = ["junk", load_row("orders", "users", "success", rows=1)]
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": rows}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="orders"))
     assert [u["table"] for u in payload["units"]] == ["users"]
@@ -178,17 +178,6 @@ def test_rivet_notifications_true_keeps_rivets_own_notifications_and_records_no_
     payload = payload_of(rig, rig.operator(RivetRunOperator, export="orders", rivet_notifications=True))
     assert "--no-notify" not in rig.argv("run") and "--lock-wait" in rig.argv("run")
     assert "no_notify" not in payload["degraded"]
-
-
-@pytest.mark.before_0_32_2
-def test_rivet_notifications_true_is_not_warned_about_a_notifications_block(rig: Rig) -> None:
-    rig.config.write_text(rig.config.read_text() + "notifications:\n  slack: {webhook_env: HOOK}\n")
-    rig.scenario(flags={"run": ["--lock-wait"]}, run={"summary": {"per_export": [entry()]}})
-    warned = lambda: [e["warning"] for e in rig.events("rivet.warning")].count("notifications_block")  # noqa: E731
-    payload_of(rig, rig.operator(RivetRunOperator, export="orders", rivet_notifications=True))
-    assert warned() == 0
-    payload_of(rig, rig.operator(RivetRunOperator, export="orders"))
-    assert warned() == 1, "the default warns: this binary cannot turn rivet's notifications off"
 
 
 def test_an_apply_summary_with_a_failed_export_gives_it_an_error(rig: Rig) -> None:
@@ -270,20 +259,21 @@ def test_a_digest_is_read_with_the_contracts_types_and_nothing_else() -> None:
     assert digest["warehouse_job_ids"] is None and digest["runs"] == 2 and degraded == {"result_malformed"}
 
 
-def test_an_entry_without_a_digest_key_is_an_older_binary_and_says_so() -> None:
-    assert digest_of({"export": "e", "table": "t", "rows": 1, "target": "p.d.t"}) == (None, {"load_digest"})
-    for key in result.DIGEST_KEYS:  # any one key is the digest's shape: the rest read as null
-        digest, degraded = digest_of({key: None})
-        assert digest == {k: None for k in result.DIGEST_KEYS} and degraded == set(), key
+def test_an_entry_missing_a_digest_key_is_malformed_and_says_so() -> None:
+    """rivet 0.32.2 writes every key of the digest, `null` where nothing was returned: a key gone is not a shape of it."""
+    whole = {k: None for k in result.DIGEST_KEYS}
+    assert digest_of(whole) == (whole, set())
+    for key in result.DIGEST_KEYS:
+        digest, degraded = digest_of({k: v for k, v in whole.items() if k != key})
+        assert digest == whole and degraded == {"result_malformed"}, key
 
 
-def test_the_unit_record_carries_the_digest_and_the_configs_names_where_xcom_has_none(rig: Rig) -> None:
-    """A row without the digest (a binary older than 0.32.2): the log names the config's table, XCom nothing."""
+def test_the_unit_record_carries_the_configs_names_where_the_result_names_no_table(rig: Rig) -> None:
+    """A load whose result holds no `per_table` entry: the log names the config's table, XCom nothing."""
     rig.config.write_text(rig.config.read_text() + "load:\n  target: bigquery\n  project: p\n  dataset: d\n")
-    row = {"export": "users", "table": "users", "status": "loaded", "rows": 4}
-    rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": []}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="users", table="users"))
     [unit] = rig.events("rivet.unit")
     assert (unit["target"], unit["target_from"], unit["digest"]) == ("p.d.users__changes", "config", None)
     assert (payload["units"][0]["target"], payload["units"][0]["buffer"]) == (None, None)
-    assert "load_digest" in payload["degraded"]
+    assert payload["degraded"] == []

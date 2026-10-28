@@ -16,13 +16,12 @@ from airflow_provider_rivet import invocation
 from airflow_provider_rivet.invocation import Busy, Stopped, hashed_name, path_name
 
 
-def lock_session(tmp_path: Path, command: str, export: str | None, table: str | None = None, table_flag: bool = True):
+def lock_session(tmp_path: Path, command: str, export: str | None, table: str | None = None):
     config = tmp_path / "rivet.yaml"
     config.write_text("")
-    caps = SimpleNamespace(has_flag=lambda cmd, flag: table_flag and flag == "--table")
     (tmp_path / "state").mkdir(exist_ok=True)
     return SimpleNamespace(
-        pf=SimpleNamespace(state_dir=tmp_path / "state", caps=caps),
+        pf=SimpleNamespace(state_dir=tmp_path / "state"),
         req=SimpleNamespace(command=command, export=export, table=table, config=str(config)),
     )
 
@@ -36,27 +35,27 @@ def test_plan_and_a_task_without_a_state_directory_take_no_lock(tmp_path: Path) 
 
 
 def test_each_command_locks_its_own_file_and_names_what_it_covers(tmp_path: Path) -> None:
-    """_lock_path 18-25/30/31/43-51/54-59/68-73: run/apply share `locks/run/<export>`, load and compact narrowed to a
+    """_lock_path 18-25/30/31/43-51/54-59/68-73: run/apply share `locks/run/<export>`, load and compact given a
     table lock `locks/table/<export, table>`, otherwise `locks/<export>`; without an export the config's own name."""
     locks = tmp_path / "state" / "airflow" / "locks"
     whole = hashed_name("config", str((tmp_path / "rivet.yaml").resolve()))
     cases = {
-        ("run", "orders", None, True): (locks / "run" / "orders.lock", "export `orders`"),
-        ("apply", None, None, True): (locks / "run" / f"{whole}.lock", "the config"),
-        ("load", "orders", "users", True): (
+        ("run", "orders", None): (locks / "run" / "orders.lock", "export `orders`"),
+        ("apply", None, None): (locks / "run" / f"{whole}.lock", "the config"),
+        ("load", "orders", "users"): (
             locks / "table" / f"{hashed_name('orders', 'users')}.lock",
             "table `users` of `orders`",
         ),
-        ("compact", "orders", "users", True): (
+        ("compact", "orders", "users"): (
             locks / "table" / f"{hashed_name('orders', 'users')}.lock",
             "table `users` of `orders`",
         ),
-        ("load", None, "users", True): (locks / "table" / f"{hashed_name('', 'users')}.lock", "table `users` of `None`"),
-        ("compact", "orders", "users", False): (locks / f"{path_name('orders')}.lock", "export `orders`"),
-        ("load", None, None, True): (locks / f"{whole}.lock", "the config"),
+        ("load", None, "users"): (locks / "table" / f"{hashed_name('', 'users')}.lock", "table `users` of `None`"),
+        ("compact", "orders", None): (locks / f"{path_name('orders')}.lock", "export `orders`"),
+        ("load", None, None): (locks / f"{whole}.lock", "the config"),
     }
-    for (command, export, table, flag), want in cases.items():
-        assert invocation._lock_path(lock_session(tmp_path, command, export, table, flag)) == want, (command, export, table)
+    for (command, export, table), want in cases.items():
+        assert invocation._lock_path(lock_session(tmp_path, command, export, table)) == want, (command, export, table)
 
 
 def test_a_config_reached_through_a_symlink_locks_by_the_path_the_dag_gave(tmp_path: Path) -> None:

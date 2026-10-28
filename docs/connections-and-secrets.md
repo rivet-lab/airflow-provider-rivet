@@ -98,11 +98,10 @@ The config keeps what is not a secret (bucket, project, dataset, database, schem
 Connection holds who may write there. The Snowflake loader runs the `snow` CLI, which must be on
 the worker (`pip install snowflake-cli` into its own environment). On BigQuery `rivet compact`
 merges the buffer into the base table; on Snowflake and ClickHouse the current state is a view
-over `<table>__changes` and there is nothing to merge. rivet 0.31.0 (and main) says so only in a
-stderr line (`compact [<table>]: skipped — this warehouse keeps a change log behind a view and
-never compacts`) and exits 0; `rivet compact` has no `--summary-output` yet (`load_result`), so the
-task ends green as `compacted`, having done nothing. For these warehouses build the CDC DAG with
-`compact=False` and leave such exports out of `compact_exports`.
+over `<table>__changes` and there is nothing to merge. rivet 0.32.2 reports that table as `skipped` in its result
+(`compact [<table>]: skipped — this warehouse keeps a change log behind a view and never compacts`),
+so a compact task whose every table is skipped ends as an Airflow skip, not green. For these warehouses
+build the CDC DAG with `compact=False` and leave such exports out of `compact_exports`.
 
 ## Connections and secrets: recommended setup
 

@@ -1,4 +1,4 @@
-"""What the installed rivet binary supports, and every fallback the package takes when it does not."""
+"""The installed rivet binary's version, and every fallback the package takes when its output or the worker falls short."""
 
 from __future__ import annotations
 
@@ -11,18 +11,12 @@ PROBE_TIMEOUT = 60
 _VERSION_RE = re.compile(r"rivet\s+(\d+)\.(\d+)\.(\d+)")
 
 
-# Every `degraded` key a task can record, by how it is detected: a flag the binary's `--help` lacks, a member its output
-# lacks, the worker, or nothing (a fixed workaround). What each one means and does: docs/capabilities.md.
+# Every `degraded` key a task can record, by how it is detected: a member the binary's output lacks, or the worker. What
+# each one means and does: docs/capabilities.md.
 DEGRADATIONS = {
-    "no_notify": "flag",
-    "lock_wait": "flag",
     "error_object": "output",
     "per_unit_error": "output",
     "stop_reason": "output",
-    "load_filter": "flag",
-    "load_table_filter": "flag",
-    "load_result": "flag",
-    "load_digest": "output",
     "stderr_temp": "worker",
     "crashed_ledger": "worker",
     "result_missing": "output",
@@ -36,11 +30,9 @@ class ProbeFailed(RuntimeError):
 
 
 class Capabilities:
-    """The version of one rivet binary and the flags its subcommands accept, probed from `--help`."""
+    """The version of one rivet binary, probed from `--version`."""
 
     def __init__(self, binary: str) -> None:
-        self.binary = binary
-        self._help: dict[str, str] = {}
         out = self._run([binary, "--version"])
         match = _VERSION_RE.search(out)
         if not match:
@@ -63,12 +55,6 @@ class Capabilities:
         if done.returncode != 0:
             raise ProbeFailed(f"`{shown}` exited {done.returncode}")
         return done.stdout
-
-    def has_flag(self, subcommand: str, flag: str) -> bool:
-        """True when `rivet <subcommand> --help` lists the flag."""
-        if subcommand not in self._help:
-            self._help[subcommand] = self._run([self.binary, subcommand, "--help"])
-        return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", self._help[subcommand]) is not None
 
     def new_enough(self) -> bool:
         """True when the binary is at or above the minimum the package was written against."""
