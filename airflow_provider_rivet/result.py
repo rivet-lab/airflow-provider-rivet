@@ -19,9 +19,9 @@ STOP_RANK = ("crashed", "generic", "retryable", "schema_drift", "refusal", "inte
 # answers with the run that applied it (`run_id` == `answered_by_run`) and extracts nothing.
 STATUSES = frozenset({"success", "failed", "skipped", "loaded", "compacted", "already_applied"})
 # rivet's stops for a lease another live process holds: their remedy is "wait for the holder to end, then repeat", which
-# is what an Airflow retry does, so they are retried whatever the printed `retryable` says (G2). rivet 0.32.0 printed the
-# first two as exit 5 refusals; rivet >= 0.32.2 gives them kind `busy`, exit 2, and stops with RIVET_STATE_LOCK_TIMEOUT
-# when its own `--lock-wait` for the lease runs out (the provider's RIVET_AIRFLOW_EXPORT_BUSY, inside rivet).
+# is what an Airflow retry does, so they are retried whatever the printed `retryable` says (G2). rivet 0.32.2 gives all
+# three kind `busy`, exit 2; the third is what it stops with when its own `--lock-wait` for the lease runs out (the
+# provider's RIVET_AIRFLOW_EXPORT_BUSY, inside rivet).
 BUSY_CODES = frozenset({"RIVET_STATE_RUN_IN_PROGRESS", "RIVET_LOAD_TABLE_BUSY", "RIVET_STATE_LOCK_TIMEOUT"})
 # The key of a task's XCom payload that says why rivet was never started; the task log and the Slack alert read it.
 REFUSED, STOPPED, BUSY = "preflight_refusal", "stopped_before", "busy"
@@ -132,12 +132,12 @@ class UnitResult:
     error: ErrorObject | None = None
     skip_reason: str | None = field(default=None, compare=False)
     # The warehouse object a load / compact unit wrote, the `__changes` buffer a compact read, and whether rivet named
-    # them (`rivet`) or the config's `load:` did (`config`, a binary whose result lacks the names). XCom carries only
+    # them (`rivet`) or the config's `load:` did (`config`: the command's result named no table). XCom carries only
     # rivet's names: a value rivet did not return is null there, never the config's guess.
     target: str | None = None
     buffer: str | None = None
     target_from: str | None = field(default=None, compare=False)
-    # The D3 digest of a load / compact unit (`DIGEST_KEYS`), `None` when rivet's entry has none; in the task log and
+    # The D3 digest of a load / compact unit (`DIGEST_KEYS`), `None` for a unit with no entry of rivet's; in the task log and
     # the `rivet.unit` record, not in the contract's XCom unit.
     digest: dict[str, Any] | None = field(default=None, compare=False)
 

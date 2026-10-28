@@ -151,4 +151,4 @@ def test_every_degradation_is_documented_in_the_readme_and_every_recorded_key_is
     recorded = set(re.findall(r'degraded\.add\("([a-z_]+)"\)', source)) | set(
         re.findall(r'\*payload\["degraded"\], "([a-z_]+)"', source)
     )
-    assert len(recorded) >= 14 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)
+    assert len(recorded) >= 8 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)

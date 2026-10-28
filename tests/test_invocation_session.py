@@ -13,7 +13,7 @@ import pytest
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.invocation import Request, hashed_name, path_name
-from airflow_provider_rivet.preflight import STATE_URL_ENV, PreflightRefusal
+from airflow_provider_rivet.preflight import STATE_URL_ENV
 from airflow_provider_rivet.reading import Reading
 
 LABEL = ("dag", "run", "task", 2)
@@ -96,22 +96,6 @@ def test_an_existing_stderr_directory_is_used_with_the_task_folder_below_it(tmp_
     assert s.logs == logs / "dag" / hashed_name("task") and s.logs.is_dir()
 
 
-def test_a_narrowed_copy_without_a_state_directory_lands_in_the_work_folder(tmp_path: Path) -> None:
-    """_Session.config_for 20."""
-    text = "exports:\n  - name: a\n  - name: b\n"
-    s = session(tmp_path, state=False, text=text, config={"exports": [{"name": "a"}, {"name": "b"}]}, config_text=text)
-    copy = Path(s.config_for("a"))
-    assert copy.parent == s.work and copy.read_text() == "exports:\n  - name: a\n"
-
-
-def test_a_narrowed_copy_that_cannot_be_cut_names_the_source_config(tmp_path: Path) -> None:
-    """_Session.config_for 48/53: the refusal names the config the task was given."""
-    text = "exports:\n  - name: a\n    x: 1\n  - name: b\n"
-    s = session(tmp_path, text=text, config={"exports": [{"name": "a"}, {"name": "b"}]}, config_text=text)
-    with pytest.raises(PreflightRefusal, match=f"a copy of {tmp_path / 'src' / 'rivet.yaml'} cut down to `a`"):
-        s.config_for("a")
-
-
 @pytest.mark.parametrize(
     ("body", "degraded"),
     [(None, {"result_missing"}), ("{", {"result_malformed"}), (b"\xff", {"result_malformed"}), ("{}", set())],
@@ -188,7 +172,7 @@ def test_the_preflight_is_told_whether_the_task_is_a_cdc_run_and_its_warnings_ar
 
     def preflight(**kwargs: object) -> SimpleNamespace:
         seen.update(kwargs)
-        return SimpleNamespace(warnings=[("no_notify", "the binary has no --no-notify")])
+        return SimpleNamespace(warnings=[("sqlite_single_host", "state is single-host")])
 
     def no_session(*args: object) -> None:
         raise Stop
@@ -199,7 +183,7 @@ def test_the_preflight_is_told_whether_the_task_is_a_cdc_run_and_its_warnings_ar
     with pytest.raises(Stop):
         invocation._invoke(Request(command, "c", {}), events.append, None, None)
     assert seen["cdc"] is cdc
-    assert events == [{"event": "rivet.warning", "warning": "no_notify", "text": "the binary has no --no-notify"}]
+    assert events == [{"event": "rivet.warning", "warning": "sqlite_single_host", "text": "state is single-host"}]
 
 
 def test_every_dispatched_command_names_its_lock() -> None:

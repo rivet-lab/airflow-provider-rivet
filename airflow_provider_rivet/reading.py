@@ -181,7 +181,7 @@ class Reading:
         rows = self.entries(doc, "per_table")
         if not rows:
             status = "failed" if error else DONE_WORD[self.command]
-            return [self.with_target(UnitResult(export, table, status=status, error=error), {})]
+            return [self.without_row(UnitResult(export, table, status=status, error=error))]
         units = []
         for row in rows:
             if table and row.get("table") != table:
@@ -207,22 +207,27 @@ class Reading:
         return self.settled(units)
 
     def with_target(self, unit: UnitResult, row: Mapping[str, Any]) -> UnitResult:
-        """The unit with the warehouse objects it touched: rivet's own names when its result has them, else the config's."""
-        named = row.get("target")
+        """The unit with the warehouse objects rivet's entry names (`target` is always a string there, `buffer` a string
+        or null); an entry without them is malformed, recorded, and names nothing."""
+        named, buffer = row.get("target"), row.get("buffer")
         if isinstance(named, str) and named:
-            buffer = row.get("buffer")
-            unit.target, unit.buffer, unit.target_from = named, buffer if isinstance(buffer, str) else None, "rivet"
+            unit.target, unit.buffer, unit.target_from = named, self.malformed(buffer, str), "rivet"
         else:
-            unit.target, unit.buffer = config_target(self.config, self.command, unit.export, unit.table)
-            unit.target_from = "config" if unit.target else None
+            self.degraded.add("result_malformed")
         return unit
 
-    def digest(self, row: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The D3 digest of one `per_table` entry, each value of the contract's type or null (recorded); `None`, recorded
-        as `load_digest`, when the entry has none of its keys (a binary older than the digest)."""
-        if not any(key in row for key in DIGEST_KEYS):
-            self.degraded.add("load_digest")
-            return None
+    def without_row(self, unit: UnitResult) -> UnitResult:
+        """The unit of a command whose result names no table (it failed before one, or wrote none): the warehouse objects
+        as the config's `load:` block names them."""
+        unit.target, unit.buffer = config_target(self.config, self.command, unit.export, unit.table)
+        unit.target_from = "config" if unit.target else None
+        return unit
+
+    def digest(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """The D3 digest of one `per_table` entry, each value of the contract's type or null (recorded). rivet writes
+        every key of it, null where nothing was returned: a missing key is malformed, recorded."""
+        if not all(key in row for key in DIGEST_KEYS):
+            self.degraded.add("result_malformed")
         digest = {key: self.malformed(row.get(key), int) for key in DIGEST_COUNTS}
         jobs = self.malformed(row.get("warehouse_job_ids"), list)
         if jobs is not None and not all(isinstance(job, str) for job in jobs):

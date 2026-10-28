@@ -64,7 +64,6 @@ ignore = ["E501"]  # the formatter owns line length; long string literals stay a
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
-markers = ["before_0_32_2: pins a degradation of a binary older than the 0.32.2 floor (the rig's fake lacks 0.32.2's flags)"]
 
 [tool.mutmut]
 # Mutation testing (docs/development.md, "Mutation testing"; run by `make mutants`): only the product package is mutated —

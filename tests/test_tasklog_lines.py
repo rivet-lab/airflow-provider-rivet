@@ -269,23 +269,37 @@ def test_several_units_each_name_their_table() -> None:
 
 
 @pytest.mark.parametrize(
-    ("row", "expected"),
+    ("row", "expected", "malformed"),
     [
-        ({"target": "r.t", "buffer": "r.t__changes"}, ("r.t", "r.t__changes", "rivet")),
-        ({"target": "r.t", "buffer": 5}, ("r.t", None, "rivet")),  # a buffer that is not a name is dropped
-        ({"target": ""}, ("p.d.t", None, "config")),  # an empty name is no name: the config's
-        ({"target": 7}, ("p.d.t", None, "config")),
-        ({}, ("p.d.t", None, "config")),  # `snap` is a full export: its load writes the table itself
+        ({"target": "r.t", "buffer": "r.t__changes"}, ("r.t", "r.t__changes", "rivet"), False),
+        ({"target": "r.t", "buffer": None}, ("r.t", None, "rivet"), False),
+        ({"target": "r.t", "buffer": 5}, ("r.t", None, "rivet"), True),  # a buffer that is not a name is dropped, recorded
+        # an entry rivet 0.32.2 writes always has a `target` string: anything else is malformed, and names nothing
+        ({"target": ""}, (None, None, None), True),
+        ({"target": 7}, (None, None, None), True),
+        ({}, (None, None, None), True),
     ],
 )
-def test_a_unit_takes_rivets_names_else_the_configs(row: dict, expected: tuple) -> None:
+def test_a_unit_takes_rivets_names_and_a_row_without_them_is_malformed(row: dict, expected: tuple, malformed: bool) -> None:
     from airflow_provider_rivet.reading import Reading
     from airflow_provider_rivet.result import UnitResult
 
-    unit = Reading(set(), {"load": BQ, "exports": EXPORTS}, "load").with_target(UnitResult("snap", "t"), row)
+    read = Reading(set(), {"load": BQ, "exports": EXPORTS}, "load")
+    unit = read.with_target(UnitResult("snap", "t"), row)
     assert (unit.target, unit.buffer, unit.target_from) == expected
+    assert read.degraded == ({"result_malformed"} if malformed else set())
+
+
+def test_a_unit_of_a_result_with_no_row_takes_the_configs_names() -> None:
+    """`snap` is a full export: its load writes the table itself; a command that failed before any table has no row."""
+    from airflow_provider_rivet.reading import Reading
+    from airflow_provider_rivet.result import UnitResult
+
+    read = Reading(set(), {"load": BQ, "exports": EXPORTS}, "load")
+    unit = read.without_row(UnitResult("snap", "t"))
+    assert (unit.target, unit.buffer, unit.target_from) == ("p.d.t", None, "config") and read.degraded == set()
     # no `load:` block: nothing to name, and no source claimed
-    unit = Reading(set(), {"exports": EXPORTS}, "load").with_target(UnitResult("snap", "t"), {})
+    unit = Reading(set(), {"exports": EXPORTS}, "load").without_row(UnitResult("snap", "t"))
     assert (unit.target, unit.buffer, unit.target_from) == (None, None, None)
 
 

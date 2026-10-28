@@ -197,23 +197,6 @@ def test_g2_a_retry_while_the_earlier_try_still_runs_rivet_starts_nothing_and_is
         proc.wait()
 
 
-@pytest.mark.before_0_32_2
-def test_g2_a_load_of_another_table_does_not_wait_for_the_lock_of_this_one(tmp_path: Path) -> None:
-    """G2 (a): the lock is the export's (and the table's, for a load with `--table`), not the state directory's."""
-    started = tmp_path / "started"
-    play = {"load:users:users": {"sleep": 60, "started": str(started)}}
-    proc, rig = task_process(tmp_path, play, "RivetLoadOperator", export="users", table="users")
-    pid = int(wait_for(started))
-    try:
-        other, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="other", lock_wait=1))
-        same, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="users", lock_wait=1))
-        assert isinstance(other, dict) and other["decision"] == "success", other
-        assert type(same) is AirflowException and "RIVET_AIRFLOW_EXPORT_BUSY" in str(same)
-    finally:
-        os.kill(pid, signal.SIGKILL)
-        proc.wait()
-
-
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG exists on Linux only (CI is Linux)")
 def test_g2_a_killed_task_process_stops_its_rivet_through_the_parent_death_signal(tmp_path: Path) -> None:
     """G2 (b): the task process is SIGKILLed (OOM, the runner alone reaped) while rivet runs: rivet was orphaned and ran
@@ -368,3 +351,19 @@ def test_rivet_0322_codes_end_the_task_by_their_printed_class(
     assert str(exc) == f"[{code}] {class_}: the registry's remedy ({export})"
     payload = ti.store[("task", "return_value")]
     assert payload["decision"] == ("retry" if retryable else "fail") and payload["error"]["code"] == code
+
+
+def test_g2_a_load_of_another_table_does_not_wait_for_the_lock_of_this_one(tmp_path: Path) -> None:
+    """G2 (a): the lock is the export's (and the table's, for a load with `--table`), not the state directory's."""
+    started = tmp_path / "started"
+    play = {"load:users:users": {"sleep": 60, "started": str(started)}}
+    proc, rig = task_process(tmp_path, play, "RivetLoadOperator", export="users", table="users")
+    pid = int(wait_for(started))
+    try:
+        other, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="other", lock_wait=1))
+        same, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="users", lock_wait=1))
+        assert isinstance(other, dict) and other["decision"] == "success", other
+        assert type(same) is AirflowException and "RIVET_AIRFLOW_EXPORT_BUSY" in str(same)
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        proc.wait()

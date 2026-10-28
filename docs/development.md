@@ -379,5 +379,5 @@ gcloud iam service-accounts add-iam-policy-binding afgate-secrets-reader@rivet-d
 ```
 
 rivet's own release gate does not run this gate: rivet has no hook for it. The `Live gate` workflow here runs it
-against a released binary, on demand and on an `airflow-v*` tag; a release older than rivet 0.32.0 (the first with
-`apply --summary-output` and the `already_applied` answer) is refused before the binary is downloaded.
+against a released binary, on demand and on an `airflow-v*` tag; a release older than the minimum the package runs (`MIN_RIVET_VERSION`, read by
+`dev/min_rivet.py`) is refused before the binary is downloaded.
