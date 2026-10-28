@@ -13,6 +13,13 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   the version that reads these keys is refused before it starts, naming the version needed (`RIVET_AIRFLOW_BINARY_TOO_OLD`);
   the version is one constant in `capabilities.py`, a placeholder until rivet releases the feature. The guide is
   "Source credentials from Google Secret Manager" in `docs/connections-and-secrets.md`.
+- `password_secret` without `url_env` (the host, user and database written in the config) reads no source Connection either,
+  as `url_secret` does; with `url_env` the Connection still supplies the URL.
+- `env_from_variables` on every rivet task (`_RivetTask`) and on `build_source_dags`: an environment variable filled from an
+  Airflow Variable, read when the task runs and never at parse, so a source's secret name lives in its own Variable
+  (`rivet_{name}_url_secret`) and `url_secret: ${RIVET_SOURCE_URL_SECRET}` names it. A Variable no backend defines is refused
+  with `RIVET_AIRFLOW_VARIABLE_MISSING` for that source's tasks only. The flow, the IAM grant per secret and the comparison
+  with Airflow's `CloudSecretManagerBackend` are in `docs/connections-and-secrets.md`.
 
 ### Fixed
 

@@ -600,6 +600,17 @@ def missing_connection(
     )
 
 
+def missing_variable(key: str, env_name: str) -> PreflightRefusal:
+    """The refusal of an Airflow Variable no backend defines: the one that names a source's secret. Final, since a retry
+    cannot create it; the remedy names the Variable and what it fills."""
+    return PreflightRefusal(
+        "RIVET_AIRFLOW_VARIABLE_MISSING",
+        f"airflow variable `{key}` is not defined in the metadata database or any secrets backend this worker reads; it "
+        f"fills `{env_name}`, which the config reads as `${{{env_name}}}`: set it with `airflow variables set {key} "
+        f"projects/<project>/secrets/<secret>`, or AIRFLOW_VAR_{key} in the worker's environment; a retry cannot create it",
+    )
+
+
 def resolve_database(ref: Mapping[str, Any], lookup: Callable[[str], Any]) -> tuple[Any, str | None]:
     """The database an `env_from_connections` entry (`database_ref`) names, and the data source it was read from:
     `lookup(conn_id)` (the Connection, or None when no backend defines it), else with `odbc_ini` the data source `dsn`

@@ -139,7 +139,9 @@ source:
   (`connections=["gcp_rivet"]`, which writes `GOOGLE_APPLICATION_CREDENTIALS` for the task) or
   `cloud_credentials=["gcp"]` (the worker's own `GOOGLE_APPLICATION_CREDENTIALS` passed through). A worker whose
   identity Google's default chain finds without a file (a GKE workload identity, a VM's service account) needs neither.
-- A config with `url_secret` reads no source Connection: a DAG built from it (below) needs only the state Connection.
+- A config with `url_secret`, or with `password_secret` and no `url_env` (its host, user and database written in the config),
+  reads no source Connection: a DAG built from it (below) needs only the state Connection. A `password_secret` with
+  `url_env` still reads the Connection for the URL.
 - **rivet version.** Secret sources need rivet 0.33.0 or newer <!-- TODO: the version rivet-lab/rivet#717 ships in -->.
   An older rivet is refused before it starts with `RIVET_AIRFLOW_BINARY_TOO_OLD`, naming the version needed.
 
@@ -167,6 +169,68 @@ globals().update(
     )
 )
 ```
+
+### One Variable per source: the secret name at task run time
+
+The secret's name differs by deployment, and a DAG file must not read it at parse. So the name lives in an Airflow
+Variable per source, and the task puts it in rivet's environment when it runs:
+
+1. The Variable `rivet_<name>_url_secret` holds the reference, `projects/<project>/secrets/<secret>` (not a secret
+   itself): `airflow variables set rivet_shop_url_secret projects/my-project/secrets/shop-url`, or the environment
+   variable `AIRFLOW_VAR_rivet_shop_url_secret` on the worker.
+2. The DAG says which variable fills which environment variable: `env_from_variables={"RIVET_SOURCE_URL_SECRET":
+   "rivet_{name}_url_secret"}`. `{name}` is the source's name, so each source has its own Variable.
+3. The config names the environment variable: `url_secret: ${RIVET_SOURCE_URL_SECRET}`. rivet interpolates `${...}` from
+   its environment, so it reads the secret the Variable named.
+4. A Variable no backend defines fails only that source's tasks, before rivet starts, with `RIVET_AIRFLOW_VARIABLE_MISSING`
+   naming the Variable, the environment variable it fills and the command that sets it. A retry cannot create it, so the
+   task is not retried. The other sources of the DAG file are not affected.
+
+```python
+from datetime import datetime
+
+from airflow_provider_rivet.dags import build_source_dags
+
+# shop.yaml and billing.yaml in config_dir each say `url_secret: ${RIVET_SOURCE_URL_SECRET}`
+globals().update(
+    build_source_dags(
+        ["shop", "billing"],
+        mode="batch",
+        config_dir="/opt/airflow/dags/rivet",
+        state_root="/opt/airflow/rivet-state",
+        state_connection="rivet_state",
+        env_from_variables={"RIVET_SOURCE_URL_SECRET": "rivet_{name}_url_secret"},
+        operator_kwargs={"cloud_credentials": ["gcp"]},
+        schedule="0 */2 * * *",
+        start_date=datetime(2026, 1, 1),
+        catchup=False,
+    )
+)
+```
+
+Here the Variables are `rivet_shop_url_secret` and `rivet_billing_url_secret`, one secret each. The same mapping works on
+the operators directly (`env_from_variables=` on any rivet task); `operator_kwargs` may not set it, since the builder
+sets it per source.
+
+- **IAM is per secret.** The credential rivet runs as (the key `GOOGLE_APPLICATION_CREDENTIALS` names, or the worker's
+  default identity) needs `roles/secretmanager.secretAccessor` on each secret it reads, not on the project:
+  `gcloud secrets add-iam-policy-binding shop-url --project my-project --member serviceAccount:$GSA --role roles/secretmanager.secretAccessor`.
+  A source whose binding is missing stops with `RIVET_CONFIG_GCP_SECRET_UNREADABLE` (HTTP 403) on its own.
+- **Getting the config.** `rivet init` cannot read a secret: it writes `url_env:`. A source in secret mode has its config
+  one of two ways. Write `<config_dir>/<name>.yaml` by hand with `url_secret: ${RIVET_SOURCE_URL_SECRET}`, before the
+  DAG is unpaused. Or let the `init` task write it once through the source's Connection, then change the written
+  `url_env: RIVET_SOURCE_URL` line to `url_secret: ${RIVET_SOURCE_URL_SECRET}`. The next parse builds the DAG from the
+  edited file, and the source Connection is then not read. The `init` task reads the Variables too: a source whose
+  Variable is missing is refused there as well.
+
+**Secret Manager by reference or by Airflow's backend.** Airflow's `CloudSecretManagerBackend` reads a Connection (or a
+Variable) from Secret Manager when a task asks for it: the secret's value reaches the Airflow worker process, and rivet
+gets it through the environment that process builds. `url_secret` and `password_secret` keep the value out of Airflow.
+Only the reference passes through Airflow, as a Variable whose value is a name, so the metadata database and the task
+log hold a resource name and never the password. rivet fetches the value itself when it starts, with its own
+credential. **Recommendation:** for a source database, use `url_secret` or `password_secret`, with the per-source Variable
+above, and the secret's IAM granted per secret. Keep the backend for the Connections Airflow hands to rivet (the storage,
+warehouse and state Connections), and for rivet versions older than the one that reads the secret keys.
 
 ## Connections and secrets: recommended setup
 

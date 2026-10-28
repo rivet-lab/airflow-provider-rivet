@@ -19,6 +19,7 @@ from ._compat import (
     AirflowSkipException,
     BaseHook,
     BaseOperator,
+    Variable,
     executor_spreading_hosts,
     mask_secret,
 )
@@ -28,6 +29,7 @@ from .connections import (
     build_environment,
     connection_url,
     database_ref,
+    missing_variable,
     resolve_database,
     with_database,
 )
@@ -58,6 +60,11 @@ def airflow_connection(conn_id: str) -> Any:
         return None
 
 
+def airflow_variable(key: str) -> str | None:
+    """The Airflow Variable of this key, or None when no backend defines it (read at task run time only)."""
+    return Variable.get(key, None)
+
+
 def get_connection(conn_id: str) -> Any:
     """The Airflow Connection the task names; a refusal when no backend defines it, since a retry cannot create it."""
     return resolve_database({"conn_id": conn_id}, airflow_connection)[0]
@@ -84,6 +91,7 @@ class _RivetTask(BaseOperator):
         rivet_bin: str = "rivet",
         env: Mapping[str, str] | None = None,
         env_from_connections: Mapping[str, Any] | None = None,
+        env_from_variables: Mapping[str, str] | None = None,
         env_passthrough: Sequence[str] = (),
         cloud_credentials: Sequence[str] = (),
         connections: Sequence[str] = (),
@@ -92,27 +100,43 @@ class _RivetTask(BaseOperator):
         super().__init__(**kwargs)
         if set(cloud_credentials) - set(CLOUD_ENV):
             raise ValueError(f"cloud_credentials names {sorted(CLOUD_ENV)}, got {sorted(cloud_credentials)}")
+        both = sorted(set(env_from_variables or {}) & set(env or {}))
+        if both:
+            raise ValueError(f"env and env_from_variables both set {both}: a variable has one value")
         self.config = config
         self.state_dir = state_dir
         self.rivet_bin = rivet_bin
         self.env = env
         self.env_from_connections = env_from_connections
+        self.env_from_variables = dict(env_from_variables or {})
         self.env_passthrough = tuple(env_passthrough)
         self.cloud_credentials = tuple(cloud_credentials)
         self.connections = tuple(connections)
         self._proc: Any = None
         self._stop_requested = False  # pragma: no mutate - only ever read as a truth value, so None reads as False
 
+    def _variables(self) -> dict[str, str]:
+        """`env_from_variables` read now, at task run time: each variable's value is the Airflow Variable of its key. A
+        Variable no backend defines is a refusal, and a value that is empty counts as none."""
+        out: dict[str, str] = {}
+        for name, key in self.env_from_variables.items():
+            value = airflow_variable(key)
+            if not value:
+                raise missing_variable(key, name)
+            out[name] = value
+        return out
+
     def _environment(self, secrets: Path) -> dict[str, str]:
-        """The subprocess environment (`connections.build_environment`), with every Connection looked up here; key
-        files go to `secrets`, which the task removes when rivet has exited."""
+        """The subprocess environment (`connections.build_environment`), with every Connection and Variable looked up
+        here; key files go to `secrets`, which the task removes when rivet has exited."""
         refs = {name: database_ref(ref) for name, ref in (self.env_from_connections or {}).items()}
+        variables = self._variables()
         spec = EnvSpec(
             passthrough=self.env_passthrough,
             clouds=self.cloud_credentials,
-            env=self.env or {},
+            env={**variables, **(self.env or {})},
             urls={name: (self._database(ref), ref.get("scheme")) for name, ref in refs.items()},
-            config=self._config_doc() if self.connections else {},
+            config=self._config_doc(variables) if self.connections else {},
         )
         # The worker's environment: every reader of it takes None as os.environ, so its mutants are equivalent.
         return build_environment(os.environ, spec, [get_connection(c) for c in self.connections], secrets)  # pragma: no mutate
@@ -127,7 +151,7 @@ class _RivetTask(BaseOperator):
             self.log.info("database `%s`: no such Connection, ODBC data source [%s] in %s", ref["conn_id"], dsn, ref["odbc_ini"])
         return conn
 
-    def _config_doc(self) -> dict[str, Any]:
+    def _config_doc(self, variables: Mapping[str, str]) -> dict[str, Any]:
         """The config, for the names a storage or warehouse Connection is filed under; a task with no config to read
         (`init`, before it wrote one) files each under its own name."""
         return {}
@@ -223,6 +247,7 @@ class RivetBaseOperator(_RivetTask):
         rivet_bin: str = "rivet",
         env: Mapping[str, str] | None = None,
         env_from_connections: Mapping[str, Any] | None = None,
+        env_from_variables: Mapping[str, str] | None = None,
         env_passthrough: Sequence[str] = (),
         cloud_credentials: Sequence[str] = (),
         connections: Sequence[str] = (),
@@ -244,6 +269,7 @@ class RivetBaseOperator(_RivetTask):
             rivet_bin=rivet_bin,
             env=env,
             env_from_connections=env_from_connections,
+            env_from_variables=env_from_variables,
             env_passthrough=env_passthrough,
             cloud_credentials=cloud_credentials,
             connections=connections,
@@ -265,11 +291,12 @@ class RivetBaseOperator(_RivetTask):
         self.log_keep = log_keep
         self.cwd = cwd
 
-    def _config_doc(self) -> dict[str, Any]:
+    def _config_doc(self, variables: Mapping[str, str] | None = None) -> dict[str, Any]:
         """The config as rivet builds it, for the names a Connection is filed under; read by the preflight's reader, so a
         config it refuses is refused here too, and a `${...}` in `load.password_env` / `load.connection` resolves from
-        `-p` and the task's environment (the worker's allow-listed variables and `env`) as rivet resolves it (D06)."""
-        env = {**worker_environment(self.env_passthrough, self.cloud_credentials), **(self.env or {})}
+        `-p` and the task's environment (the worker's allow-listed variables, `env` and `env_from_variables`) as rivet
+        resolves it (D06)."""
+        env = {**worker_environment(self.env_passthrough, self.cloud_credentials), **(self.env or {}), **(variables or {})}
         return read_config(self.config, {str(k): str(v) for k, v in env.items()}, params_of(self.extra_args or ()))
 
     def _upstream_markers(self, ti: Any) -> list[str]:
