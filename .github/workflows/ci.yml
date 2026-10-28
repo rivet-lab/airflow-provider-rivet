@@ -76,9 +76,11 @@ jobs:
         with:
           tool: uv
       - name: Install Airflow ${{ matrix.airflow }} under its constraints, then the package
+        # The rivet-cli under test is the minimum the package admits, read from MIN_RIVET_VERSION (dev/min_rivet.py), and
+        # tests/test_fake_rivet.py holds the fake binary to exactly that version's flags.
         run: |
           uv venv --python ${{ matrix.python }}
-          uv pip install "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack "rivet-cli>=0.32.1" pytest \
+          uv pip install "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack "rivet-cli==$(python3 dev/min_rivet.py)" pytest \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ matrix.airflow }}/constraints-${{ matrix.python }}.txt"
           uv pip install --no-deps -e .
       - run: .venv/bin/python -m pytest -q

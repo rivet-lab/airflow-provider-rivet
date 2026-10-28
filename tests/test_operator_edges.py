@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 from airflow.exceptions import AirflowException
-from conftest import NEW_FLAGS, FakeTI, Rig
+from conftest import FakeTI, Rig
+from rivet_shapes import run_entry
 
 from airflow_provider_rivet import invocation, result
 from airflow_provider_rivet.invocation import crashed_retry_allowed
@@ -36,7 +37,7 @@ UNIT_KEYS = {
 
 def entry(status: str = "success", **more: object) -> dict:
     """One `per_export` entry of export `orders` as today's binary writes it."""
-    return {"export_name": "orders", "status": status, "run_id": "orders_1", "rows": 3, "files": 1, "mode": "full", **more}
+    return run_entry("orders", status, **{"rows": 3, "files": 1, **more})
 
 
 def payload_of(rig: Rig, op: object, ti: FakeTI | None = None) -> dict:
@@ -109,7 +110,7 @@ def test_one_failed_unit_without_its_own_error_is_not_per_unit_error(rig: Rig) -
 def test_two_failed_tables_without_their_errors_are_per_unit_error(rig: Rig) -> None:
     """Two failed tables share one process-level error, recorded (load 196)."""
     rows = [{"export": "orders", "table": t, "status": "failed", "error": None} for t in ("users", "items")]
-    rig.scenario(flags=NEW_FLAGS, load={"summary": {"run_id": "l1", "per_table": rows}})
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": rows}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="orders"))
     assert [u["status"] for u in payload["units"]] == ["failed", "failed"]
     assert "per_unit_error" in payload["degraded"]
@@ -118,7 +119,7 @@ def test_two_failed_tables_without_their_errors_are_per_unit_error(rig: Rig) -> 
 def test_a_load_result_with_a_non_object_entry_is_recorded_malformed(rig: Rig) -> None:
     """(load 81)"""
     rows = ["junk", {"export": "orders", "table": "users", "status": "success", "rows": 1}]
-    rig.scenario(flags=NEW_FLAGS, load={"summary": {"run_id": "l1", "per_table": rows}})
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": rows}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="orders"))
     assert [u["table"] for u in payload["units"]] == ["users"]
     assert "result_malformed" in payload["degraded"]
@@ -156,9 +157,7 @@ def test_an_apply_whose_sealing_plan_fails_reports_that_plans_error_on_its_unit(
 
 def test_an_apply_seals_under_plans_passes_its_globals_and_starts_rivet_with_no_stdin(rig: Rig) -> None:
     """(apply 29 31 32 167 168, step 32 40)"""
-    # the flags on `apply` alone: the fake lists `*` flags for any subcommand's --help, even one rivet lacks
-    flags = {"apply": ["--no-notify", "--lock-wait", "--summary-output"]}
-    rig.scenario(flags=flags, record_stdin=True, apply={"summary": {"per_export": [entry()]}})
+    rig.scenario(record_stdin=True, apply={"summary": {"per_export": [entry()]}})
     read, write = os.pipe()
     saved = os.dup(0)
     os.dup2(read, 0)  # a stdin that is not /dev/null, which a child would inherit
@@ -175,12 +174,13 @@ def test_an_apply_seals_under_plans_passes_its_globals_and_starts_rivet_with_no_
 
 
 def test_rivet_notifications_true_keeps_rivets_own_notifications_and_records_no_degradation(rig: Rig) -> None:
-    rig.scenario(flags={"run": ["--no-notify", "--lock-wait"]}, run={"summary": {"per_export": [entry()]}})
+    rig.scenario(run={"summary": {"per_export": [entry()]}})
     payload = payload_of(rig, rig.operator(RivetRunOperator, export="orders", rivet_notifications=True))
     assert "--no-notify" not in rig.argv("run") and "--lock-wait" in rig.argv("run")
     assert "no_notify" not in payload["degraded"]
 
 
+@pytest.mark.before_0_32_2
 def test_rivet_notifications_true_is_not_warned_about_a_notifications_block(rig: Rig) -> None:
     rig.config.write_text(rig.config.read_text() + "notifications:\n  slack: {webhook_env: HOOK}\n")
     rig.scenario(flags={"run": ["--lock-wait"]}, run={"summary": {"per_export": [entry()]}})
@@ -193,7 +193,7 @@ def test_rivet_notifications_true_is_not_warned_about_a_notifications_block(rig:
 
 def test_an_apply_summary_with_a_failed_export_gives_it_an_error(rig: Rig) -> None:
     """(apply 212)"""
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": {"per_export": [entry("failed")]}})
+    rig.scenario(apply={"summary": {"per_export": [entry("failed")]}})
     payload = payload_of(rig, rig.operator(RivetApplyOperator, export="orders"))
     assert payload["units"][0]["error"]["class"] == "generic"
 
@@ -208,7 +208,7 @@ def test_a_sealed_plan_that_is_not_an_object_has_no_strategy(rig: Rig) -> None:
 
 def test_a_replay_rivet_answers_already_applied_names_the_export_run_and_artifact(rig: Rig) -> None:
     """The `rivet.apply.already_applied` record of a replay rivet answered (rivet >= 0.32)."""
-    rig.scenario(flags=NEW_FLAGS, apply={"summary": {"per_export": [entry()]}})
+    rig.scenario(apply={"summary": {"per_export": [entry()]}})
     op = rig.operator(RivetApplyOperator, export="orders")
     first = payload_of(rig, op, FakeTI(try_number=1, max_tries=2))
     payload_of(rig, op, FakeTI(try_number=2, max_tries=2))
@@ -281,7 +281,7 @@ def test_the_unit_record_carries_the_digest_and_the_configs_names_where_xcom_has
     """A row without the digest (a binary older than 0.32.2): the log names the config's table, XCom nothing."""
     rig.config.write_text(rig.config.read_text() + "load:\n  target: bigquery\n  project: p\n  dataset: d\n")
     row = {"export": "users", "table": "users", "status": "loaded", "rows": 4}
-    rig.scenario(flags=NEW_FLAGS, load={"summary": {"run_id": "l1", "per_table": [row]}})
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="users", table="users"))
     [unit] = rig.events("rivet.unit")
     assert (unit["target"], unit["target_from"], unit["digest"]) == ("p.d.users__changes", "config", None)

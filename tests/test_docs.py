@@ -6,6 +6,7 @@ import inspect
 import re
 from pathlib import Path
 
+import pytest
 from conftest import DOCS, Rig, doc_section
 
 from airflow_provider_rivet import dags
@@ -32,6 +33,7 @@ def named(text: str, name: str) -> bool:
     return re.search(rf"`{name}(=[^`]*)?`|\b{name}=", text) is not None
 
 
+@pytest.mark.before_0_32_2
 def test_d30_a_warehouse_compact_on_todays_rivet_ends_compacted_as_the_readme_says(rig: Rig) -> None:
     """D30: on Snowflake and ClickHouse rivet passes every table by and exits 0 with no machine-readable status, so the
     task is green as `compacted` having merged nothing. The README said it "is skipped with the reason rivet gives"."""

@@ -9,7 +9,14 @@ from airflow.exceptions import AirflowFailException, AirflowNotFoundException
 from conftest import FakeTI, Rig
 
 from airflow_provider_rivet import capabilities
-from airflow_provider_rivet.operators import RivetLoadOperator, RivetRunOperator
+from airflow_provider_rivet.operators import (
+    RivetApplyOperator,
+    RivetCdcRunOperator,
+    RivetCompactOperator,
+    RivetLoadOperator,
+    RivetPlanOperator,
+    RivetRunOperator,
+)
 from airflow_provider_rivet.preflight import PreflightRefusal, read_config
 
 
@@ -109,3 +116,32 @@ def test_c1a_a_help_probe_that_fails_after_the_preflight_is_refused_without_retr
     code, text = refusal(rig, rig.operator(cls, export="orders"))
     assert code == "RIVET_AIRFLOW_BINARY_MISSING"
     assert f"{sub} --help" in text
+
+
+# ---- `-p` is a flag of rivet run / plan / check only (0.32.2): the others refuse it as clap does ----
+
+PARAM_SPELLINGS = [["-p", "day=2026-10-20"], ["-pday=2026-10-20"], ["--param", "day=2026-10-20"], ["--param=day=2026-10-20"]]
+
+
+@pytest.mark.parametrize("extra_args", PARAM_SPELLINGS, ids=lambda a: a[0])
+@pytest.mark.parametrize("cls", [RivetLoadOperator, RivetCompactOperator, RivetApplyOperator], ids=lambda c: c.__name__)
+def test_a_param_given_to_a_task_whose_rivet_subcommand_has_no_p_is_refused_before_rivet_starts(
+    rig: Rig, cls: Any, extra_args: list[str]
+) -> None:
+    """`rivet load -p ...` ends `unexpected argument '-p' found` (exit 2) after a lock and a copy of the config:
+    the operator names the subcommands that take it and starts nothing."""
+    code, text = refusal(rig, rig.operator(cls, export="orders", extra_args=extra_args))
+    assert code == "RIVET_AIRFLOW_PARAM_NOT_ACCEPTED"
+    assert "run, plan and check" in text and "env=" in text
+    # the remedy names the operators that do take it, spelled as the classes are, and the `${name}` it is about
+    assert "RivetRunOperator, RivetCdcRunOperator and RivetPlanOperator" in text and "`${name}`" in text
+
+
+@pytest.mark.parametrize("extra_args", PARAM_SPELLINGS, ids=lambda a: a[0])
+@pytest.mark.parametrize("cls", [RivetRunOperator, RivetCdcRunOperator, RivetPlanOperator], ids=lambda c: c.__name__)
+def test_a_param_given_to_run_cdc_run_and_plan_still_reaches_rivet(rig: Rig, cls: Any, extra_args: list[str]) -> None:
+    extra = {"plan_file": str(rig.tmp / "pg.plan.json")} if cls is RivetPlanOperator else {"export": "orders"}
+    rig.scenario(plan_list=[{"export_name": "orders"}])
+    rig.run(rig.operator(cls, extra_args=extra_args, **extra))
+    [argv] = [c["argv"] for c in rig.calls() if c["argv"][0] in ("run", "plan")]
+    assert any(argv[i : i + len(extra_args)] == extra_args for i in range(len(argv))), argv

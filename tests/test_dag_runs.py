@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from conftest import NEW_FLAGS, SECRET, DagRig
+from conftest import SECRET, DagRig
 
 REFUSED = {"exit": 5, "line": {"error": "refused: row 4111-1111", "exit_class": 5, "code": "RIVET_SOURCE_CDC_LOG_GAP"}}
 BATCH_CONFIG = """\
@@ -166,7 +166,7 @@ def test_a_refused_cdc_run_blocks_every_load_and_compact_and_fails_the_run(cdc: 
 
 
 def test_a_failed_cdc_load_blocks_its_own_compaction_only(cdc: DagRig) -> None:
-    cdc.scenario(flags=NEW_FLAGS, **{"load:orders_cdc:orders": REFUSED})
+    cdc.scenario(**{"load:orders_cdc:orders": REFUSED})
     state, tasks = cdc.run_dag("build_cdc_dag", "cdc_load_fails", export="orders_cdc", tables=["orders", "users"])
     assert (tasks["load.orders"], tasks["compact.orders"]) == (FAILED, BLOCKED)
     assert (tasks["run"], tasks["load.users"], tasks["compact.users"]) == (OK, OK, OK)

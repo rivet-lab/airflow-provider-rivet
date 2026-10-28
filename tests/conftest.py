@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -17,6 +18,8 @@ os.environ["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
 os.environ["AIRFLOW__CORE__UNIT_TEST_MODE"] = "True"
 
 import pytest
+
+from airflow_provider_rivet.capabilities import MIN_RIVET_VERSION
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 # The documentation: the README (the front page) and the pages under docs/ it links to.
@@ -38,12 +41,16 @@ def doc_section(heading: str) -> str:
 RIVET_SRC = Path(os.environ.get("RIVET_SRC") or PACKAGE_ROOT.parent / "rivet").resolve()
 FIXTURES = RIVET_SRC / "tests" / "fixtures" / "scheduler"
 SECRET = "postgresql://rivet:s3cr3t-pw@db.internal:5432/app"
-NEW_FLAGS = {
+#: The flags a 0.32.1 binary lacks against the floor (tests/fake_rivet.py models 0.32.2). A test marked
+#: `@pytest.mark.before_0_32_2` runs against a fake without them: it pins a degradation no admitted binary can produce,
+#: kept until the probes it covers are retired (`grep -rn before_0_32_2` lists them all).
+BEFORE_0_32_2 = {
     "*": ["--no-notify", "--lock-wait"],
-    "apply": ["--summary-output"],
     "load": ["--export", "--table", "--summary-output"],
     "compact": ["--export", "--table", "--summary-output"],
 }
+#: A config rivet 0.32.2 itself reads (tests/test_fake_rivet.py runs the real binary over it): the fake does not parse
+#: configs as strictly, so a field rivet requires is not seen missing here until that guard runs.
 CONFIG = """\
 source:
   type: postgres
@@ -52,15 +59,30 @@ exports:
   - name: orders
     query: SELECT * FROM orders
     mode: full
+    format: parquet
+    destination: {type: local, path: ./out/}
   - name: users
     query: SELECT * FROM users
     mode: incremental
+    cursor_column: id
+    format: parquet
+    destination: {type: local, path: ./out/}
   - name: orders_cdc
     mode: cdc
+    tables: [orders, users]
+    format: parquet
+    destination: {type: local, path: ./out/}
   - name: events
+    query: SELECT * FROM events
     mode: incremental
+    cursor_column: id
+    format: parquet
+    destination: {type: local, path: ./out/}
   - name: countries
+    query: SELECT * FROM countries
     mode: full
+    format: parquet
+    destination: {type: local, path: ./out/}
 """
 
 
@@ -111,14 +133,16 @@ class LazyPull:
 class Rig:
     """A fake binary, a config, a state directory, and the calls and log records of one test."""
 
-    def __init__(self, tmp: Path) -> None:
+    def __init__(self, tmp: Path, before_0_32_2: bool = False) -> None:
         self.tmp = tmp
+        self.before_0_32_2 = before_0_32_2
         self.bin = tmp / "bin"
         self.bin.mkdir()
         body = (Path(__file__).parent / "fake_rivet.py").read_text()
         script = self.bin / "rivet"
         script.write_text(f"#!{sys.executable}\n{body}")
         script.chmod(0o755)
+        shutil.copy(Path(__file__).parent / "rivet_shapes.py", self.bin / "rivet_shapes.py")  # the fake imports it
         self.state_dir = tmp / "state"
         self.state_dir.mkdir()
         self.config_dir = tmp / "cfg"
@@ -131,7 +155,13 @@ class Rig:
 
     def scenario(self, **spec: Any) -> None:
         """Set what the fake binary does next."""
-        self.spec = {"record_env": ["RIVET_PG_URL", "RIVET_STATE_URL"], "leak_env": ["RIVET_PG_URL"], **spec}
+        self.spec = {
+            "version": ".".join(map(str, MIN_RIVET_VERSION)),
+            "record_env": ["RIVET_PG_URL", "RIVET_STATE_URL"],
+            "leak_env": ["RIVET_PG_URL"],
+            **({"without": BEFORE_0_32_2} if self.before_0_32_2 else {}),
+            **spec,
+        }
         (self.bin / "scenario.json").write_text(json.dumps(self.spec))
 
     def copy(self, export: str | None = None, config: Path | None = None) -> Path:
@@ -191,9 +221,9 @@ def own_temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def rig(tmp_path: Path) -> Rig:
-    """A fresh rig per test."""
-    return Rig(tmp_path)
+def rig(tmp_path: Path, request: pytest.FixtureRequest) -> Rig:
+    """A fresh rig per test; a test marked `before_0_32_2` gets the fake of a binary without 0.32.2's flags."""
+    return Rig(tmp_path, before_0_32_2=request.node.get_closest_marker("before_0_32_2") is not None)
 
 
 @pytest.fixture(scope="session")

@@ -55,6 +55,7 @@ HOSTILE = ["@abc", "*abc", "!abc", "pa': 'ss", "abc #1", "a: b"]
 
 @pytest.mark.parametrize("secret", HOSTILE)
 @pytest.mark.parametrize("layout", ["block", "flow"])
+@pytest.mark.before_0_32_2
 def test_d09_a_quoted_placeholder_reads_the_same_in_the_load_copy_as_in_the_original(rig: Rig, secret: str, layout: str) -> None:
     """D09: `config_for` re-dumped the YAML, so `'${NOTE}'` lost its quotes; rivet splices the value into the raw text,
     and a value starting with `@`/`*`/`!` or holding `: ` broke the copy, `abc #1` silently read as `abc`."""
@@ -70,6 +71,7 @@ def test_d09_a_quoted_placeholder_reads_the_same_in_the_load_copy_as_in_the_orig
     assert load["config"]["exports"][0]["note"] == secret, "the value rivet reads must be the value the operator set"
 
 
+@pytest.mark.before_0_32_2
 def test_d09_the_block_copy_keeps_every_byte_of_what_it_keeps(rig: Rig) -> None:
     """D09: the narrowed copy is the original text with the other items' lines removed: comments, quoting stay."""
     rig.config.write_text(BLOCK)
@@ -79,6 +81,7 @@ def test_d09_the_block_copy_keeps_every_byte_of_what_it_keeps(rig: Rig) -> None:
     assert rig.copy("users").read_text() == kept
 
 
+@pytest.mark.before_0_32_2
 def test_d09_the_flow_copy_keeps_each_kept_item_byte_exact(rig: Rig) -> None:
     rig.config.write_text(FLOW)
     rig.run(rig.operator(RivetLoadOperator, export="users", env={"RIVET_PG_URL": "x", "NOTE": "n"}))
@@ -98,6 +101,7 @@ exports:
 """
 
 
+@pytest.mark.before_0_32_2
 def test_d09_a_text_that_cannot_be_cut_safely_is_refused_with_a_code_and_rivet_never_starts(rig: Rig) -> None:
     """D09: the kept export reads an anchor the dropped one defines; a cut would break it and a re-dump would rewrite the
     text, so the task refuses rather than guesses, on every try."""
@@ -108,6 +112,7 @@ def test_d09_a_text_that_cannot_be_cut_safely_is_refused_with_a_code_and_rivet_n
     assert not [c for c in rig.calls() if c["argv"][0] == "load"]
 
 
+@pytest.mark.before_0_32_2
 def test_backfill_recipes_survive_the_text_cut(rig: Rig) -> None:
     """PR #5's rule through the D09 text cut: a stream's `backfill: auto` recipes are kept, by `table:`, through the text cut."""
     rig.config.write_text(
@@ -140,6 +145,7 @@ def test_d07_a_leading_zero_value_does_not_crash_the_preflight(rig: Rig) -> None
 
 
 @pytest.mark.parametrize("name", ["2024", "017", "0x10"])
+@pytest.mark.before_0_32_2
 def test_d07_an_all_digit_export_name_is_found_and_narrowed_as_written(rig: Rig, name: str) -> None:
     """D07: `name: 2024` became an int and was refused `EXPORT_UNKNOWN`; `017` became 15, also in the narrowed copy."""
     rig.config.write_text(

@@ -7,8 +7,9 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from airflow.exceptions import AirflowFailException
-from conftest import NEW_FLAGS, RIVET_SRC, FakeTI, Rig
+from conftest import RIVET_SRC, FakeTI, Rig
 
 from airflow_provider_rivet import _yaml
 from airflow_provider_rivet.capabilities import probe
@@ -129,6 +130,7 @@ def test_a_missing_binary_config_or_export_is_refused(rig: Rig) -> None:
     assert refused(rig, rig.operator(RivetApplyOperator, export="not_in_config")) == "RIVET_AIRFLOW_EXPORT_UNKNOWN"
 
 
+@pytest.mark.before_0_32_2
 def test_a_notifications_block_is_warned_about_until_the_binary_has_no_notify(rig: Rig) -> None:
     rig.config.write_text(rig.config.read_text() + "notifications:\n  slack:\n    on: [failure]\n")
     rig.run(rig.operator(RivetRunOperator, export="orders"))
@@ -137,7 +139,7 @@ def test_a_notifications_block_is_warned_about_until_the_binary_has_no_notify(ri
 
 
 def test_with_no_notify_the_flag_is_passed_and_the_warning_is_gone(rig: Rig) -> None:
-    rig.scenario(flags=NEW_FLAGS)
+    rig.scenario()
     rig.config.write_text(rig.config.read_text() + "notifications:\n  slack:\n    on: [failure]\n")
     rig.run(rig.operator(RivetRunOperator, export="orders"))
     assert [w["warning"] for w in rig.events("rivet.warning")] == ["sqlite_single_host"]
@@ -149,6 +151,7 @@ def test_postgres_state_on_a_local_worker_does_not_warn_about_sqlite(rig: Rig) -
     assert not rig.events("rivet.warning")
 
 
+@pytest.mark.before_0_32_2
 def test_flags_are_probed_from_help_as_whole_words(rig: Rig) -> None:
     rig.scenario(flags={"load": ["--export-all"]})
     caps = probe(str(rig.bin / "rivet"))
@@ -162,6 +165,7 @@ def with_query_file(rig: Rig, ref: str = "sql/orders.sql") -> None:
     rig.config.write_text(rig.config.read_text().replace("query: SELECT * FROM orders", f"query_file: {ref}"))
 
 
+@pytest.mark.before_0_32_2
 def test_a_relative_query_file_stays_relative_and_is_copied_beside_the_materialised_config(rig: Rig) -> None:
     (rig.config_dir / "sql").mkdir()
     (rig.config_dir / "sql" / "orders.sql").write_text("SELECT 42")
