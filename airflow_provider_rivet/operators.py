@@ -330,7 +330,9 @@ class RivetBaseOperator(_RivetTask):
             if self.command == "compact" and outcome.units and all(u.status == "skipped" for u in outcome.units):
                 ti.xcom_push(key=XCOM_KEY, value=payload)
                 self._finish(ti, payload)
-                raise AirflowSkipException(f"compact skipped: {outcome.skip_reason}")
+                raise AirflowSkipException(
+                    f"compact skipped: {outcome.skip_reason}" if outcome.skip_reason else "compact skipped"
+                )
             stops = [u.export for u in outcome.units if u.stop_reason == "max_events"]
             if stops:
                 self._emit({"event": "rivet.cdc.max_events", "exports": stops, "text": "stopped on max_events; backlog remains"})
@@ -358,6 +360,7 @@ class RivetBaseOperator(_RivetTask):
             if outcome.marker is not None and self.state_dir and outcome.state_kind == "sqlite":
                 ledger = crashed_ledger(self.state_dir, ti.dag_id, run_id, task_part)
             allowed, problem = crashed_retry_allowed(ledger, ti.try_number, ti.max_tries, self.crashed_retries)
+            allowed = allowed and ti.try_number <= ti.max_tries  # a retry needs a try Airflow still has
             payload["crashed_retry"] = allowed
             if ledger is None or problem:
                 payload["degraded"] = sorted({*payload["degraded"], "crashed_ledger"})

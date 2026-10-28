@@ -17,6 +17,19 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   of `state_dir/.rivet_state.db`, and the single-host warning and refusal name it. `RIVET_STATE_URL` is classified by
   rivet's scheme rule (`postgres://`, `postgresql://`, `sqlite:`): a worker value such as `postgres-state.db`, which
   rivet would refuse as an unsupported scheme and which was refused here as PostgreSQL, is no longer refused here.
+
+- **Behaviour change.** Messages that named the wrong thing now name the right one. (1) The Slack title takes its
+  `final` / `retryable` word and code from the error that decided the task, not from the first failed unit: a
+  final refusal was titled `crashed (retryable)` when an earlier unit had crashed. (2) `run`, `cdc_run` and `apply`
+  read rivet 0.32.2's `skip_reason`: a skipped export says why in its line, its headline and the XCom
+  `skip_reason`, and a `compact` of several skipped tables gives the reasons (it said `compact skipped: None`).
+  (3) A whole-config run takes one lock per export: a `BUSY` headline names the lock that timed out and a success
+  headline sums every wait. (4) The stop text of a `cdc_run` task says `rivet run` (there is no `rivet cdc_run`).
+  (5) A crash with no Airflow try left (`retries=0`) is an `AirflowFailException` with `crashed_retry` false and
+  does not claim a retry. (6) A successful `load` / `compact` whose `per_table` is empty is recorded as
+  `result_malformed` in `degraded`. No state or table written before the upgrade is read differently; a DAG that
+  filters Slack titles by the old word, or reads `crashed_retry` on a `retries=0` crash, sees the new value.
+
 - **Behaviour change.** A SQL Server or Oracle `connection_url` percent-encoded the database, but rivet reads that URL
   path as written, so `my db` reached rivet as `my%20db` and the load failed with a login error naming another
   database. The database is now written as is for those two schemes, and PostgreSQL, MySQL and MongoDB stay encoded. A

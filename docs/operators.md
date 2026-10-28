@@ -121,7 +121,11 @@ rivet compact cdc table orders → p.orders__changes into p.orders: OK: 1200 row
 ```
 
 A task that waited for the export's lock says so when it takes it (``took the lock of export
-`cdc` after 30.0 s``), and its headline gives the time after the wait apart from the wait.
+`cdc` after 30.0 s``), and its headline gives the time after the wait apart from the wait. A run of a whole
+config takes one lock per export: its headline sums the waits (`after 2.4 s waiting for 2 locks (a, b)`), and a
+`BUSY` one names the lock that timed out, not the first it waited for. A skipped unit says why in its line and
+in the headline (`SKIPPED: nothing to do (nothing_to_compact)`), also for `run`, `apply` and `cdc_run`; two
+skipped tables with different reasons give them joined with `; `.
 
 - The headline's outcome is `OK`, `SKIPPED` (nothing to do: rivet's `skip_reason`, or an earlier
   try already applied the plan), `REFUSED` (class `refusal`, or a preflight refusal before rivet

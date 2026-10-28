@@ -269,11 +269,12 @@ def test_an_entry_missing_a_digest_key_is_malformed_and_says_so() -> None:
 
 
 def test_the_unit_record_carries_the_configs_names_where_the_result_names_no_table(rig: Rig) -> None:
-    """A load whose result holds no `per_table` entry: the log names the config's table, XCom nothing."""
+    """A load whose result holds no `per_table` entry: the log names the config's table, XCom nothing, and the empty
+    list of a clean exit (rivet writes one entry per plan) is recorded as malformed."""
     rig.config.write_text(rig.config.read_text() + "load:\n  target: bigquery\n  project: p\n  dataset: d\n")
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": []}})
     payload = payload_of(rig, rig.operator(RivetLoadOperator, export="users", table="users"))
     [unit] = rig.events("rivet.unit")
     assert (unit["target"], unit["target_from"], unit["digest"]) == ("p.d.users__changes", "config", None)
     assert (payload["units"][0]["target"], payload["units"][0]["buffer"]) == (None, None)
-    assert payload["degraded"] == []
+    assert payload["degraded"] == ["result_malformed"]

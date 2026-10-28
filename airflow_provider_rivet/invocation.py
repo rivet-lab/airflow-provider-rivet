@@ -29,7 +29,7 @@ from . import _yaml
 from .capabilities import ProbeFailed
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, binary_unanswering, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
-from .result import ErrorObject, UnitResult, worst
+from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
 
 Emit = Callable[[dict[str, Any]], None]
 ENV_ALLOWLIST = (
@@ -366,8 +366,7 @@ class _Session:
             state_kind=self.pf.state_kind,
             rivet_version=self.pf.caps.version_text,
         )
-        if len(units) == 1:
-            out.skip_reason = units[0].skip_reason
+        out.skip_reason = "; ".join(dict.fromkeys(u.skip_reason for u in units if u.skip_reason)) or None
         for unit in units:
             record = unit.to_xcom()
             record.update(record.pop("error") or {})
@@ -651,7 +650,7 @@ def _wait_for_lock(s: _Session, fd: int, path: Path, unit: str) -> None:
             return
         except BlockingIOError:
             if s.stopped is not None and s.stopped():
-                raise Stopped(s.req.command) from None
+                raise Stopped(SUBCOMMAND.get(s.req.command, s.req.command)) from None
             if attempt == 0:  # the wait is recorded once, when it starts
                 s.emit({"event": "rivet.lock.wait", "lock": str(path), "unit": unit, "lock_wait": s.req.lock_wait})
             if time.monotonic() >= deadline:

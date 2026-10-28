@@ -13,7 +13,7 @@ How rivet's exit and error object become an Airflow success, retry or stop.
 | exit 1, 3, 4, 5, 6 | `generic`, `data_integrity`, `schema_drift`, `refusal`, `internal` | `AirflowFailException`: no retry |
 | exit 2, no error line (argument error) | built: `generic`, exit_code 1 | `AirflowFailException`: no retry |
 | exit 101 (panic) | built: `internal`, exit_code 6 | `AirflowFailException`: no retry |
-| killed by a signal, or exit 129-255 | built: `crashed`, exit_code null | retried under its OWN budget, `crashed_retries` (default 1), then `AirflowFailException` |
+| killed by a signal, or exit 129-255 | built: `crashed`, exit_code null | retried under its OWN budget, `crashed_retries` (default 1), then `AirflowFailException`; with no Airflow try left (`retries=0`, or the last try) it is final at once: `AirflowFailException`, `crashed_retry` false, headline `final: no try left` |
 | exit 1 with a printed line saying `class: "crashed"` (a killed child, future binary) | `crashed` | the same crashed budget |
 | any other status | built: `generic` | `AirflowFailException`: no retry |
 | the package's own preflight refused | `preflight_refusal: RIVET_AIRFLOW_*` in XCom | `AirflowFailException`: no retry |
