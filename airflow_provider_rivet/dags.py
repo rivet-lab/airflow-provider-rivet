@@ -324,7 +324,7 @@ def build_source_dags(
         kwargs = {
             **(operator_kwargs or {}),
             "env_from_connections": {SOURCE_ENV: source, "RIVET_STATE_URL": state},
-            **({"env_from_variables": variables} if variables else {}),
+            "env_from_variables": variables,
         }
         settings = {"is_paused_upon_creation": True, **dag_kwargs}
         dag_id = f"rivet_{name}_{mode}"

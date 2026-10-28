@@ -13,9 +13,10 @@ from typing import Any
 import pytest
 from conftest import CONFIG, FakeTI, Rig
 
+from airflow_provider_rivet import operators
 from airflow_provider_rivet._compat import AirflowFailException, Variable
 from airflow_provider_rivet.dags import build_source_dags
-from airflow_provider_rivet.operators import RivetRunOperator
+from airflow_provider_rivet.operators import RivetRunOperator, airflow_variable
 from airflow_provider_rivet.preflight import read_config
 
 SECRET_VAR = "RIVET_SOURCE_URL_SECRET"
@@ -198,3 +199,34 @@ def test_a_variable_and_an_env_value_may_not_name_the_same_variable() -> None:
             env_from_variables={SECRET_VAR: "rivet_shop_url_secret"},
         )
     assert str(refused.value) == f"env and env_from_variables both set ['{SECRET_VAR}']: a variable has one value"
+
+
+def test_a_variable_no_backend_defines_is_read_with_none_as_its_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple] = []
+
+    def get(cls: Any, key: str, *args: Any, **kwargs: Any) -> None:
+        seen.append((key, args, kwargs))
+        return None
+
+    monkeypatch.setattr(Variable, "get", classmethod(get))
+    assert airflow_variable("rivet_shop_url_secret") is None
+    assert seen == [("rivet_shop_url_secret", (None,), {})]
+
+
+def test_the_config_the_environment_reads_resolves_the_variable_too(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With connections set, `_environment` hands the connections layer a config read with the task's variables."""
+    stored(monkeypatch, {"rivet_shop_url_secret": "projects/rivet-data-tool/secrets/shop-url"})
+    rig.config.write_text(URL_SECRET_CONFIG)
+    op = rig.operator(
+        RivetRunOperator, export="orders", connections=["gcs"], env_from_variables={SECRET_VAR: "rivet_shop_url_secret"}
+    )
+    seen: dict[str, Any] = {}
+
+    def record(worker_env: Any, spec: Any, connections: Any, secrets: Any) -> dict[str, str]:
+        seen["config"] = spec.config
+        return {}
+
+    monkeypatch.setattr(operators, "build_environment", record)
+    monkeypatch.setattr(operators, "get_connection", lambda conn_id: None)
+    op._environment(rig.tmp)
+    assert seen["config"]["source"]["url_secret"] == "projects/rivet-data-tool/secrets/shop-url"
