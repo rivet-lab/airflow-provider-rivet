@@ -64,18 +64,29 @@ def _names(field: str, value: Any) -> list[str]:
     return list(value)
 
 
-def _refuse_trigger_rule(operator_kwargs: Mapping[str, Any] | None) -> None:
-    """Every builder's tasks run only after their upstream succeeded: `operator_kwargs` may not say otherwise (D24)."""
-    if operator_kwargs and "trigger_rule" in operator_kwargs:
-        raise ValueError(
-            "operator_kwargs may not set `trigger_rule`: every rivet task runs only after its upstream succeeded "
-            "(load after its extract, compact after its load); the watcher fails the run on any failure"
-        )
+#: what a builder sets on every rivet task for the run's sake; `operator_kwargs` may not say otherwise
+OWNED_BY_BUILDERS = {
+    "trigger_rule": (
+        "every rivet task runs only after its upstream succeeded "
+        "(load after its extract, compact after its load); the watcher fails the run on any failure"
+    ),
+    "max_active_tis_per_dag": (
+        "it is 1 on every rivet task, so a task never runs beside another try of itself (docs/limits.md, Overlap)"
+    ),
+}
+
+
+def _refuse_owned_kwargs(operator_kwargs: Mapping[str, Any] | None) -> None:
+    """Every builder's tasks run only after their upstream succeeded and one try at a time: `operator_kwargs` may not
+    say otherwise (D24)."""
+    for key, why in OWNED_BY_BUILDERS.items():
+        if operator_kwargs and key in operator_kwargs:
+            raise ValueError(f"operator_kwargs may not set `{key}`: {why}")
 
 
 def _common(config: str, state_dir: str | None, operator_kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
     """The arguments every rivet task gets; its trigger rule is the builder's gate, whatever default_args says (D24)."""
-    _refuse_trigger_rule(operator_kwargs)
+    _refuse_owned_kwargs(operator_kwargs)
     return {
         "config": config,
         "state_dir": state_dir,
@@ -279,7 +290,7 @@ def build_source_dags(
     taken = sorted({"env_from_connections", "config", "state_dir"} & set(operator_kwargs or {}))
     if taken:
         raise ValueError(f"operator_kwargs may not set {taken}: each source's DAG sets them")
-    _refuse_trigger_rule(operator_kwargs)  # before any source has a config, as the builders it calls later
+    _refuse_owned_kwargs(operator_kwargs)  # before any source has a config, as the builders it calls later
     dags: dict[str, DAG] = {}
     for name in names:
         config = Path(config_dir) / f"{name}.yaml"

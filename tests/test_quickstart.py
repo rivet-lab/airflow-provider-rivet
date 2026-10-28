@@ -77,6 +77,41 @@ def test_a_cdc_config_of_one_table_and_own_storage_and_warehouse(tmp_path: Path)
     assert tuple(dag.get_task("run").connections) == ("rivet_s3_aws", "rivet_clickhouse_own")
 
 
+def test_a_config_of_several_streams_is_refused_naming_them_not_built_with_the_first(tmp_path: Path) -> None:
+    dags = tmp_path / "dags"
+    shutil.copytree(DAG_FILE.parent, dags)
+    (dags / "rivet" / "erp_cdc.yaml").write_text(
+        "source: {type: sqlserver, url_env: RIVET_SOURCE_URL}\n"
+        "exports:\n"
+        "  - {name: dbo_orders, table: dbo.orders, mode: cdc}\n"
+        "  - {name: dbo_customers, table: dbo.customers, mode: cdc}\n"
+    )
+    text = (dags / "rivet_quickstart.py").read_text()
+    (dags / "rivet_quickstart.py").write_text(
+        text.replace("PIPELINES = {\n", 'PIPELINES = {\n    "erp_cdc": {"source": "rivet_erp"},\n', 1)
+    )
+    with pytest.raises(ValueError) as exc:
+        load(dags)
+    assert str(exc.value) == (
+        f"{dags / 'rivet' / 'erp_cdc.yaml'} has 2 `mode: cdc` streams (dbo_orders, dbo_customers) and this DAG builds one, "
+        "which would leave the others uncaptured: build the pipeline with build_source_dags "
+        "(a group per stream, docs/dag-builders.md)"
+    )
+
+
+def test_a_stream_without_a_written_mode_or_with_a_numeric_name_is_read_as_rivet_reads_it(tmp_path: Path) -> None:
+    dags = tmp_path / "dags"
+    shutil.copytree(DAG_FILE.parent, dags)
+    (dags / "rivet" / "num_batch.yaml").write_text(
+        "source: {type: postgres, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: 2024, table: t}\n  - not an export\n"
+    )
+    text = (dags / "rivet_quickstart.py").read_text()
+    (dags / "rivet_quickstart.py").write_text(
+        text.replace("PIPELINES = {\n", 'PIPELINES = {\n    "num_batch": {"source": "rivet_n"},\n', 1)
+    )
+    assert {t.task_id for t in load(dags).rivet_num_batch.tasks} == {"apply.2024", "load.2024", "watcher"}
+
+
 def test_every_config_reads_the_source_the_dag_fills_and_batch_declares_its_key() -> None:
     for path in CONFIGS.glob("*.yaml"):
         doc = config(path.stem)
