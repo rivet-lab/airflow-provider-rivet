@@ -13,7 +13,13 @@ import pytest
 from conftest import FakeTI
 
 from airflow_provider_rivet._compat import AirflowFailException, AirflowNotFoundException
-from airflow_provider_rivet.connections import database_ref, odbc_connection, with_database
+from airflow_provider_rivet.connections import (
+    OdbcFileUnavailable,
+    connection_url,
+    database_ref,
+    odbc_connection,
+    with_database,
+)
 from airflow_provider_rivet.dags import build_source_dags
 from airflow_provider_rivet.operators import RivetInitOperator
 from airflow_provider_rivet.preflight import PreflightRefusal
@@ -140,18 +146,54 @@ def test_an_odbc_data_source_reads_as_a_connection_whatever_the_key_case(odbc_in
     assert (pg.conn_type, pg.host, pg.port, pg.login, pg.password, pg.schema) == ("postgres", "pg1", None, "u", None, "billing")
 
 
-def test_a_missing_file_or_data_source_is_none_and_a_foreign_driver_is_refused(odbc_ini: str, tmp_path: Path) -> None:
+def test_a_missing_data_source_is_none_and_a_foreign_driver_is_refused(odbc_ini: str) -> None:
     assert odbc_connection(odbc_ini, "nope") is None
-    assert odbc_connection(str(tmp_path / "absent.ini"), "shop") is None
-    assert odbc_connection(odbc_ini, "SHOP") is None  # a data source name is case-sensitive, as in unixODBC
     assert odbc_connection(odbc_ini, "mssql").conn_type == "mssql"
 
 
-def test_a_port_that_is_no_number_is_refused(tmp_path: Path) -> None:
+def test_a_data_source_name_matches_in_any_case_as_in_unixodbc(odbc_ini: str) -> None:
+    """`isql -v shop`, `SHOP` and `Shop` all reach the section `[shop]` (unixODBC 2.3.14, measured against the same file)."""
+    for asked in ("shop", "SHOP", "Shop"):
+        assert odbc_connection(odbc_ini, asked).host == "db1.internal", asked
+    assert odbc_connection(odbc_ini, "shop").conn_id == "shop", "the id is the one asked for"
+    assert odbc_connection(odbc_ini, "shö") is None and odbc_connection(odbc_ini, "SHÖP") is None, "ASCII case only"
+
+
+def test_an_odbc_ini_that_cannot_be_read_is_not_a_missing_data_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(OdbcFileUnavailable) as absent:
+        odbc_connection(str(tmp_path / "absent.ini"), "shop")
+    assert absent.value.reason == "does not exist on this worker"
+    with pytest.raises(OdbcFileUnavailable) as directory:
+        odbc_connection(str(tmp_path), "shop")
+    assert directory.value.reason == "cannot be read (Is a directory)"
+
+    def denied(self: Path) -> bytes:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with pytest.raises(OdbcFileUnavailable) as unreadable:
+        odbc_connection(str(tmp_path / "odbc.ini"), "shop")
+    assert unreadable.value.reason == "cannot be read (Permission denied)"
+
+
+@pytest.mark.parametrize(
+    ("port", "said"),
+    [
+        ("33o6", "which is no number"),
+        ("²", "which is no number"),  # str.isdigit() is True for a superscript, int() raises on it
+        ("٣٣٠٦", "which is no number"),  # Arabic-Indic digits: int() reads them, a TCP port is not written so
+        ("-1", "which is no number"),
+        ("65536", "which is above 65535"),
+        ("99999999999999999999", "which is above 65535"),
+    ],
+)
+def test_a_port_that_is_no_port_number_is_refused(tmp_path: Path, port: str, said: str) -> None:
     path = tmp_path / "odbc.ini"
-    path.write_text("[shop]\nDriver = MySQL\nServer = h\nPort = 33o6\n")
-    with pytest.raises(PreflightRefusal, match="port `33o6`, which is no number"):
-        odbc_connection(str(path), "shop")
+    path.write_text(f"[shop]\nDriver = MySQL\nServer = h\nPort = {port}\n", encoding="utf-8")
+    refused = refusal(lambda: odbc_connection(str(path), "shop"))
+    assert str(refused) == f"[RIVET_AIRFLOW_CONNECTION_UNSUPPORTED] ODBC data source [shop] in {path} has port `{port}`, {said}"
+    path.write_text("[shop]\nDriver = MySQL\nServer = h\nPort = 65535\n")
+    assert odbc_connection(str(path), "shop").port == 65535
 
 
 def test_every_reference_form_reads_as_one_dict() -> None:
@@ -574,12 +616,15 @@ def write(tmp_path: Path, text: str) -> str:
 
 
 def test_odbc_refusals_carry_their_code_and_text(tmp_path: Path) -> None:
-    path = write(tmp_path, "Driver = MySQL\n")
-    r = refusal(lambda: odbc_connection(path, "shop"))
+    path = tmp_path / "odbc.ini"
+    path.write_bytes(b"[shop]\nDriver = MySQL\nServer = h\nPassword = caf\xe9\n")
+    r = refusal(lambda: odbc_connection(str(path), "shop"))
     assert (r.code, str(r)) == (
         "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED",
-        f"[{r.code}] {path} is not a readable odbc.ini (MissingSectionHeaderError)",
+        f"[{r.code}] ODBC data source [shop] in {path} holds bytes that are not UTF-8, which the provider cannot read: "
+        "save the file as UTF-8, or create an Airflow Connection `shop` instead",
     )
+    path = write(tmp_path, "[shop]\nDriver = MySQL\nServer = h\n")
     path = write(tmp_path, "[shop]\nServer = h\n")
     r = refusal(lambda: odbc_connection(path, "shop"))
     assert str(r) == (
@@ -594,10 +639,98 @@ def test_odbc_refusals_carry_their_code_and_text(tmp_path: Path) -> None:
     )
 
 
-def test_odbc_reads_percent_signs_and_repeated_keys_as_written(tmp_path: Path) -> None:
-    path = write(tmp_path, "[shop]\nDriver = MySQL\nServer = h\nPassword = 50%off\nServer = h2\n[shop]\nDatabase = d\n")
+def test_odbc_reads_percent_signs_as_written(tmp_path: Path) -> None:
+    path = write(tmp_path, "[shop]\nDriver = MySQL\nServer = h\nPassword = 50%off\nDatabase = d\n")
     conn = odbc_connection(path, "shop")
-    assert (conn.conn_id, conn.host, conn.password, conn.schema) == ("shop", "h2", "50%off", "d")
+    assert (conn.conn_id, conn.host, conn.password, conn.schema) == ("shop", "h", "50%off", "d")
+
+
+def test_odbc_reads_the_first_value_of_a_key_and_the_first_section_of_a_name_as_unixodbc_does(tmp_path: Path) -> None:
+    """Measured with `isql -v` (unixODBC 2.3.14) on files of this shape: it connected to `first.invalid`, and to the
+    default database although a later `[shop]` section set one."""
+    path = write(tmp_path, "[shop]\nDriver = MySQL\nServer = first.invalid\nSERVER = second.invalid\nserver=third.invalid\n")
+    assert odbc_connection(path, "shop").host == "first.invalid"
+    path = write(tmp_path, "[shop]\nDriver = MySQL\nServer = h\n[Other]\nDatabase = x\n[SHOP]\nDatabase = d\nServer = h2\n")
+    conn = odbc_connection(path, "shop")
+    assert (conn.host, conn.schema) == ("h", None), "a later section of the same name is not read"
+    path = write(tmp_path, "[other]\nServer = x\n[Shop]\nDriver = MySQL\nServer = h\n[shop]\nServer = h2\nDatabase = d\n")
+    conn = odbc_connection(path, "SHOP")
+    assert (conn.host, conn.schema) == ("h", None), "the first section of that name in any case"
+
+
+def test_odbc_lines_are_read_as_unixodbc_reads_them(tmp_path: Path) -> None:
+    """Each line shape measured with `isql -v` (unixODBC 2.3.14): `;` and `#` start comments, `:` is no delimiter,
+    CRLF ends a line, a header's padding is trimmed, and once a section is open an indented or unclosed `[name` is a
+    header too."""
+    text = (
+        "; a comment\r\n[shop] trailing words\r\nDriver = MySQL\r\n# Server = commented\r\n"
+        "; Port = 1\r\n  Server = h\r\nDatabase : colon\r\nUID=u=v\r\nPWD =  spaced  \r\n"
+    )
+    path = tmp_path / "odbc.ini"
+    path.write_bytes(text.encode())
+    conn = odbc_connection(str(path), "shop")
+    assert (conn.host, conn.port, conn.schema, conn.login, conn.password) == ("h", None, None, "u=v", "spaced")
+    for header in ("  [shop]", "\t[ shop ]", "[shop", "[SHOP  "):
+        path.write_bytes(f"[other]\nDriver = Oracle\n{header}\nDriver = MySQL\nServer = h\n".encode())
+        assert odbc_connection(str(path), "shop").host == "h", header
+    path.write_bytes(b"[other]\n  ; [shop]\nDriver = MySQL\nServer = h\n")
+    assert odbc_connection(str(path), "shop") is None, "an indented comment is a comment"
+    path.write_bytes(b"[shop]\nDriver = MySQL\n  [other]\nServer = h\n")
+    assert odbc_connection(str(path), "shop").host is None, "an indented header ends the section"
+
+
+def test_a_file_whose_first_line_of_substance_is_no_header_names_the_file(tmp_path: Path) -> None:
+    """unixODBC answers "DSN not found" for every name in such a file, so the provider names the file instead of
+    reporting a missing data source: a key first, an indented header first, an unclosed `[x` is a header and is not."""
+    path = tmp_path / "odbc.ini"
+    for unreadable in (b"Driver = MySQL\n[shop]\nServer = h\n", b"; c\n\n  [shop]\nServer = h\n", b"stray\n[shop]\n"):
+        path.write_bytes(unreadable)
+        assert "is not a readable odbc.ini: line" in str(refusal(lambda: odbc_connection(str(path), "shop")))
+    path.write_bytes(b"; c\n\n  [shop]\nServer = h\n")
+    assert f"{path} is not a readable odbc.ini: line 3 is neither a comment nor inside a [section]" in str(
+        refusal(lambda: odbc_connection(str(path), "shop"))
+    )
+    # Tolerated by unixODBC: a line with no `=`, an empty key and `[]` inside or between sections.
+    path.write_bytes(b"; c\n[]\nstray\n[shop]\nno equals\n= v\nDriver = MySQL\nServer = h\n[x]\nstray\n")
+    assert odbc_connection(str(path), "shop").host == "h"
+    path.write_bytes(b"[o]\n[shop\nDriver = MySQL\nServer = h\n")
+    assert odbc_connection(str(path), "shop").host == "h", "an unclosed header after a section opens one"
+
+
+def test_a_byte_outside_the_chosen_section_is_no_reason_to_refuse_the_file(tmp_path: Path) -> None:
+    """/etc/odbc.ini is shared: another data source's latin-1 byte, a comment's, or a key's must not stop this one."""
+    path = tmp_path / "odbc.ini"
+    path.write_bytes(b"; caf\xe9\n[other]\nPassword = caf\xe9\n[shop]\nDriver = MySQL\nServer = h\n; \xff\n[last]\nUID = \xe9\n")
+    assert odbc_connection(str(path), "shop").host == "h"
+    path.write_bytes(b"[shop]\nDriver = MySQL\nServer = h\xe9\n")
+    assert "are not UTF-8" in str(refusal(lambda: odbc_connection(str(path), "shop")))
+    path.write_bytes("[shop]\nDriver = MySQL\nServer = h\nPassword = pässwörd\n".encode())
+    assert odbc_connection(str(path), "shop").password == "pässwörd"
+
+
+def test_an_oracle_servername_with_an_ipv6_literal_reads_as_host_port_and_service(tmp_path: Path) -> None:
+    def oracle(server: str) -> tuple[Any, ...]:
+        path = write(tmp_path, f"[ora]\nDriver = Oracle\nServerName = {server}\n")
+        conn = odbc_connection(path, "ora")
+        return conn.host, conn.port, conn.schema
+
+    assert oracle("[2001:db8::1]:1521/ORCLPDB1") == ("[2001:db8::1]", 1521, "ORCLPDB1")
+    assert oracle("//[2001:db8::1]/ORCLPDB1") == ("[2001:db8::1]", None, "ORCLPDB1")
+    assert oracle("db.internal:1522/ORCL") == ("db.internal", 1522, "ORCL"), "a name and port as before"
+    for bad in ("2001:db8::1:1521/ORCL", "[2001:db8::1/ORCL", "[]:1521/ORCL", "[a]]/ORCL"):
+        ini = write(tmp_path, f"[ora]\nDriver = Oracle\nServerName = {bad}\n")
+        text = str(refusal(lambda ini=ini: odbc_connection(ini, "ora")))
+        assert "which is no number" in text or "tnsnames.ora alias" in text, (bad, text)
+
+
+def test_a_sql_server_with_an_ipv6_literal_and_no_port_reaches_rivet_with_the_default_port(tmp_path: Path) -> None:
+    path = write(
+        tmp_path, "[ms]\nDriver = ODBC Driver 18 for SQL Server\nServer = [2001:db8::1]\nUID = sa\nPWD = pw\nDatabase = d\n"
+    )
+    conn = odbc_connection(path, "ms")
+    assert connection_url(conn) == "sqlserver://sa:pw@[2001:db8::1]:1433/d"
+    path = write(tmp_path, "[ms]\nDriver = msodbcsql18\nServer = tcp:[2001:db8::1],1990\nUID = sa\nDatabase = d\n")
+    assert connection_url(odbc_connection(path, "ms")) == "sqlserver://sa@[2001:db8::1]:1990/d"
 
 
 def test_a_bad_reference_names_the_keys_it_takes() -> None:
@@ -622,6 +755,41 @@ def test_the_missing_source_refusal_word_for_word(odbc_ini: str, tmp_path: Path,
     assert str(r) == f"{head}, and {odbc_ini} has no data source [nada]; create it, or correct the id the task names"
     r = refusal(lambda: op._database({"conn_id": "nope"}))
     assert str(r) == f"{head}; create it, or correct the id the task names"
+
+
+def test_an_unreadable_odbc_ini_is_refused_with_a_remedy_that_works_without_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup(monkeypatch, {})
+    head = "[RIVET_AIRFLOW_CONNECTION_MISSING] connection `rivet_shop` is not defined in the metadata database or any secrets backend this worker reads"
+    tail = "; create it, put a readable odbc.ini there, or correct the id the task names"
+    op = init_operator(tmp_path)
+    absent = str(tmp_path / "absent.ini")
+    r = refusal(lambda: op._database({"conn_id": "rivet_shop", "odbc_ini": absent, "dsn": "shop"}))
+    assert str(r) == f"{head}, and {absent} does not exist on this worker{tail}"
+    r = refusal(lambda: op._database({"conn_id": "rivet_shop", "odbc_ini": str(tmp_path), "dsn": "shop"}))
+    assert str(r) == f"{head}, and {tmp_path} cannot be read (Is a directory){tail}"
+
+
+def test_a_data_source_password_is_masked_before_the_task_logs_anything(
+    odbc_ini: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup(monkeypatch, {})
+    masked: list[str] = []
+    monkeypatch.setattr("airflow_provider_rivet.operators.mask_secret", masked.append)
+    conn = init_operator(tmp_path)._database({"conn_id": "rivet_shop", "odbc_ini": odbc_ini, "dsn": "shop"})
+    assert masked == [conn.password] and conn.password, "the file's password, which Airflow never loaded"
+    masked.clear()
+    lookup(
+        monkeypatch,
+        {
+            "rivet_shop": types.SimpleNamespace(
+                conn_type="postgres", login=None, password="pw", host="h", port=None, schema="d", extra_dejson={}
+            )
+        },
+    )
+    init_operator(tmp_path)._database({"conn_id": "rivet_shop", "odbc_ini": odbc_ini, "dsn": "shop"})
+    assert masked == [], "an Airflow Connection is masked by Airflow when it loads"
 
 
 def test_the_data_source_log_line_word_for_word(
