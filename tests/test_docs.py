@@ -6,19 +6,14 @@ import inspect
 import re
 from pathlib import Path
 
-from conftest import DOCS, Rig, doc_section
+from conftest import DOCS, doc_section
 
 from airflow_provider_rivet import dags
 from airflow_provider_rivet.connections import KINDS
-from airflow_provider_rivet.operators import RivetBaseOperator, RivetCompactOperator
+from airflow_provider_rivet.operators import RivetBaseOperator
 
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
-# What real rivet prints for a table of a Snowflake or ClickHouse export, then exits 0 (src/load/compact.rs,
-# `compact_skip_reason` and its `eprintln!`): rivet 0.31.0 and main have no `--summary-output` on compact.
-WAREHOUSE_COMPACT_SKIP = (
-    "  compact [orders]: skipped — this warehouse keeps a change log behind a view and never compacts; nothing to merge"
-)
 
 
 def keyword_parameters(fn: object) -> list[str]:
@@ -30,21 +25,6 @@ def keyword_parameters(fn: object) -> list[str]:
 def named(text: str, name: str) -> bool:
     """Whether a text names a parameter: as code (`name`, `name=...`) or as a keyword in an example."""
     return re.search(rf"`{name}(=[^`]*)?`|\b{name}=", text) is not None
-
-
-def test_d30_a_warehouse_compact_on_todays_rivet_ends_compacted_as_the_readme_says(rig: Rig) -> None:
-    """D30: on Snowflake and ClickHouse rivet passes every table by and exits 0 with no machine-readable status, so the
-    task is green as `compacted` having merged nothing. The README said it "is skipped with the reason rivet gives"."""
-    rig.scenario(compact={"stderr": WAREHOUSE_COMPACT_SKIP, "exit": 0})
-    payload, _ = rig.run(rig.operator(RivetCompactOperator, export="orders"))
-    assert isinstance(payload, dict), f"the task did not succeed: {payload!r}"
-    assert [u["status"] for u in payload["units"]] == ["compacted"] and payload["skip_reason"] is None
-    assert "load_result" in payload["degraded"]
-    text = doc_section("## Storage and warehouse connections")
-    assert "compact task is skipped" not in DOCS, "the docs claim a skip today's binary never produces"
-    assert "`compacted`" in text and "`compact=False`" in text, "the docs must say the task ends `compacted` and how to drop it"
-    row = next(line for line in doc_section("## Operators").splitlines() if line.startswith("| `RivetCompactOperator`"))
-    assert "`load_result`" in row, "the skip-to-Airflow-skip note holds only for a binary with compact's summary"
 
 
 def test_d30_every_builder_parameter_is_named_in_its_doc_section() -> None:
@@ -86,3 +66,13 @@ def test_d39_the_changelog_names_connections_and_every_connection_kind() -> None
     assert entry is not None, "the CHANGELOG has no `connections=` entry"
     missing = [k for k in KINDS if k not in entry.lower()]
     assert not missing, f"the `connections=` entry does not name {missing}"
+
+
+def test_d30_a_warehouse_compact_that_never_compacts_is_documented_as_the_airflow_skip_it_is() -> None:
+    """D30: on Snowflake and ClickHouse rivet 0.32.2 reports every table `skipped` in its result, and the task ends as an
+    Airflow skip (`test_a_compaction_rivet_reports_as_skipped_is_an_airflow_skip`); the docs said it ends green."""
+    text = doc_section("## Storage and warehouse connections")
+    assert "Airflow skip" in text and "`compact=False`" in text
+    assert "ends green as `compacted`" not in DOCS and "`load_result`" not in DOCS
+    row = next(line for line in doc_section("## Operators").splitlines() if line.startswith("| `RivetCompactOperator`"))
+    assert "Airflow skip" in row

@@ -1,5 +1,5 @@
 """The config side of an invocation at its edges: query files copied beside a config's copy (and every refusal's
-text), a plan's wave layout, the exports a narrowed copy keeps, the narrowed copy's refusal, and a foreign sealed plan.
+text), a plan's wave layout, and a foreign sealed plan.
 Mutant ids are the mutmut names of airflow_provider_rivet/invocation.py."""
 
 from __future__ import annotations
@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -131,39 +130,6 @@ def test_a_campaign_whose_waves_are_empty_is_refused() -> None:
     plan = [{"prioritization": {"campaign": {"waves": [{"wave": 1, "exports": []}], "ordered_exports": []}}}]
     with pytest.raises(ValueError, match="^the plan has no wave with an export$"):
         invocation.plan_layout(plan)
-
-
-# --- the narrowed copy ----------------------------------------------------------------------------------------------
-
-
-def test_narrowing_to_an_export_the_config_lacks_keeps_nothing() -> None:
-    """narrowed_exports 12."""
-    assert invocation.narrowed_exports([{"name": "a"}], "missing") == set()
-
-
-def test_an_auto_backfill_keeps_the_batch_recipes_of_its_tables_not_other_streams() -> None:
-    """narrowed_exports 40-46: a second stream over the same table is no recipe."""
-    exports = [
-        {"name": "stream", "mode": "cdc", "tables": ["orders"], "cdc": {"backfill": "auto"}},
-        {"name": "orders_batch", "mode": "full", "table": "orders"},
-        {"name": "other_stream", "mode": "cdc", "table": "orders"},
-        {"name": "users_batch", "mode": "full", "table": "users"},
-    ]
-    assert invocation.narrowed_exports(exports, "stream") == {0, 1}
-
-
-def test_a_cut_that_reads_back_as_another_document_is_refused_with_the_remedy(tmp_path: Path) -> None:
-    """narrowed_config 21-23/33: the text's `a` holds a field the parsed config does not, so the cut cannot match."""
-    text = "exports:\n  - name: a\n    x: 1\n  - name: b\n"
-    pf = SimpleNamespace(config={"exports": [{"name": "a"}, {"name": "b"}]}, config_text=text, value_of=lambda name: None)
-    with pytest.raises(PreflightRefusal) as refused:
-        invocation.narrowed_config(pf, "/cfg/rivet.yaml", "a")
-    assert str(refused.value) == (
-        "[RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE] this rivet has no `--export` on load/compact, so the task loads from a copy "
-        "of /cfg/rivet.yaml cut down to `a`, and the text cannot be cut safely: the cut text does not read back as the "
-        "chosen exports: the narrowed document differs from the chosen exports of the original. Write `exports:` as a "
-        "plain list whose items each start their own `- name:` line, with no anchor another item uses"
-    )
 
 
 # --- a foreign sealed plan ------------------------------------------------------------------------------------------

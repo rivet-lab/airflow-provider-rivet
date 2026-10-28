@@ -23,7 +23,7 @@ values are never stored as rendered fields. No operator builds argv: one module,
 | `cloud_credentials` | `()` | no | `"gcp"`, `"aws"`, `"azure"`: pass the worker's credential variables of that kind |
 | `connections` | `()` | no | storage and warehouse Connection ids (see ["Storage and warehouse connections"](connections-and-secrets.md#storage-and-warehouse-connections)) |
 | `deployment` | `"auto"` | no | `local` (a host that keeps its disk) or `pod` (ephemeral); `auto` reads `KUBERNETES_SERVICE_HOST` |
-| `extra_args` | `None` | yes | arguments appended to rivet's argv, e.g. `["-p", "day=2026-10-20"]` |
+| `extra_args` | `None` | yes | arguments appended to rivet's argv, e.g. `["--reconcile"]` on a run task; `-p` / `--param` (`["-p", "day=2026-10-20"]`) only on the run, CDC run and plan tasks, because only `rivet run`, `plan` and `check` take it: the load, compact and apply tasks refuse it before rivet starts (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`), and a `${name}` in their config is read from `env` |
 | `lock_wait` | `600` | no | seconds a task waits for another task holding its export's lock before it ends retryable (`RIVET_AIRFLOW_EXPORT_BUSY`) |
 | `rivet_notifications` | `False` | no | `True` keeps rivet's own `notifications:` on: `--no-notify` is not passed and nothing is warned (see [Slack](slack.md)) |
 | `crashed_retries` | `1` | no | retries of a crash (a signal, exit 129-255) on their own budget, beside Airflow's `retries` (see [Retries](retries.md)) |
@@ -38,8 +38,8 @@ values are never stored as rendered fields. No operator builds argv: one module,
 | `RivetApplyOperator` | `rivet plan -e X --format json -o <artifact>` then `rivet apply <artifact>` | a retry replays the same sealed artifact while it is unexpired, and rivet answers a replay of a plan it already applied (["Retries"](retries.md)); a clear plans again |
 | `RivetRunOperator` | `rivet run [-e X] --summary-output <file>` | the fallback when sealed apply is not wanted; also runs a whole config |
 | `RivetCdcRunOperator` | `rivet run -e X --summary-output <file>` for a `mode: cdc` export | one bounded drain; succeeds on `max_events`, reports it, never loops |
-| `RivetLoadOperator` | `rivet load` | per export, per table where the binary can narrow |
-| `RivetCompactOperator` | `rivet compact` | with `load_result` degraded (rivet 0.31.0 and main) exit 0 is `compacted`, also when rivet merged nothing; a binary with compact's `--summary-output` reports `skipped`, which becomes an Airflow skip |
+| `RivetLoadOperator` | `rivet load -e X [--table T]` | per export, per table when `table` is given |
+| `RivetCompactOperator` | `rivet compact -e X [--table T]` | rivet's result says per table whether it merged or skipped (`skip_reason`); a task whose every unit rivet skipped is an Airflow skip |
 | `RivetInitOperator` | `rivet init` then `rivet check` of what it wrote | writes `config` once and never replaces it; the task `build_source_dags` adds while a source has no config (see [DAG builders](dag-builders.md#one-dag-per-database-build_source_dags)). It takes `config`, `state_dir`, `rivet_bin` and the environment parameters (`env`, `env_from_connections`, `env_passthrough`, `cloud_credentials`, `connections`), plus `mode`, `source_env` and `init_args`; the parameters of a rivet run (`lock_wait`, `extra_args`, `crashed_retries`, ...) are not its own, and `build_source_dags` gives them to the run tasks only |
 | `RivetPlanOperator` | `rivet plan --format json` | rewrites the plan layout file atomically, only when the output is a layout `build_batch_dag` can read (waves with exports; one planned export, which rivet prints as a bare object with no campaign, is one wave from its `export_recommendation`); the file keeps its mode |
 
@@ -62,7 +62,7 @@ Every task returns (and, on failure, pushes before raising) one XCom value under
   "units": [ { "export": "orders", "table": null, "target": null, "buffer": null,
                "status": "success", "run_id": "orders_...",
                "rows": 2500, "files": 1, "stop_reason": null, "error": null } ],
-  "error": null, "degraded": ["lock_wait", "no_notify"],
+  "error": null, "degraded": [],
   "exit_status": 0, "signal": null, "stderr_path": "/var/lib/rivet/postgres/logs/...",
   "skip_reason": null, "state_marker": "1d86...", "rivet_version": "0.32.1 (5ee08c0a)" }
 ```
@@ -77,7 +77,7 @@ not part of the XCom unit: it is in the task log and in the `rivet.unit` record'
 ## Reading the task log
 
 Each task writes one block when it ends: a headline with the outcome first, one line per rivet
-step, and indented `note` lines. A successful apply on rivet 0.32.0 with SQLite state:
+step, and indented `note` lines. A successful apply with SQLite state:
 
 ```
 rivet apply users → OK: 30 rows, 1 file in 4.1 s (run users_20261016T092509.120_4242)
@@ -100,15 +100,14 @@ rivet apply users → REFUSED [RIVET_PLAN_ARTIFACT_STALE], final
 
 A task of one step that took the task's time (a load, a compact, a run) has no step line: the
 headline says it. The step line stays when the step failed or the task spent a second or more
-outside it (a lock wait). Flags the binary lacks are noted at DEBUG only. `rivet_version` is the
+outside it (a lock wait). `rivet_version` is the
 whole `rivet --version` line after `rivet`, so a branch build is told apart from the release.
 
 A load or compact task names the warehouse object it wrote after the arrow, as rivet's result names
 it: a load the table of a `full` export, else its `__changes` log
 (`rivet load cdc table orders → my-project.demo_cdc.orders__changes: OK: 50 rows in 12.0 s`); a
-compact the buffer it merged and the base (`….orders__changes into ….orders`). A binary whose
-result has no such name gets it from the config's `load:` block, marked `(from config)`
-(`load_digest`).
+compact the buffer it merged and the base (`….orders__changes into ….orders`). A command whose
+result names no table (it failed before one) gets the name from the config's `load:` block, marked `(from config)`.
 
 With rivet >= 0.32.2 a load or compact also says what the warehouse did, from rivet's per-table
 digest (ADR-0039 D3): the headline sums the rows, the warehouse jobs and the bytes billed, and

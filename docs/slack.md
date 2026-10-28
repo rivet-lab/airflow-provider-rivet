@@ -50,11 +50,8 @@ text, which can hold source values. `format_title`, `format_error_text` and `for
 the formatters on their own, to send through another channel.
 
 Mutual exclusion: under Airflow, rivet's own notifications are off and alerting is Airflow's.
-The operators pass `--no-notify` to a binary that has it. Until then **do not configure
-`notifications:` in a rivet config run under Airflow**: every failure would be sent twice. The
-operator warns (a WARNING `note` line; record `rivet.warning`, `notifications_block`) when it sees
-the block. To keep rivet's own notifications instead (a config whose `notifications:` you want), pass
-`rivet_notifications=True`: the operator does not pass `--no-notify` and does not warn.
+The operators pass `--no-notify` to every rivet process. To keep rivet's own notifications instead (a config
+whose `notifications:` you want), pass `rivet_notifications=True`: the operator does not pass `--no-notify`.
 
 ## 1. Install the Slack provider
 

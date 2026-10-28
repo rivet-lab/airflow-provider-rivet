@@ -5,16 +5,14 @@ from __future__ import annotations
 import json
 import os
 import stat
-import subprocess
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from airflow.exceptions import AirflowException, AirflowFailException, AirflowSkipException
-from conftest import DOCS, NEW_FLAGS, SECRET, FakeTI, Rig, fixture
+from conftest import DOCS, SECRET, FakeTI, Rig, fixture
+from rivet_shapes import load_row, run_entry
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.dags import read_plan_layout
@@ -30,7 +28,6 @@ from airflow_provider_rivet.operators import (
     connection_url,
 )
 
-OLD_BATCH = ["lock_wait", "no_notify"]
 # An apply that failed retryably: its retry replays the sealed plan. A retry after an apply that SUCCEEDED is answered
 # `already_applied` by rivet (G1b, tests/test_retry.py), so the tests of how a retry replays its plan start from a failure.
 FAILED_APPLY = {"exit": 2, "line": {"error": "network", "exit_class": 2}}
@@ -38,8 +35,7 @@ FAILED_APPLY = {"exit": 2, "line": {"error": "network", "exit_class": 2}}
 
 def entry(name: str, status: str = "success", **more: object) -> dict:
     """One `per_export` entry as today's binary writes it."""
-    base = {"export_name": name, "status": status, "run_id": f"{name}_1", "rows": 0, "files": 0, "mode": "full"}
-    return {**base, "error_message": "cell value 4111-1111" if status == "failed" else None, **more}
+    return run_entry(name, status, **{"error_message": "cell value 4111-1111" if status == "failed" else None, **more})
 
 
 def mode(path: object) -> int:
@@ -53,45 +49,8 @@ def assert_no_secret(rig: Rig, payload: object) -> None:
     assert SECRET not in blob and "s3cr3t" not in blob and "4111-1111" not in blob
 
 
-def test_apply_success_on_todays_binary(rig: Rig) -> None:
-    rig.scenario(apply={"summary": {"per_export": [entry("orders", rows=500, files=1)]}})
-    payload, _ = rig.run(rig.operator(RivetApplyOperator, export="orders"))
-    cfg = str(rig.copy())
-    plan = rig.argv("plan")
-    artifact = plan[plan.index("--output") + 1]
-    assert plan == ["plan", "--config", cfg, "--export", "orders", "--format", "json", "--output", artifact, "--json-errors"]
-    summary = rig.argv("apply")[3]
-    assert rig.argv("apply") == ["apply", artifact, "--summary-output", summary, "--json-errors"]
-    assert not [c for c in rig.calls() if c["argv"][0] == "metrics"], "the counts are the summary's"
-    assert Path(artifact).is_relative_to(rig.state_dir)
-    assert Path(cfg).read_text() == rig.config.read_text()
-    assert all(c["env"]["RIVET_PG_URL"] == SECRET for c in rig.calls())
-    assert all(c["cwd"] == str(rig.config_dir.resolve()) for c in rig.calls())
-    assert payload["decision"] == "success" and payload["degraded"] == OLD_BATCH
-    assert payload["units"] == [
-        {
-            "export": "orders",
-            "table": None,
-            "target": None,
-            "buffer": None,
-            "status": "success",
-            "run_id": "orders_1",
-            "rows": 500,
-            "files": 1,
-            "stop_reason": None,
-            "error": None,
-        }
-    ]
-    assert Path(payload["stderr_path"]).is_relative_to(rig.state_dir / "logs")
-    assert SECRET in Path(payload["stderr_path"]).read_text()
-    assert mode(payload["stderr_path"]) == 0o600 and mode(rig.copy()) == 0o600
-    assert [w["warning"] for w in rig.events("rivet.warning")] == ["sqlite_single_host"]
-    assert_no_secret(rig, payload)
-
-
 def test_apply_on_a_binary_with_the_contract_flags_passes_them_and_degrades_nothing(rig: Rig) -> None:
     rig.scenario(
-        flags=NEW_FLAGS,
         apply={"summary": {"per_export": [entry("orders", rows=7, files=1, error=None, stop_reason=None, tables=None)]}},
     )
     payload, _ = rig.run(rig.operator(RivetApplyOperator, export="orders", lock_wait=30))
@@ -135,7 +94,6 @@ def test_a_coded_refusal_fails_without_retry_and_keeps_the_message_out(rig: Rig)
 def test_a_contract_refusal_carries_its_action_into_the_exception(rig: Rig) -> None:
     line = fixture("json_errors.json")
     rig.scenario(
-        flags=NEW_FLAGS,
         run={"exit": 5, "line": line, "summary": {"per_export": [fixture("run_entry_failed.json"), entry("events", "failed")]}},
     )
     exc, ti = rig.run(rig.operator(RivetRunOperator))
@@ -280,7 +238,7 @@ def test_one_failed_and_one_successful_export_in_one_summary(rig: Rig) -> None:
     exc, ti = rig.run(rig.operator(RivetRunOperator, extra_args=["--reconcile"]))
     run = rig.argv("run")
     assert run[:3] == ["run", "--config", str(rig.copy())] and "--export" not in run
-    assert run[3] == "--summary-output" and run[5:] == ["--reconcile", "--json-errors"]
+    assert run[3] == "--summary-output" and run[5:] == ["--reconcile", "--json-errors", "--no-notify", "--lock-wait", "600"]
     assert not Path(run[4]).exists(), "the summary file is removed after it is read"
     assert isinstance(exc, AirflowFailException) and str(exc) == "generic (orders)"
     payload = ti.store[("task", "return_value")]
@@ -301,7 +259,7 @@ def test_two_failed_exports_share_the_process_object_and_say_so(rig: Rig) -> Non
 
 
 def test_cdc_max_events_succeeds_and_is_reported(rig: Rig) -> None:
-    rig.scenario(flags=NEW_FLAGS, run={"summary": {"per_export": [fixture("run_entry.json")]}})
+    rig.scenario(run={"summary": {"per_export": [fixture("run_entry.json")]}})
     payload, _ = rig.run(rig.operator(RivetCdcRunOperator, export="orders_cdc"))
     assert payload["decision"] == "success" and payload["units"][0]["stop_reason"] == "max_events"
     assert rig.events("rivet.cdc.max_events")[0]["exports"] == ["orders_cdc"]
@@ -316,36 +274,6 @@ def test_cdc_on_todays_binary_cannot_tell_the_stop_reason_and_says_so(rig: Rig) 
     assert not rig.events("rivet.cdc.max_events")
 
 
-def test_load_on_todays_binary_runs_a_single_export_copy_of_the_config(rig: Rig) -> None:
-    payload, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="users"))
-    narrowed = rig.copy("users")
-    assert rig.argv("load") == ["load", "--config", str(narrowed), "--json-errors"]
-    text = narrowed.read_text()
-    assert "name: users" in text and "name: orders" not in text and "url_env: RIVET_PG_URL" in text
-    assert payload["units"] == [
-        {
-            "export": "users",
-            "table": "users",
-            "target": None,
-            "buffer": None,
-            "status": "loaded",
-            "run_id": None,
-            "rows": None,
-            "files": None,
-            "stop_reason": None,
-            "error": None,
-        }
-    ]
-    assert payload["degraded"] == [
-        "load_filter",
-        "load_result",
-        "load_table_filter",
-        "lock_wait",
-        "no_notify",
-    ]
-    assert (rig.state_dir / "airflow" / "locks" / "users.lock").exists()
-
-
 HOLD_LOCK = """
 import fcntl, sys, time, pathlib
 with open(sys.argv[1], "w") as held:
@@ -356,21 +284,8 @@ with open(sys.argv[1], "w") as held:
 """
 
 
-def test_the_per_table_tasks_of_one_export_wait_for_the_export_lock(rig: Rig) -> None:
-    locks = rig.state_dir / "airflow" / "locks"
-    locks.mkdir(parents=True)
-    released = rig.tmp / "released"
-    holder = subprocess.Popen([sys.executable, "-c", HOLD_LOCK, str(locks / "users.lock"), str(released)], stdout=subprocess.PIPE)
-    assert holder.stdout.readline().strip() == b"held"
-    payload, _ = rig.run(rig.operator(RivetLoadOperator, export="users", table="users"))
-    assert released.exists(), "the load must wait while another task holds the export's lock"
-    assert holder.wait() == 0 and payload["decision"] == "success" and rig.argv("load")
-
-
 def test_load_on_a_contract_binary_filters_by_flag_and_reads_the_result(rig: Rig) -> None:
-    rig.scenario(
-        flags=NEW_FLAGS, load={"exit": 2, "line": fixture("json_errors_load.json"), "summary": fixture("load_result.json")}
-    )
+    rig.scenario(load={"exit": 2, "line": fixture("json_errors_load.json"), "summary": fixture("load_result.json")})
     exc, ti = rig.run(rig.operator(RivetLoadOperator, export="events", table="events"))
     load = rig.argv("load")
     assert load[:7] == ["load", "--config", str(rig.copy()), "--export", "events", "--table", "events"]
@@ -385,20 +300,20 @@ def test_load_on_a_contract_binary_filters_by_flag_and_reads_the_result(rig: Rig
 def test_a_schema_qualified_table_is_passed_by_its_warehouse_name(rig: Rig, operator: type) -> None:
     # init writes `table: dbo.orders`; rivet loads it as `dbo_orders` and refuses the dotted name
     # (RIVET_CLI_TABLE_UNKNOWN, rivet 0.32.2), so a DAG built from the config as written failed every load.
-    rig.scenario(flags=NEW_FLAGS)
+    rig.scenario()
     rig.run(rig.operator(operator, export="orders_cdc", table="dbo.orders"))
     argv = rig.argv(operator.command)
     assert argv[argv.index("--table") + 1] == "dbo_orders"
 
 
 def test_a_load_that_is_up_to_date_is_a_success_so_compact_still_runs(rig: Rig) -> None:
-    rig.scenario(flags=NEW_FLAGS, load={"summary": fixture("load_result.json")})
+    rig.scenario(load={"summary": fixture("load_result.json")})
     payload, _ = rig.run(rig.operator(RivetLoadOperator, export="countries", table="countries"))
     assert payload["units"][0]["status"] == "skipped" and payload["skip_reason"] == "up_to_date"
 
 
 def test_a_compaction_rivet_reports_as_skipped_is_an_airflow_skip(rig: Rig) -> None:
-    rig.scenario(flags=NEW_FLAGS, compact={"summary": fixture("compact_result.json")})
+    rig.scenario(compact={"summary": fixture("compact_result.json")})
     exc, ti = rig.run(rig.operator(RivetCompactOperator, export="countries", table="countries"))
     assert isinstance(exc, AirflowSkipException) and "full_load" in str(exc)
     assert ti.store[("task", "return_value")]["skip_reason"] == "full_load"
@@ -471,7 +386,7 @@ def test_a_load_refused_by_todays_binary_reports_the_refusal_on_its_unit(rig: Ri
     assert "exit_zero_failed_unit" not in payload["degraded"]
 
 
-ROW = {"export": "events", "table": "events", "status": "failed", "skip_reason": None, "rows": 0}
+ROW = load_row("events", "events", "failed")
 FAILURE = {"export": "events", "table": "events", "code": "RIVET_LOAD_Y", "kind": None, "class": "refusal"}
 FAILURE |= {"exit_code": 5, "retryable": False, "action": None}
 
@@ -489,9 +404,7 @@ def test_a_failed_tables_error_is_its_own_entry_in_failures(rig: Rig, own: objec
     """A row without a readable error takes the `failures[]` entry of its own export AND table; anything unreadable
     on the way is recorded as `result_malformed` (mutants _Session.unit_error 8, 14-15, 22-23, 30-31)."""
     line = {"error": "x", "exit_class": 5, "class": "refusal", "retryable": False, "exit_code": 5, "failures": failures}
-    rig.scenario(
-        flags=NEW_FLAGS, load={"exit": 5, "line": line, "summary": {"run_id": "r", "per_table": [{**ROW, "error": own}]}}
-    )
+    rig.scenario(load={"exit": 5, "line": line, "summary": {"run_id": "r", "per_table": [{**ROW, "error": own}]}})
     _, ti = rig.run(rig.operator(RivetLoadOperator, export="events", table="events"))
     payload = ti.store[("task", "return_value")]
     unit = payload["units"][0]
@@ -688,21 +601,18 @@ def test_a_task_with_several_failed_units_and_exit_0_is_classified_by_the_worst(
         entry("orders", "failed", error=refusal),
         entry("events", "failed", error=retry),
     ]
-    rig.scenario(flags=NEW_FLAGS, run={"exit": 0, "summary": {"per_export": mixed}})
+    rig.scenario(run={"exit": 0, "summary": {"per_export": mixed}})
     exc, ti = rig.run(rig.operator(RivetRunOperator))
     assert isinstance(exc, AirflowFailException) and ti.store[("task", "return_value")]["error"]["class"] == "refusal"
-    rig.scenario(flags=NEW_FLAGS, run={"exit": 0, "summary": {"per_export": [mixed[0], mixed[2]]}})
+    rig.scenario(run={"exit": 0, "summary": {"per_export": [mixed[0], mixed[2]]}})
     exc, ti = rig.run(rig.operator(RivetRunOperator))
     assert type(exc) is AirflowException and ti.store[("task", "return_value")]["decision"] == "retry"
     rig.scenario(
-        flags=NEW_FLAGS,
         load={
             "exit": 0,
             "summary": {
                 "run_id": "r",
-                "per_table": [
-                    {"export": "users", "table": "users", "status": "failed", "rows": None, "error": refusal, "skip_reason": None}
-                ],
+                "per_table": [load_row("users", "users", "failed", error=refusal)],
             },
         },
     )
@@ -713,7 +623,7 @@ def test_a_task_with_several_failed_units_and_exit_0_is_classified_by_the_worst(
 def test_a_failures_entry_without_retryable_and_junk_in_the_summary_do_not_raise(rig: Rig) -> None:
     line = {**fixture("json_errors.json"), "failures": [{"export": "orders", "table": None, "class": "refusal"}, "junk", None]}
     summary = {"per_export": ["junk", entry("orders", "failed", error={"class": "refusal"}), entry("users", 7), None]}
-    rig.scenario(flags=NEW_FLAGS, run={"exit": 5, "line": line, "summary": summary})
+    rig.scenario(run={"exit": 5, "line": line, "summary": summary})
     exc, ti = rig.run(rig.operator(RivetRunOperator))
     assert isinstance(exc, AirflowFailException), exc
     payload = ti.store[("task", "return_value")]
@@ -833,28 +743,6 @@ COLLIDING = [
     ("a b", "a_b"),
     ("Orders", "orders"),
 ]
-
-
-@pytest.mark.parametrize("names", COLLIDING, ids=["non-ascii", "punctuation", "space", "case"])
-def test_two_exports_whose_names_sanitise_to_one_get_their_own_plan_and_are_both_extracted(rig: Rig, names: tuple) -> None:
-    one, two = names
-    exports = "".join(f"  - {{name: {json.dumps(n)}, query: SELECT 1, mode: full}}\n" for n in names)
-    rig.config.write_text(f"source:\n  type: postgres\n  url_env: RIVET_PG_URL\nexports:\n{exports}")
-    for n in names:
-        payload, _ = rig.run(rig.operator(RivetApplyOperator, task_id="t", export=n))
-        assert payload["decision"] == "success" and [u["export"] for u in payload["units"]] == [n]
-    steps = [(c["argv"][0], c["export"]) for c in rig.calls() if c["argv"][0] != "metrics"]
-    assert steps == [("plan", one), ("apply", one), ("plan", two), ("apply", two)], (
-        "each export is planned and applies its own plan"
-    )
-    artifacts = [c["argv"][1] for c in rig.calls() if c["argv"][0] == "apply"]
-    assert artifacts[0].lower() != artifacts[1].lower()
-    assert [json.loads(Path(a).read_text())["export_name"] for a in artifacts] == [one, two]
-    for n in names:
-        rig.run(rig.operator(RivetLoadOperator, task_id="t", export=n))
-    narrowed = [c["argv"][2] for c in rig.calls() if c["argv"][0] == "load"]
-    assert narrowed[0].lower() != narrowed[1].lower(), "the single-export copies of the config are separate files"
-    assert [c["export"] for c in rig.calls() if c["argv"][0] == "load"] == [one, two]
 
 
 @pytest.mark.parametrize(
@@ -1220,7 +1108,7 @@ def test_a_file_at_the_artifact_path_that_is_no_plan_object_is_planned_over(rig:
 
 
 def test_the_scratch_files_of_two_tries_tasks_or_runs_are_separate_files(rig: Rig) -> None:
-    rig.scenario(flags=NEW_FLAGS, apply=FAILED_APPLY)
+    rig.scenario(apply=FAILED_APPLY)
     tis = [FakeTI(), FakeTI(try_number=2), FakeTI(task_id="other"), FakeTI()]
     tis[3].run_id = "manual__2026-10-07"
     for cls in (RivetRunOperator, RivetApplyOperator, RivetLoadOperator):
@@ -1252,17 +1140,6 @@ def test_the_plan_scratch_file_is_not_shared_by_two_dags_refreshing_one_layout_f
     scratch = [p for p in opened if p.parent == target.parent]
     assert len(scratch) == 3 and len({str(p).lower() for p in scratch}) == 3 and target not in scratch
     assert sorted(p.name for p in target.parent.iterdir() if p.is_file()) == ["pg.plan.json"], "no scratch file is left behind"
-
-
-def test_the_lock_of_a_per_table_task_is_named_by_its_exact_export(rig: Rig) -> None:
-    names = ("a:b", "a+b", "Orders", "orders")
-    exports = "".join(f"  - {{name: {json.dumps(n)}, query: SELECT 1, mode: full}}\n" for n in names)
-    rig.config.write_text(f"source:\n  type: postgres\n  url_env: RIVET_PG_URL\nexports:\n{exports}")
-    for n in names:
-        rig.run(rig.operator(RivetLoadOperator, export=n, table="t"))
-    locks = sorted(p.name for p in (rig.state_dir / "airflow" / "locks").iterdir())
-    assert locks == sorted(f"{invocation.path_name(n)}.lock" for n in names) and len({name.lower() for name in locks}) == 4
-    assert "orders.lock" in locks and mode(rig.state_dir / "airflow" / "locks") == 0o700
 
 
 OLD_LAYOUT = ("manual__2026-10-06__try1.run.stderr.log", "scheduled__2026-10-06T00_00_00_00_00__try1.apply.stdout.log")
@@ -1392,36 +1269,25 @@ exports:
 """
 
 
-@pytest.mark.parametrize(
-    ("export", "kept"),
-    [("stream", ["orders", "users", "stream"]), ("listed", ["countries", "listed"]), ("snap", ["snap"])],
-)
-def test_a_narrowed_copy_keeps_the_recipes_the_streams_backfill_reads(rig: Rig, export: str, kept: list[str]) -> None:
-    rig.config.write_text(RECIPES)
-    rig.run(rig.operator(RivetLoadOperator, export=export, table="orders"))
-    names = [e["name"] for e in yaml.safe_load(rig.copy(export).read_text())["exports"]]
-    assert names == kept, "a stream without its backfill recipes is refused by rivet: RIVET_CONFIG_CDC_SHAPE_INVALID"
-
-
-FAILED_ROW = {"run_id": "l1", "per_table": [{"export": "orders", "table": "users", "status": "failed", "error": None}]}
+FAILED_ROW = {"run_id": "l1", "per_table": [load_row("orders", "users", "failed")]}
 
 
 def test_a_failed_table_row_without_its_error_fails_the_task_on_exit_zero(rig: Rig) -> None:
     """The row's error is the process-level one, built from the exit when rivet printed none; without it the failed
     unit had no error and the task ended success (mutants _load 139 / 140 / 150)."""
-    rig.scenario(flags=NEW_FLAGS, load={"summary": FAILED_ROW})
+    rig.scenario(load={"summary": FAILED_ROW})
     exc, ti = rig.run(rig.operator(RivetLoadOperator, export="orders", table="users"))
     payload = ti.store[("task", "return_value")]
     assert type(exc) is AirflowFailException and payload["decision"] == "fail"
     (unit,) = payload["units"]
     assert unit["status"] == "failed" and unit["error"]["class"] == "generic"
-    assert payload["degraded"] == ["exit_zero_failed_unit", "load_digest"], "one failed unit: no per_unit_error"
+    assert payload["degraded"] == ["exit_zero_failed_unit"], "one failed unit: no per_unit_error"
 
 
 def test_a_failed_table_row_without_its_error_takes_the_printed_process_error(rig: Rig) -> None:
     """With a printed retryable line the row's error IS that line, so the task is retried (mutant _load 140)."""
     line = {"class": "retryable", "retryable": True, "exit_code": 2, "exit_class": 2, "code": "RIVET_NET", "error": "reset"}
-    rig.scenario(flags=NEW_FLAGS, load={"exit": 2, "line": line, "summary": FAILED_ROW})
+    rig.scenario(load={"exit": 2, "line": line, "summary": FAILED_ROW})
     exc, ti = rig.run(rig.operator(RivetLoadOperator, export="orders", table="users"))
     payload = ti.store[("task", "return_value")]
     assert type(exc) is AirflowException and payload["decision"] == "retry"
@@ -1500,3 +1366,20 @@ def test_under_git_sync_a_flipped_revision_keeps_one_copy_of_the_config(rig: Rig
         copies.append(argv[argv.index("--config") + 1])
     assert copies[0] == copies[1]
     assert sorted(p.name for p in rig.state_dir.glob("pipe.*.yaml")) == [Path(copies[0]).name]
+
+
+@pytest.mark.parametrize("names", COLLIDING, ids=["non-ascii", "punctuation", "space", "case"])
+def test_two_exports_whose_names_sanitise_to_one_get_their_own_plan_and_are_both_extracted(rig: Rig, names: tuple) -> None:
+    one, two = names
+    exports = "".join(f"  - {{name: {json.dumps(n)}, query: SELECT 1, mode: full}}\n" for n in names)
+    rig.config.write_text(f"source:\n  type: postgres\n  url_env: RIVET_PG_URL\nexports:\n{exports}")
+    for n in names:
+        payload, _ = rig.run(rig.operator(RivetApplyOperator, task_id="t", export=n))
+        assert payload["decision"] == "success" and [u["export"] for u in payload["units"]] == [n]
+    steps = [(c["argv"][0], c["export"]) for c in rig.calls() if c["argv"][0] != "metrics"]
+    assert steps == [("plan", one), ("apply", one), ("plan", two), ("apply", two)], (
+        "each export is planned and applies its own plan"
+    )
+    artifacts = [c["argv"][1] for c in rig.calls() if c["argv"][0] == "apply"]
+    assert artifacts[0].lower() != artifacts[1].lower()
+    assert [json.loads(Path(a).read_text())["export_name"] for a in artifacts] == [one, two]

@@ -17,7 +17,7 @@ How rivet's exit and error object become an Airflow success, retry or stop.
 | exit 1 with a printed line saying `class: "crashed"` (a killed child, future binary) | `crashed` | the same crashed budget |
 | any other status | built: `generic` | `AirflowFailException`: no retry |
 | the package's own preflight refused | `preflight_refusal: RIVET_AIRFLOW_*` in XCom | `AirflowFailException`: no retry |
-| code `RIVET_STATE_RUN_IN_PROGRESS` (rivet 0.32.0 prints it with exit class 2) or `RIVET_LOAD_TABLE_BUSY` (exit 5) (another rivet holds the export's run lease or the table's load lease; rivet's remedy is "wait, then repeat") | `refusal`, `retryable: true` whatever the line says | `AirflowException`: retried under `retries`; the headline says `BUSY` |
+| code `RIVET_STATE_RUN_IN_PROGRESS` or `RIVET_LOAD_TABLE_BUSY` (rivet >= 0.32.2, kind `busy`, exit 2 both) (another rivet holds the export's run lease or the table's load lease; rivet's remedy is "wait, then repeat") | `refusal`, `retryable: true` whatever the line says | `AirflowException`: retried under `retries`; the headline says `BUSY` |
 | code `RIVET_STATE_LOCK_TIMEOUT` (rivet >= 0.32.2, kind `busy`, exit 2: rivet waited `--lock-wait` seconds for a lease another rivet process holds and gave up; the same end as `RIVET_AIRFLOW_EXPORT_BUSY`, inside rivet) | `retryable`, `retryable: true` whatever the line says | `AirflowException`: retried under `retries`; the headline says `BUSY`, the exception names the export |
 | code `RIVET_LOAD_BLOCK_MISSING` (rivet >= 0.32.2, kind `usage`, exit 1: load or compact on a config with no `load:` block) | `generic` | `AirflowFailException`: no retry; add the block |
 | code `RIVET_SOURCE_CDC_CHECKPOINT_SHARED` (rivet >= 0.32.2, exit 5: another config's export owns the checkpoint, `<checkpoint>.owner`) | `refusal` | `AirflowFailException`: no retry; give the export its own `cdc.checkpoint` |
@@ -51,12 +51,11 @@ resumed by the next process.
 
 **A retry of an apply that already succeeded.** The task process can die after `rivet apply` exited
 0 and before Airflow recorded the success (OOM of the task runner, a pod evicted, a zombie). The
-retry is a try of the same series, so it replays the same sealed plan, and rivet (>= 0.32.0, the
-minimum) answers it: a point-in-time plan (`mode: full`) it already applied is not extracted again,
+retry is a try of the same series, so it replays the same sealed plan, and rivet (the minimum, 0.32.2)
+answers it: a point-in-time plan (`mode: full`) it already applied is not extracted again,
 the summary names the run that applied it (`status: already_applied`, `answered_by_run`), and the
 task logs `SKIPPED: an earlier try already applied this plan` (record
 `rivet.apply.already_applied`) and ends success with that run's `run_id`, `rows` and `files`. An
-incremental plan whose own apply moved the cursor is not refused `RIVET_PLAN_ARTIFACT_STALE`
-(rivet 0.31 refused it, a failed task and a skipped load): the replay reads from the moved cursor
+incremental plan whose own apply moved the cursor is not refused `RIVET_PLAN_ARTIFACT_STALE`: the replay reads from the moved cursor
 and finds only rows that arrived since, so nothing is extracted twice. A cursor another process
 moved is still refused STALE. An apply that failed or was killed is replayed and runs as before.

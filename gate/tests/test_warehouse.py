@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import os
+import runpy
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,8 @@ from gate.stand import Stand
 from gate.warehouse import Cloud, Leg
 
 REPO = Path(__file__).resolve().parents[2]
+# The minimum the workflow step reads from the one place that holds it, so a raise of the floor moves this test too.
+MIN = "v" + runpy.run_path(str(REPO / "dev/min_rivet.py"))["min_rivet"]()
 TAG = "1016120000ab"
 T0 = datetime(2026, 10, 16, 12, 0, 0, 123456, tzinfo=UTC)
 CLOUD = Cloud(Path("/nonexistent/key.json"), "bucket", "proj", "US", "rivet", "WH", "DB", "INT", TAG)
@@ -371,7 +374,7 @@ def run_fetch(tmp_path: Path, assets: list[str], given: str = "") -> list[str]:
     )
     for f in bin_dir.iterdir():
         f.chmod(0o755)
-    script = fetch_script().replace("${{ inputs.rivet }}", given)
+    script = fetch_script().replace("${{ inputs.rivet }}", given).replace("dev/min_rivet.py", str(REPO / "dev/min_rivet.py"))
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_TOKEN": "x"}
     subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=tmp_path, env=env, check=True, capture_output=True, text=True)
     assert (tmp_path / "rivet-bin").exists()
@@ -383,21 +386,21 @@ def test_d17_the_glibc228_asset_is_downloaded_when_the_release_has_one(tmp_path:
     """D17: the step downloaded the glibc 2.38/2.39 `-linux-gnu` asset, which cannot start in the Debian 12 image."""
     calls = run_fetch(
         tmp_path,
-        ["rivet-v0.32.0-x86_64-unknown-linux-gnu.tar.gz", "rivet-v0.32.0-x86_64-unknown-linux-gnu-glibc2.28.tar.gz"],
-        given="v0.32.0",
+        [f"rivet-{MIN}-x86_64-unknown-linux-gnu.tar.gz", f"rivet-{MIN}-x86_64-unknown-linux-gnu-glibc2.28.tar.gz"],
+        given=MIN,
     )
     downloads = [c for c in calls if c.startswith("gh release download")]
-    assert downloads and all("-p rivet-v0.32.0-x86_64-unknown-linux-gnu-glibc2.28.tar.gz" in c for c in downloads), calls
+    assert downloads and all(f"-p rivet-{MIN}-x86_64-unknown-linux-gnu-glibc2.28.tar.gz" in c for c in downloads), calls
     assert not any(c.startswith("docker") for c in calls)
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("given", ["0.31.0", "v0.4.0", ""])  # "": the latest release, v0.31.0 in the fake
-def test_a_release_older_than_0_32_is_refused_before_anything_is_downloaded(tmp_path: Path, given: str) -> None:
-    """The provider reads `apply --summary-output` and `already_applied` (rivet 0.32): an older binary is refused."""
+@pytest.mark.parametrize("given", ["0.32.1", "v0.31.0", "v0.4.0", ""])  # "": the latest release, v0.31.0 in the fake
+def test_a_release_older_than_the_minimum_is_refused_before_anything_is_downloaded(tmp_path: Path, given: str) -> None:
+    """The provider admits rivet MIN_RIVET_VERSION and newer: an older binary is refused, the one just below it too."""
     with pytest.raises(subprocess.CalledProcessError) as refused:
         run_fetch(tmp_path, ["rivet-v0.31.0-x86_64-unknown-linux-gnu.tar.gz"], given=given)
-    assert "is older than the minimum v0.32.0" in refused.value.stdout
+    assert f"is older than the minimum {MIN}" in refused.value.stdout
     calls = (tmp_path / "calls").read_text().splitlines() if (tmp_path / "calls").exists() else []
     assert not any(c.startswith(("gh release download", "docker")) for c in calls), calls
 

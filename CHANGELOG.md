@@ -56,6 +56,20 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   rivet does (`name: 2024`, a missing `mode`). `examples/rivet_cdc_per_source.py` builds a stream written as `table:`
   (it raised `KeyError: 'tables'` at parse). **Remedy for several streams:** build the pipeline with `build_source_dags`.
 
+### Changed (operator input)
+
+- A load, compact or apply task given `-p` / `--param` in `extra_args` is refused before rivet starts
+  (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`, not retried): rivet 0.32.2 takes `-p` on `run`, `plan` and `check` only and ends the
+  others `unexpected argument '-p' found` after the lock and the copy of the config. Put the value in `env=`.
+
+- The operators no longer probe the rivet binary for flags it may lack: rivet 0.32.2, the minimum, has `--export`,
+  `--table`, `--summary-output`, `--lock-wait` and `--no-notify` on every step the package runs. Removed with them: the
+  copy of the config cut down to one export for `load` / `compact` (`RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE`), the
+  `<sub> --help` reads, and the `degraded` keys `no_notify`, `lock_wait`, `load_filter`, `load_table_filter`,
+  `load_result` and `load_digest`. A `per_table` entry without `target` or without a digest key is `result_malformed`
+  (it was named from the config, or `load_digest`); a result with no entry for the table is still named from the
+  config. What the package does on 0.32.2 is unchanged.
+
 ## 0.3.0 (2026-10-24)
 
 Against rivet 0.32.2 (the minimum) and the contract of ADR-0039 at rivet 0.32.2.

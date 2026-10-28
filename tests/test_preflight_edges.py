@@ -180,29 +180,6 @@ def test_a_checkpoint_left_beside_the_config_is_refused_naming_the_stream_and_bo
 NOTIFYING = "notifications:\n  slack: {webhook_env: HOOK}\n"
 
 
-def test_the_notifications_warning_says_what_to_do(rig: Rig) -> None:
-    # run_preflight 179-183 (the text); a binary whose `rivet run` has no `--no-notify` (another subcommand's does)
-    rig.config.write_text(rig.config.read_text() + NOTIFYING)
-    rig.scenario(flags={"apply": ["--no-notify"]})
-    assert dict(pre(rig).warnings)["notifications_block"] == (
-        "the config has a `notifications:` block and this rivet has no `--no-notify`: rivet will send its own messages "
-        "beside Airflow's alerts; remove the block from configs run under Airflow"
-    )
-
-
-def test_the_notifications_warning_reads_the_run_subcommands_flags(rig: Rig) -> None:
-    # run_preflight 172, 173: the help of `rivet run`, the command the operators start, decides it
-    rig.config.write_text(rig.config.read_text() + NOTIFYING)
-    rig.scenario(flags={"run": ["--no-notify"]})
-    assert "notifications_block" not in dict(pre(rig).warnings)
-
-
-def test_rivet_notifications_kept_on_by_the_user_are_not_warned_about(rig: Rig) -> None:
-    rig.config.write_text(rig.config.read_text() + NOTIFYING)
-    rig.scenario(flags={"apply": ["--no-notify"]})
-    assert "notifications_block" not in dict(pre(rig, rivet_notifications=True).warnings)
-
-
 # --- behaviour ----------------------------------------------------------------------------------------------------------
 
 

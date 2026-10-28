@@ -387,7 +387,7 @@ class RivetCdcRunOperator(RivetBaseOperator):
 
 
 class RivetLoadOperator(RivetBaseOperator):
-    """`rivet load` for one export, and one table where the binary can narrow to it."""
+    """`rivet load` for one export, and one table when asked."""
 
     command = "load"
     ui_color = "#fef7e0"

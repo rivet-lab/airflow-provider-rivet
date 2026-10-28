@@ -215,8 +215,6 @@ def test_a_long_config_name_is_cut_by_bytes_so_the_copy_and_its_temp_file_fit_th
         assert len(name.encode()) <= invocation.COPY_NAME_BYTES, stem[:3]
         assert name.endswith(f".{hashlib.sha256(str(source).encode()).hexdigest()[:8]}.yaml")
         name.encode().decode()  # whole characters only
-        assert invocation.copy_name(source, "orders") != name
-        assert len(invocation.copy_name(source, "O R" * 40).encode()) <= invocation.COPY_NAME_BYTES
     first, second = tmp_path / ("a" * 300 + "1.yaml"), tmp_path / ("a" * 300 + "2.yaml")
     assert invocation.copy_name(first) != invocation.copy_name(second)
     assert invocation.copy_name(tmp_path / ("c" + "." + "x" * 40)).endswith(".yaml"), "an extension this long is none"
