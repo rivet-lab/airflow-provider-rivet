@@ -54,6 +54,33 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   first `compact` of an export finds the buffer the earlier runs left to merge. To keep a change log
   (no compaction), write `layout: log_view` in `load:`.
 
+- `build_source_dags`: a source whose config cannot be built no longer ends the DAG file. Before, one malformed or
+  surprising `<name>.yaml` raised at parse and Airflow registered none of the file's DAGs, so every other database's DAG
+  vanished; now that source's DAG keeps its id and has one task, `config`, that fails without retry naming the cause and
+  the remedy, and the others are built. A YAML error names its line and column (`ParserError at line 5, column 4:
+  ...`). **Behaviour change:** a **batch** DAG over a config that has a `mode: cdc` export (the config `rivet init --mode
+  cdc` wrote) is now refused with `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT` instead of silently running the stream's
+  baseline recipes beside the CDC DAG on one config and one state database; an all-CDC config in a batch call names that
+  cause instead of "`exports` is empty". **Remedy:** give the batch call its own source name, or its own `config_dir` and
+  `state_root` (the documented rule, now enforced); a DAG already built over such a config shows the red `config` task
+  at the next parse. In a batch plan, an export named `after_<heavy export>` or `wave_<n>_done` no longer duplicates
+  an ordering point's task id (the DAG file did not import): the ordering point is `<id>_barrier`.
+- `operator_kwargs` may no longer set `max_active_tis_per_dag` (every builder, `build_source_dags` included): it is 1 on
+  every rivet task so a task never runs beside another try of itself, and a value there silently replaced it, like a
+  `trigger_rule` (already refused). **Behaviour change:** a DAG file that passed it now fails to import with
+  `operator_kwargs may not set `max_active_tis_per_dag`...`. **Remedy:** delete the key (a limit across
+  tasks is a `pool` in `operator_kwargs`).
+- `RivetInitOperator` (`init_args` of `build_source_dags`): the flags the operator owns are refused in every spelling
+  clap reads (`--output=x`, `-oX`, `--source-env=X`, `--mode=full` in a CDC DAG, `--mode=cdc` in a batch DAG), where
+  only the exact tokens were; and a value that happens to read `cdc` (`--bigquery-dataset cdc`, a source or bucket
+  named `cdc`) is no longer refused as a request for `--mode cdc` in a batch DAG, in a CDC DAG too. A DAG already
+  built keeps working; one that passed `--output=x` now fails to import (before, rivet failed at the `init` task on
+  the repeated flag): delete it from `init_args`.
+- `quickstart/dags/rivet_quickstart.py` refuses, naming the streams, a pipeline whose config has more than one
+  `mode: cdc` stream (it built the first and never captured the others, with green runs), and reads names and tables as
+  rivet does (`name: 2024`, a missing `mode`). `examples/rivet_cdc_per_source.py` builds a stream written as `table:`
+  (it raised `KeyError: 'tables'` at parse). **Remedy for several streams:** build the pipeline with `build_source_dags`.
+
 ### Changed (operator input)
 
 - A load, compact or apply task given `-p` / `--param` in `extra_args` is refused before rivet starts

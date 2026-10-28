@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -443,6 +444,20 @@ def places(doc: Mapping[str, Any]) -> set[str]:
     return out
 
 
+def _flag_of(arg: str) -> str:
+    """The flag a command-line token sets as clap reads it: `--output=x` is `--output`, `-oX` and `-o=X` are `-o`."""
+    if arg.startswith("--"):
+        return arg.partition("=")[0]
+    if arg.startswith("-"):
+        return arg[:2]
+    return arg
+
+
+def _asks_for_cdc(args: Sequence[str]) -> bool:
+    """Whether `args` set `--mode` to `cdc` (`--mode cdc` or `--mode=cdc`); a value that reads `cdc` is only a value."""
+    return "--mode=cdc" in args or any(a == "--mode" and b == "cdc" for a, b in pairwise(args))
+
+
 class RivetInitOperator(_RivetTask):
     """Writes the config a source's DAG is built from: `rivet init` against the source, `rivet check` of what it wrote,
     then the file at `config`, never over one that exists. The data source is the `source_env` entry of
@@ -459,10 +474,10 @@ class RivetInitOperator(_RivetTask):
         if not (self.env_from_connections or {}).get(source_env):
             raise ValueError(f"env_from_connections names no `{source_env}`, the source `rivet init` reads")
         owned = {"--source", "--source-env", "--source-file", "-o", "--output"} | ({"--mode"} if mode == "cdc" else set())
-        taken = sorted(owned & set(init_args))
+        taken = [a for a in init_args if _flag_of(a) in owned]
         if taken:
             raise ValueError(f"init_args may not set {taken}: the operator sets the source, the output and the CDC mode")
-        if "cdc" in init_args:
+        if _asks_for_cdc(init_args):
             raise ValueError("init_args may not ask for `--mode cdc` in a batch DAG: use mode='cdc'")
         self.mode = mode
         self.source_env = source_env
@@ -592,6 +607,24 @@ class RivetWaveBarrier(BaseOperator):
     def execute(self, context: Any) -> None:
         """Nothing to run."""
         return None
+
+
+class RivetConfigRefused(BaseOperator):
+    """The one task of a source's DAG whose config could not be built into rivet tasks: it fails, naming the refusal, so
+    the DAG is there to be seen and its run is red, and the other sources of the DAG file are built as they are."""
+
+    ui_color = "#fce8e6"
+    template_fields: Sequence[str] = ()
+
+    def __init__(self, *, refusal: str, code: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.refusal = refusal
+        self.code = code
+
+    def execute(self, context: Any) -> None:
+        """Publish the refusal as every refused task does, then fail without retry."""
+        context["ti"].xcom_push(key=XCOM_KEY, value=unstarted("config", REFUSED, self.code))
+        raise AirflowFailException(self.refusal)
 
 
 class RivetRunWatcher(BaseOperator):
