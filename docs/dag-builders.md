@@ -37,7 +37,8 @@ plan ──> apply: [a] [b] ─> wave_2_done ─> [big] ─> after_big ─> [hug
   do nothing, `apply.wave_<n>_done` and `apply.after_<export>`, with `trigger_rule="all_done"`:
   the next export waits for the earlier one to *finish*, not to succeed.
 - Every rivet task is `trigger_rule="all_success"` whatever `default_args` says; a `trigger_rule`
-  in `operator_kwargs` is refused. `default_args` you pass are merged over the builders'
+  in `operator_kwargs` is refused, and so is `max_active_tis_per_dag` (it is 1 on every rivet task, see
+  [limits](limits.md#overlap)). `default_args` you pass are merged over the builders'
   (`retries=2`, `retry_delay` 5 minutes), so adding a callback keeps the retries.
 - `exports`, `compact_exports` and `tables` are lists; a bare string is refused. A name that is
   not an ASCII task id (`daily orders`, `orders:v2`, `заказы`) gets a task id with each character
@@ -149,7 +150,9 @@ For each name `<name>`:
 1. it creates `rivet_state_<name>` if missing (the state Connection's user needs `CREATEDB`) and `<state_root>/<name>`
    (`state_root` must exist: a missing one is a volume that is not mounted, and is refused);
 2. runs `rivet init --source-env RIVET_SOURCE_URL [--mode cdc] -o <state_root>/<name>/.init/<name>.yaml <init_args>`,
-   `{name}` in `init_args` replaced. `init` names the stream's `server_id`, slot, checkpoint and bucket prefix after the
+   `{name}` in `init_args` replaced (`--source`, `--source-env`, `--source-file`, `-o`/`--output` and, in a CDC DAG,
+   `--mode` are the operator's: refused in any spelling, `--output=x` and `-oX` too; `--mode cdc` in a batch DAG is
+   refused, a value that reads `cdc` is not). `init` names the stream's `server_id`, slot, checkpoint and bucket prefix after the
    file name, so two sources never share them;
 3. runs `rivet check` on it;
 4. refuses a config that writes to a bucket prefix or a warehouse dataset another config in `config_dir` writes to

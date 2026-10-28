@@ -83,3 +83,13 @@ def test_spaces_around_listed_sources_are_ignored(tmp_path: Path, monkeypatch: p
         (tmp_path / f"{src}.yaml").write_text(CONFIG.format(src=src))
     module = load(tmp_path, monkeypatch, " shop , billing ")
     assert module.rivet_shop_cdc.dag_id == "rivet_shop_cdc" and module.rivet_billing_cdc.dag_id == "rivet_billing_cdc"
+
+
+def test_a_stream_of_one_table_written_as_table_is_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """init writes `table:` (not `tables:`) for a stream of one table; the example raised KeyError at parse."""
+    (tmp_path / "erp.yaml").write_text(
+        "source: {type: mysql, url_env: RIVET_MYSQL_URL}\nexports:\n  - {name: erp_cdc, table: orders, mode: cdc}\n"
+    )
+    dag = load(tmp_path, monkeypatch, "erp").rivet_erp_cdc
+    assert {t.task_id for t in dag.tasks} == {"run", "load.orders", "compact.orders", "watcher"}
+    assert dag.get_task("run").export == "erp_cdc"
