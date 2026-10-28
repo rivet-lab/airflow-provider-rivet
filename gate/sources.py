@@ -108,9 +108,6 @@ class Engine:
     reader: str = ""
     select: dict[str, str] = field(default_factory=dict)
     ready_timeout: float = 300
-    #: Every rivet task of the leg's DAGs has its XCom unit and task log graded against the change events the cycle's
-    #: script made (`cycle_effect.ops`), not rivet's own report.
-    counted: bool = False
     #: The cursor column of the batch exports (the rows an incremental extract reads are the ones past its high-water).
     cursor: str = "updated_at"
     #: A column added mid-stream, after the cycles (the MySQL client stack's schema change).
@@ -201,7 +198,6 @@ INSERT INTO gate_orders (customer_id, amount, status) WITH RECURSIVE g(n) AS (SE
     },
     duck_type="mysql",
     duck_dsn="host=127.0.0.1 port={port} user=rivet password={password} database=rivet",
-    counted=True,
     # A nullable column (MySQL fills no old row, and the binlog carries none), added at the end (ALGORITHM=INSTANT on
     # 8.4); `after` sets it on old rows, on a row `before` changed, on new rows (one left NULL), and deletes one row.
     hot=HotDdl(
@@ -830,25 +826,24 @@ class SourceLeg:
     def grade(self, stand: Any, v: Any, name: str, run_id: str = "") -> None:
         """Batch: each compacted base equals the source, with only the keys the cycle deleted extra. CDC: each base
         without the rows flagged deleted equals the source. Both: no buffer is left after `compact`. A kind the engine
-        cannot run: init still answers with the known limit (graded once, on the first cycle). An engine whose changes
-        the gate counts (`counted`): init's `load:` block is the client's, every rivet task's XCom unit and task log carry
-        the rows the gate made, and no staged Parquet is left after the load."""
+        cannot run: init still answers with the known limit (graded once, on the first cycle). With a run id: init's
+        `load:` block is the client's, every rivet task's XCom unit and task log carry the rows the cycle made
+        (`cycle_effect.ops`), and no staged Parquet is left after the load."""
         if name == "initial":
             for kind, problems in sorted(self.limits.items()):
                 limit = self.engine.limits[kind]
                 v.check(
                     f"{name}/{self.engine.name}/{kind}/known-limit", lambda p=problems: p, ok=f"{limit.shape}: {limit.documented}"
                 )
-            if self.engine.counted:
-                for kind, text in sorted(self.texts.items()):
-                    if kind not in self.delta_kinds():
-                        continue
-                    v.check(
-                        f"{name}/{self.engine.name}/{kind}/load-block-as-written",
-                        load_block_problems,
-                        text,
-                        ok=", ".join(f"{k}: {w}" for k, w in CLIENT_LOAD.items()),
-                    )
+            for kind, text in sorted(self.texts.items()):
+                if kind not in self.delta_kinds():
+                    continue
+                v.check(
+                    f"{name}/{self.engine.name}/{kind}/load-block-as-written",
+                    load_block_problems,
+                    text,
+                    ok=", ".join(f"{k}: {w}" for k, w in CLIENT_LOAD.items()),
+                )
         source = v.guard(f"{name}/{self.engine.name}/source", self.source_rows, stand)
         if source is None:
             return
@@ -870,7 +865,7 @@ class SourceLeg:
                 ),
                 ok=f"{self.stale_copy.name} in the state_dir, the run through repo/ succeeded",
             )
-        if self.engine.counted and run_id:
+        if run_id:
             ops = cycle_effect.ops(name)
             self.grade_tasks(stand, v, name, run_id, self.dags, source, ops, baseline=name == "initial")
             self.grade_staged(v, name, self.kinds)
@@ -908,21 +903,47 @@ class SourceLeg:
                 if objects is not None:
                     v.check(cell + "/compacted", warehouse.compacted, objects, self.targets[kind][table], cell)
 
+    def stream_of(self, dag: str, task: str) -> tuple[list[str], str]:
+        """The source tables (as init wrote them) whose changes the task's stream reads, and the task's id without the
+        group of its stream: a CDC DAG is one stream (its spec names the tables), a batch DAG reads every table."""
+        spec = next((s for s in self.specs if s["dag_id"] == dag and s["kind"] == "cdc"), None)
+        return (list(spec["build"]["tables"]) if spec else list(self.engine.tables)), task
+
+    def table_of(self, tables: Sequence[str], unit: str) -> str:
+        """The scenario table a task's unit names: the table as init wrote it (`dbo.gate_orders`), the warehouse name it
+        loads under (`dbo_gate_orders`) or the export's name, in either case."""
+        known = {k.lower(): k for k in self.engine.tables}
+        names = {n.lower(): known[short(t).lower()] for t in tables for n in (t, warehouse_table(t))}
+        if unit.lower() not in names:
+            raise LookupError(f"no table of this stream is named {unit!r} (it reads {sorted(names)})")
+        return names[unit.lower()]
+
     def expected_rows(
-        self, kind: str, task: str, source: dict[str, list[dict[str, Any]]], ops: dict[str, dict[str, int]], baseline: bool
+        self,
+        kind: str,
+        dag: str,
+        task: str,
+        source: dict[str, list[dict[str, Any]]],
+        ops: dict[str, dict[str, int]],
+        baseline: bool,
     ) -> int | None:
-        """The rows a rivet task moved, from what the gate did: a CDC run, the change events of the cycle (and the
-        baseline on the first); a CDC load of a table, that table's; a batch extract or load, the rows past the previous
-        high-water. A compaction: not counted (None)."""
+        """The rows a rivet task moved, from what the gate did: a CDC run, the change events of its stream's tables in the
+        cycle (and their baseline on the first); a CDC load, its table's; a batch extract or load, the rows past the
+        previous high-water. A compaction: not counted (None)."""
+        tables, task = self.stream_of(dag, task)
         group, _, unit = task.partition(".")
-        events = {t: sum(ops.get(t, {}).values()) + (len(source[t]) if baseline else 0) for t in self.engine.tables}
+        events = {}
+        for t in tables:
+            key = self.table_of(tables, t)
+            events[key] = sum(ops.get(key.lower(), {}).values()) + (len(source[key]) if baseline else 0)
         if group == "run":
             return sum(events.values())
         if group == "compact":
             return None
+        table = self.table_of(tables, unit)
         if kind == "batch":
-            return rows_past(source[unit], self.engine.cursor, self.high_water.get(unit))
-        return events.get(short(unit))
+            return rows_past(source[table], self.engine.cursor, self.high_water.get(table))
+        return events[table]
 
     def grade_tasks(
         self,
@@ -948,7 +969,11 @@ class SourceLeg:
                     continue
                 print(f"XCOM {name} {dag} {task} {json.dumps(payload, default=str)}", flush=True)
                 kind = "batch" if dag.endswith("_batch") else "cdc"
-                rows = self.expected_rows(kind, task, source, ops, baseline)
+                try:
+                    rows = self.expected_rows(kind, dag, task, source, ops, baseline)
+                except LookupError as exc:
+                    v.check(cell + "/xcom-unit", lambda e=exc: [str(e)])
+                    continue
                 v.check(cell + "/xcom-unit", xcom_problems, payload, rows, ok=f"{unit_rows(payload)} row(s)")
                 if xcom_problems(payload, rows):
                     print(f"STDERR {name} {dag} {task}:\n{stderr_tail(stand, payload)}", flush=True)
