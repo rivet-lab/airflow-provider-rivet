@@ -698,3 +698,33 @@ def test_a_successful_task_has_no_error_record_and_no_text(rig: Rig, log: Record
     rig.run(rig.operator(RivetRunOperator, export="orders"))
     assert rig.events("rivet.error") == []
     assert not any("FAILED" in line for line in log.shown()) and log.shown()[0].startswith("INFO rivet run orders")
+
+
+def test_a_failed_tables_own_text_is_on_its_line_when_it_differs_from_the_headline(rig: Rig, log: Recorder) -> None:
+    """The unit is found by export and table, so a table's own reason is on its line and in the record."""
+    line = {"error": "1 table(s) failed", "exit_class": 1, "code": "RIVET_LOAD_WAREHOUSE_REJECTED"}
+    rig.scenario(flags=NEW_FLAGS, compact={"exit": 1, "line": line, "summary": rejected_compact()})
+    rig.run(rig.operator(RivetCompactOperator, export="orders_cdc", table="orders"))
+    shown = log.shown()
+    assert shown[0].endswith(": 1 table(s) failed"), shown[0]
+    [unit] = [text for text in shown if text.startswith("INFO   table ")]
+    assert unit.endswith(f"(run 65ed): table 'orders': {WAREHOUSE_REASON}"), unit
+    assert rig.events("rivet.error")[0]["units"] == [
+        {"export": "orders_cdc", "table": "orders", "text": f"table 'orders': {WAREHOUSE_REASON}"}
+    ]
+
+
+@pytest.mark.parametrize("said", [5, "", ["x"]], ids=["int", "empty", "list"])
+def test_a_unit_entry_whose_error_message_is_no_text_keeps_the_process_error_text(rig: Rig, said: object) -> None:
+    summary = {"per_export": [{"export_name": "orders", "status": "failed", "run_id": "o1", "error_message": said}]}
+    rig.scenario(flags=NEW_FLAGS, run={"exit": 1, "line": {"error": "run failed", "exit_class": 1}, "summary": summary})
+    rig.run(rig.operator(RivetRunOperator, export="orders"))
+    assert rig.events("rivet.error")[0]["units"] == [{"export": "orders", "table": None, "text": "run failed"}]
+
+
+@pytest.mark.parametrize("text", [None, "", 5, ["x"]])
+def test_no_reason_is_no_text_after_the_line(text: object) -> None:
+    from airflow_provider_rivet.tasklog import _why
+
+    assert _why(text) == ""
+    assert _why("because") == ": because"

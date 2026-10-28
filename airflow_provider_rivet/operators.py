@@ -345,7 +345,7 @@ class RivetBaseOperator(_RivetTask):
                 "units": [
                     {"export": u.export, "table": u.table, "text": error_text(u.error.message)}
                     for u in outcome.units
-                    if u.status == "failed" and u.error is not None
+                    if u.error is not None  # a unit has an error exactly when it failed (`Reading`)
                 ],
             }
         )

@@ -48,6 +48,11 @@ def test_only_newline_ends_a_line_and_every_other_separator_is_shown_as_an_escap
     assert len((text or "").splitlines()) == 1
 
 
+def test_a_format_character_that_reorders_text_is_shown_as_an_escape() -> None:
+    """Category Cf: U+202E (right-to-left override) and U+200B (zero-width space) hide or reverse what follows."""
+    assert error_text("file\u202egpj.exe\u200b") == "file\\u{202e}gpj.exe\\u{200b}"
+
+
 def test_a_terminal_escape_cannot_reach_the_log_as_one() -> None:
     assert error_text("\x1b[31mred\x1b[0m\x00") == "\\u{1b}[31mred\\u{1b}[0m\\u{00}"
 

@@ -22,9 +22,6 @@ THREAD_TEXT_LIMIT = 3500
 WEBHOOK_TEXT_LIMIT = 3000
 # how much of the end of rivet's stderr file is read for its error lines
 STDERR_TAIL = 65_536
-# how much of rivet's error text `format_failure` carries (the thread has the text whole, up to its own limit; the title,
-# a channel's list of titles, holds none of it: error text can hold source values)
-MESSAGE_REASON_LIMIT = 300
 # a child of Airflow's task logger: the line lands in the task log on Airflow 2 and 3 alike
 log = logging.getLogger("airflow.task.rivet_slack")
 
@@ -128,10 +125,10 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
     return found or plain  # the human `Error:` line repeats the object when both are printed
 
 
-def _reason(payload: Mapping[str, Any], limit: int = MESSAGE_REASON_LIMIT) -> str | None:
+def _reason(payload: Mapping[str, Any]) -> str | None:
     """rivet's error text of the failed step on one line (`result.error_text`): its last error line."""
     errors = _rivet_errors(payload)
-    return error_text(errors[-1][1], limit) if errors else None
+    return error_text(errors[-1][1]) if errors else None
 
 
 def format_error_text(payload: Mapping[str, Any] | None, *, exception: Any = None, limit: int, log_url: str = "") -> str:
