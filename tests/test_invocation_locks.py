@@ -254,3 +254,36 @@ def test_a_whole_config_run_holds_every_lock_until_it_ends_and_rivet_inherits_th
     assert s.lock_fds == ()
     with invocation._export_lock(run_session(tmp_path, "a")):
         pass  # released
+
+
+def test_the_lock_wait_of_a_whole_config_run_is_per_lock_not_for_the_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_export_lock: `lock_wait` bounds the wait for each lock, so a run of the whole config that waits for every one of
+    its exports can wait N x `lock_wait`; docs/operators.md says so."""
+    s = run_session(tmp_path, None)
+    s.req.lock_wait = 60
+    run = tmp_path / "state" / "airflow" / "locks" / "run"
+    run.mkdir(parents=True)
+    holders = {}
+    for name in ("a", "b"):
+        holders[name] = os.open(run / f"{invocation.path_name(name)}.lock", os.O_RDWR | os.O_CREAT)
+        fcntl.flock(holders[name], fcntl.LOCK_EX)
+    clock = Clock()
+
+    def sleep(seconds: float) -> None:
+        Clock.sleep(clock, seconds)
+        if len(clock.sleeps) == 100:  # 20 s in: the first export's holder lets go
+            fcntl.flock(holders["a"], fcntl.LOCK_UN)
+        if len(clock.sleeps) == 350:  # 70 s in, 50 s into the second wait: the second lets go
+            fcntl.flock(holders["b"], fcntl.LOCK_UN)
+
+    clock.sleep = sleep  # type: ignore[method-assign]
+    monkeypatch.setattr(invocation, "time", clock)
+    try:
+        with invocation._export_lock(s):
+            assert len(s.lock_fds) == 2
+    finally:
+        for fd in holders.values():
+            os.close(fd)
+    assert clock.now - 100.0 == pytest.approx(70.0) and clock.now - 100.0 > s.req.lock_wait

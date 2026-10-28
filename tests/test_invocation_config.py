@@ -19,7 +19,8 @@ from airflow_provider_rivet.preflight import PreflightRefusal
 def copy(tmp_path: Path, exports: list, touched: str | None = None) -> Path:
     folder = tmp_path / "copies"
     folder.mkdir(exist_ok=True)
-    invocation._copy_query_files({"exports": exports}, tmp_path / "src" / "rivet.yaml", folder, touched)
+    config = tmp_path / "src" / "rivet.yaml"
+    invocation._copy_query_files({"exports": exports}, config, config, folder, touched)
     return folder
 
 
@@ -76,7 +77,8 @@ def test_a_query_file_path_another_config_directory_claimed_is_refused(tmp_path:
     head = f"[RIVET_AIRFLOW_QUERY_FILE] export `e` of {src / 'rivet.yaml'}: query_file `sql/a.sql`"
     assert refusal(tmp_path, [{"name": "e", "query_file": "sql/a.sql"}]) == (
         f"{head} is already used in {folder} by a config of /elsewhere; two config directories that share a state "
-        "directory cannot use one relative path: give them separate state directories"
+        "directory cannot use one relative path: give them separate state directories. If /elsewhere is this config "
+        f"under an earlier revision, or is gone, delete {folder / invocation.QUERY_OWNERS}: the next task claims the path"
     )
 
 

@@ -298,7 +298,9 @@ class _Session:
         target_dir = self.pf.state_dir
         if target_dir is None or source.parent == target_dir.resolve():
             return str(source)
-        _copy_query_files(self.pf.config, source, target_dir, self.req.export)
+        if _query_refs(self.pf.config):
+            with _query_files_lock(self, target_dir):
+                _copy_query_files(self.pf.config, source, named, target_dir, self.req.export)
         return _write_atomic(target_dir / copy_name(named), source.read_bytes())
 
     def globals_for(self) -> list[str]:
@@ -459,23 +461,35 @@ def _tighten(path: Path) -> None:
 
 
 def _prune_stale(work: Path, now: float | None = None) -> None:
-    """Remove expired plan artifacts and crashed ledgers untouched for STALE_AFTER, and the run folders left empty (D33)."""
+    """Remove expired plan artifacts and crashed ledgers untouched for STALE_AFTER, and the run folders left empty (D33).
+
+    A run folder is removed only when it was itself untouched for STALE_AFTER before this pass: a task creates the
+    folder of its run and plans into it a moment later (`_apply` touches it on every use), and a sibling's close must
+    not take it in between."""
     cutoff = (time.time() if now is None else now) - STALE_AFTER
     for kind in (PLANS, CRASHED):
         try:
             files = [p for p in (work / kind).rglob("*") if p.is_file() and p.stat().st_mtime < cutoff]
         except OSError:
             continue
+        idle = _idle_folders(work / kind, cutoff) if kind == PLANS else []
         for path in files:
             if _unexpired(path) if kind == PLANS else not isinstance(_read_json(path), list):
                 continue  # a replayable plan, or a ledger that is not one: left until a person deletes it
             path.unlink(missing_ok=True)  # pragma: no mutate - just listed; gone only if a parallel task removed it
-        if kind == PLANS:
-            for folder in (work / kind).iterdir() if (work / kind).is_dir() else ():
-                try:
-                    folder.rmdir()
-                except OSError:
-                    pass
+        for folder in idle:
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+
+
+def _idle_folders(base: Path, cutoff: float) -> list[Path]:
+    """The folders directly below `base` that nothing has been added to or removed from since `cutoff`."""
+    try:
+        return [p for p in base.iterdir() if p.is_dir() and p.stat().st_mtime < cutoff]
+    except OSError:
+        return []
 
 
 def _prune_logs(folder: Path, keep: int) -> None:
@@ -517,8 +531,33 @@ def copy_name(source: Path) -> str:
     return stem + tail
 
 
-def _copy_query_files(config: Mapping[str, Any], source: Path, folder: Path, touched: str | None) -> None:
-    """Copy every relative `query_file` to the same relative path beside the config's copy; refuse what rivet would."""
+def _query_refs(config: Mapping[str, Any]) -> list[Any]:
+    """The `query_file` of every export that has one."""
+    return [e["query_file"] for e in config.get("exports") or [] if isinstance(e, dict) and e.get("query_file")]
+
+
+@contextlib.contextmanager
+def _query_files_lock(s: _Session, folder: Path) -> Iterator[None]:
+    """Hold the lock of `folder`'s owners record and the query files copied beside it while a task claims and copies them:
+    the claim is a read, a check and a write, and a second task between the read and the write passes the same check.
+    Waited for like an export lock (`lock_wait`, then `Busy`), released by an explicit unlock before rivet starts."""
+    path = _private_dir(folder, WORK, LOCKS, "state") / "query-files.lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        _wait_for_lock(s, fd, path, f"the query files of {folder}")
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _copy_query_files(config: Mapping[str, Any], source: Path, given: Path, folder: Path, touched: str | None) -> None:
+    """Copy every relative `query_file` to the same relative path beside the config's copy; refuse what rivet would.
+
+    A path is owned by the directory of the config as the DAG gave it (`given`, symlinks kept), so a git-sync checkout
+    that moves `repo -> rev-<sha>` stays one owner; a recorded owner is the same one when it is the same directory."""
     owners = _read_json(folder / QUERY_OWNERS)
     owners = owners if isinstance(owners, dict) else {}
     claimed = dict(owners)
@@ -539,12 +578,15 @@ def _copy_query_files(config: Mapping[str, Any], source: Path, folder: Path, tou
             continue
         if source.parent not in origin.resolve().parents:
             refuse("resolves outside the config's directory, which rivet refuses")
-        if claimed.get(ref, str(source.parent)) != str(source.parent):
+        owner = claimed.get(ref)
+        if owner is not None and not _same_file(owner, str(source.parent)):
             refuse(
-                f"is already used in {folder} by a config of {claimed[ref]}; two config directories that share a "
-                "state directory cannot use one relative path: give them separate state directories"
+                f"is already used in {folder} by a config of {owner}; two config directories that share a "
+                "state directory cannot use one relative path: give them separate state directories. If "
+                f"{owner} is this config under an earlier revision, or is gone, delete {folder / QUERY_OWNERS}: "
+                "the next task claims the path"
             )
-        claimed[ref] = str(source.parent)
+        claimed[ref] = str(given.parent)
         _private_dir(folder, *Path(ref).parts[:-1])
         _write_atomic(folder / ref, origin.read_bytes())
     if claimed != owners:
@@ -622,9 +664,10 @@ def _export_lock(s: _Session) -> Iterator[None]:
     """Hold this task's exclusive locks while it runs rivet: each waited for up to `lock_wait` seconds, in the order
     `_lock_paths` gives (one order for every task, so two tasks never wait for each other), then `Busy`.
 
-    Every rivet step inherits the descriptors (`step`), so a rivet that outlives the task keeps the locks and a retry
-    cannot start a second one beside it. They are released by an explicit unlock once the steps have ended: a copy of
-    a descriptor in any other process would keep a lock released by close alone held."""
+    Every rivet step inherits the descriptors (`step`), so while the task process lives, or if it is killed, a rivet
+    keeps the locks and a retry cannot start a second one beside it. A task that ends normally releases them by an
+    explicit unlock once the steps have ended, even if a process rivet left behind holds a copy: a copy of a
+    descriptor in any other process would keep a lock released by close alone held."""
     with contextlib.ExitStack() as held:
         fds = []
         for path, unit in _lock_paths(s):
@@ -843,7 +886,9 @@ def _apply(s: _Session) -> Outcome:
     # success plans again instead of replaying a snapshot the successful apply already moved the cursor past (D04).
     series = () if s.req.series is None else (f"s{int(s.req.series)}",)
     name = path_name(export, s.req.label[2], *series, _plan_inputs(s, export))
-    artifact = _private_dir(s.work, PLANS, s.run) / f"{name}.json"
+    folder = _private_dir(s.work, PLANS, s.run)
+    os.utime(folder)  # in use: `_prune_stale` leaves a folder touched within STALE_AFTER, empty or not
+    artifact = folder / f"{name}.json"
     _refuse_foreign_artifact(artifact, export, cfg)
     if not _unexpired(artifact):
         plan_argv = [s.pf.binary, "plan", "--config", cfg, "--export", export, "--format", "json"]

@@ -7,6 +7,35 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- Documentation: the task releases an export lock by an explicit unlock when it ends, so a process rivet left behind
+  that holds a copy of the descriptor no longer keeps the lock (measured with a grandchild that kept it; before the
+  documentation said the lock lasted until that process exits). A killed task process still leaves the lock to rivet.
+  `lock_wait` is per lock: a `run` of the whole config takes one lock per export in turn and can wait up to the
+  number of its exports times `lock_wait`.
+- **Behaviour change.** Two tasks of two config directories that share one state directory and one relative
+  `query_file` could both pass the owner check: it was a read, a check and a write of
+  `.rivet_airflow_query_files.json` with nothing between them, so one task ran the other config's SQL and both ended
+  green. The copy of the query files and the record are now made under one lock
+  (`airflow/locks/state/query-files.lock`, waited for up to `lock_wait`, then `RIVET_AIRFLOW_EXPORT_BUSY`, retryable);
+  a config with no `query_file` never takes it.
+- **Behaviour change.** Under git-sync (`dags/repo -> rev-<sha>`) the first revision flip made every task of a config
+  with a `query_file` refuse for good, naming "two config directories" and the remedy "separate state directories",
+  which throws away the stored progress. The owner is now the config directory as the DAG gave it (`dags/repo`, the
+  name the copy of the config already uses), so a new revision of the same path is the same owner. The refusal for a
+  real stranger is unchanged and now also names the record to delete when the owner is an earlier revision of this
+  config or is gone. **Upgrade:** a record written by an earlier version holds the resolved directory
+  (`.../rev-<sha>`); it is still read as this config's while the link points at that directory, and the first task
+  after the upgrade rewrites it to the DAG's path. A state directory whose link was flipped before any task ran on the
+  new version is refused once, naming the file: delete `.rivet_airflow_query_files.json` in the state directory and the
+  next task claims the path (tables and progress are not touched). Measured: a record written by the previous release
+  with the link on `rev-a`, then the link on `rev-b` and the new version, is refused; after deleting the file the run
+  succeeds and runs `rev-b`'s SQL.
+- **Behaviour change.** A task ending no longer removes the plan folder of a run that is in progress. Every task's
+  cleanup removed any empty `plans/<run_id>/` folder, including the one another task of the same DAG run had just
+  created for its `rivet plan --output`, so that apply failed with "output unwritable" and was retried or lost, by
+  timing. A run folder is now removed only when nothing in it, and the folder itself, changed in the 24 h before the
+  cleanup (the apply touches its folder on every use). **Upgrade:** nothing is stored and nothing to migrate; an empty
+  folder an earlier version left stays for up to 24 h longer, then the next task's cleanup removes it.
 - **Behaviour change.** A worker's `RIVET_STATE_URL=sqlite:<path>` that the task did not pass on was dropped silently:
   rivet ran on an empty `.rivet_state.db` in `state_dir`, so an incremental export read from the start again and a CDC
   stream re-anchored (measured with rivet 0.32.2 as the oracle: the worker's file held the cursor, the run did not see
