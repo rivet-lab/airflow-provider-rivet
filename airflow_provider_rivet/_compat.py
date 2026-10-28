@@ -15,6 +15,11 @@ try:  # Airflow 3.x: `airflow.exceptions` is a deprecated shim for these (D27)
 except ImportError:  # Airflow 2.10+
     from airflow.exceptions import AirflowException, AirflowFailException, AirflowNotFoundException, AirflowSkipException
 
+try:  # Airflow 3.x: the task SDK's public log module; 2.10+ keeps the masker in `airflow.utils`
+    from airflow.sdk.log import mask_secret
+except ImportError:
+    from airflow.utils.log.secrets_masker import mask_secret
+
 # Executors that run every task of a deployment on the scheduler's own host.
 SINGLE_HOST_EXECUTORS = frozenset({"LocalExecutor", "SequentialExecutor", "DebugExecutor"})
 
@@ -40,4 +45,5 @@ __all__ = [
     "BaseOperator",
     "TaskGroup",
     "executor_spreading_hosts",
+    "mask_secret",
 ]
