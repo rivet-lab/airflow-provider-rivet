@@ -81,7 +81,7 @@ def format_title(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str
     if payload.get(REFUSED):
         kind = f"{payload[REFUSED]} (final)"
     elif failed := _failed_units(payload):
-        error = failed[0]["error"]
+        error = payload.get("error") or failed[0]["error"]  # the error that decided the task, else the first failed unit's
         name = error.get("code") or error.get("class") or "rivet failed"
         kind = f"{name} ({'retryable' if error.get('retryable') else 'final'})"
         if len(failed) > 1:

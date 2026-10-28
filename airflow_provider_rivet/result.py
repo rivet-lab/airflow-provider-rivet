@@ -24,6 +24,8 @@ STATUSES = frozenset({"success", "failed", "skipped", "loaded", "compacted", "al
 # three kind `busy`, exit 2; the third is what it stops with when its own `--lock-wait` for the lease runs out (the
 # provider's RIVET_AIRFLOW_EXPORT_BUSY, inside rivet).
 BUSY_CODES = frozenset({"RIVET_STATE_RUN_IN_PROGRESS", "RIVET_LOAD_TABLE_BUSY", "RIVET_STATE_LOCK_TIMEOUT"})
+# The rivet subcommand a command runs when it is not its own name: a CDC drain is a `rivet run` of a `mode: cdc` export.
+SUBCOMMAND = {"cdc_run": "run"}
 # The key of a task's XCom payload that says why rivet was never started; the task log and the Slack alert read it.
 REFUSED, STOPPED, BUSY = "preflight_refusal", "stopped_before", "busy"
 # What a `rivet load` / `rivet compact` entry reports beyond its rows (ADR-0039 D3, rivet >= 0.32.2): the counts the

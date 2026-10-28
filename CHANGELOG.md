@@ -13,6 +13,18 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   timing. A run folder is now removed only when nothing in it, and the folder itself, changed in the 24 h before the
   cleanup (the apply touches its folder on every use). **Upgrade:** nothing is stored and nothing to migrate; an empty
   folder an earlier version left stays for up to 24 h longer, then the next task's cleanup removes it.
+- **Behaviour change.** Messages that named the wrong thing now name the right one. (1) The Slack title takes its
+  `final` / `retryable` word and code from the error that decided the task, not from the first failed unit: a
+  final refusal was titled `crashed (retryable)` when an earlier unit had crashed. (2) `run`, `cdc_run` and `apply`
+  read rivet 0.32.2's `skip_reason`: a skipped export says why in its line, its headline and the XCom
+  `skip_reason`, and a `compact` of several skipped tables gives the reasons (it said `compact skipped: None`).
+  (3) A whole-config run takes one lock per export: a `BUSY` headline names the lock that timed out and a success
+  headline sums every wait. (4) The stop text of a `cdc_run` task says `rivet run` (there is no `rivet cdc_run`).
+  (5) A crash with no Airflow try left (`retries=0`) is an `AirflowFailException` with `crashed_retry` false and
+  does not claim a retry. (6) A successful `load` / `compact` whose `per_table` is empty is recorded as
+  `result_malformed` in `degraded`. No state or table written before the upgrade is read differently; a DAG that
+  filters Slack titles by the old word, or reads `crashed_retry` on a `retries=0` crash, sees the new value.
+
 - **Behaviour change.** A SQL Server or Oracle `connection_url` percent-encoded the database, but rivet reads that URL
   path as written, so `my db` reached rivet as `my%20db` and the load failed with a login error naming another
   database. The database is now written as is for those two schemes, and PostgreSQL, MySQL and MongoDB stay encoded. A
