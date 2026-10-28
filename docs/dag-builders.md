@@ -163,8 +163,13 @@ since the DAG has no `init` task then). The bucket and the
 warehouse dataset are not created: they must exist.
 
 **Once the config exists**, the next parse builds the same DAG from it: for `cdc`, each `mode: cdc` export of the
-config as a stream (`run`, then a load per table when the config has a `load:` block and a compaction when its
-`layout` is `base_buffer`); for `batch`, every export through `build_batch_dag`, with a load when it has `load:`.
+config as a stream (`run`, then a load per table when the config has a `load:` block and a compaction of each table
+whose layout rivet resolves to a base and a buffer); for `batch`, every export through `build_batch_dag`, with a load
+when it has `load:` and a compaction of each export whose layout rivet resolves the same way. The layout is read as
+rivet resolves it (ADR-0034 D7), from the config alone: BigQuery (the one warehouse that compacts), a load that
+accumulates (`incremental`, `cdc`; never `full`, and an export without `mode:` is `full`), and `layout: base_buffer`
+written at `load:`, over it at the export's `load:`, over it at the captured table's `load.tables.<t>`; with no layout
+written, a stream with `cdc.backfill` is a base and a buffer, anything else a change log with no compaction.
 `rivet init --mode cdc` writes one stream over all tables on MySQL and PostgreSQL's `public`, which keeps the
 `build_cdc_dag` shape (`run`, `load.T`, `compact.T`), and one stream per table on SQL Server, Oracle, MongoDB and other
 PostgreSQL schemas: each stream is then a group named after its export (`dbo_orders.run`, `dbo_orders.load.dbo_orders`: a load takes the warehouse name, the schema's dot folded to `_`),
