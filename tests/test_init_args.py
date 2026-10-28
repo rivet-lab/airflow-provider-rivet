@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from test_source_dags import init_operator
 
+from airflow_provider_rivet.operators import _flag_of
+
 OWNED_TEXT = "init_args may not set {taken}: the operator sets the source, the output and the CDC mode"
 BATCH_CDC_TEXT = "init_args may not ask for `--mode cdc` in a batch DAG: use mode='cdc'"
 
@@ -63,3 +65,22 @@ def test_what_was_accepted_and_refused_before_is_unchanged(tmp_path: Path) -> No
     with pytest.raises(ValueError) as exc:
         init_operator(tmp_path, mode="cdc", init_args=["--mode", "cdc", "-o", "x"])
     assert str(exc.value) == OWNED_TEXT.format(taken="['--mode', '-o']")
+
+
+@pytest.mark.parametrize(
+    "token, flag",
+    [
+        ("--output=a=b", "--output"),
+        ("--output=", "--output"),
+        ("--output", "--output"),
+        ("-oa=b", "-o"),
+        ("-o=x", "-o"),
+        ("-o", "-o"),
+        ("-xyz", "-x"),
+        ("orders", "orders"),
+        ("cdc", "cdc"),
+        ("", ""),
+    ],
+)
+def test_the_flag_a_token_sets_is_read_as_clap_reads_it(token: str, flag: str) -> None:
+    assert _flag_of(token) == flag

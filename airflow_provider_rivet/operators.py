@@ -433,8 +433,10 @@ def places(doc: Mapping[str, Any]) -> set[str]:
 def _flag_of(arg: str) -> str:
     """The flag a command-line token sets as clap reads it: `--output=x` is `--output`, `-oX` and `-o=X` are `-o`."""
     if arg.startswith("--"):
-        return arg.split("=", 1)[0]
-    return arg[:2] if arg.startswith("-") else arg
+        return arg.partition("=")[0]
+    if arg.startswith("-"):
+        return arg[:2]
+    return arg
 
 
 def _asks_for_cdc(args: Sequence[str]) -> bool:
