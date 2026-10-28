@@ -55,7 +55,17 @@ def interleave(rig: Rig, monkeypatch: pytest.MonkeyPatch, second: Any, at: Any) 
         emit(entry)
 
     second._emit = note
-    thread = threading.Thread(target=lambda: ended.update(result=rig.run(second)))
+
+    def on_thread() -> None:
+        try:  # Airflow 2 keeps the safeguard's caller table in a thread-local that only the importing thread has
+            from airflow.models.baseoperator import ExecutorSafeguard
+
+            ExecutorSafeguard._sentinel.callers = {}
+        except (ImportError, AttributeError):
+            pass
+        ended.update(result=rig.run(second))
+
+    thread = threading.Thread(target=on_thread)
     real = invocation._write_atomic
     fired: list[int] = []
 
