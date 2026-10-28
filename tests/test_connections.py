@@ -303,3 +303,24 @@ def test_d23_connection_url_brackets_only_an_ipv6_literal_and_encodes_its_zone()
     with pytest.raises(PreflightRefusal) as refused:
         connection_url(url_conn(host="db.internal:5432", port=5432))
     assert refused.value.code == "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED"
+
+
+@pytest.mark.parametrize("conn_id", ["../../etc/x", "a/b", "a\\b", "x" * 250, "..", "a b"])
+def test_a_key_file_is_named_by_its_kind_never_by_the_connection_id(tmp_path: Path, conn_id: str) -> None:
+    """Airflow lets a conn_id hold `/`, `\\`, `..` and 250 characters; a file named after it escapes the private
+    folder or exceeds the file system's name limit."""
+    folder = tmp_path / "private"
+    folder.mkdir()
+    key = conn(conn_id, "google_cloud_platform", extra_dejson={"keyfile_dict": KEY})
+    sf = conn(
+        conn_id + "s",
+        "snowflake",
+        login="L",
+        extra_dejson={"account": "ab12345", "private_key_content": "-----BEGIN PRIVATE KEY-----\nK\n"},
+    )
+    env = cloud_environment([key, sf], folder)
+    assert env["GOOGLE_APPLICATION_CREDENTIALS"] == str(folder / "gcp.json")
+    assert env["RIVET_SNOWFLAKE_KEY"] == str(folder / "snowflake.p8")
+    assert {p.name for p in tmp_path.iterdir()} == {"private", "tmp"}, (
+        "nothing written beside the folder (tmp is the suite's own)"
+    )

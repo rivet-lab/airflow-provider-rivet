@@ -171,14 +171,20 @@ def test_mysql_keeps_one_stream_at_the_top_and_oracle_cdc_has_no_load_or_compact
     assert shape_problems(expected_tasks(mysql, "cdc"), mysql, "cdc", grouped=False) == []
     assert shape_problems(expected_tasks(mysql, "cdc"), mysql, "cdc", grouped=True)
     doc = yaml.safe_load(mysql)
-    changelog = yaml.safe_dump({**doc, "load": {k: w for k, w in doc["load"].items() if k != "layout"}})
+    unwritten = yaml.safe_dump({**doc, "load": {k: w for k, w in doc["load"].items() if k != "layout"}})
+    assert "compact.gate_orders" in expected_tasks(unwritten, "cdc"), "an unwritten layout of a `backfill:` stream is a base"
+    changelog = yaml.safe_dump({**doc, "load": {**doc["load"], "layout": "log_view"}})
     assert "compact.gate_orders" not in expected_tasks(changelog, "cdc"), "a change log has no buffer to merge"
     oracle_cdc = fixture("init_oracle_cdc_0.32.1.yaml")
     assert expected_tasks(oracle_cdc, "cdc") == ["GATE_CUSTOMERS_cdc.run", "GATE_ORDERS_cdc.run", "watcher"]
     batch = fixture("init_oracle_batch_0.32.1.yaml")
     assert expected_tasks(batch, "batch") == sorted(
+        [f"{g}.GATE_{t}" for g in ("apply", "load", "compact") for t in ("CUSTOMERS", "ORDERS")] + ["watcher"]
+    ), "init writes incremental exports with `layout: base_buffer`: their load buffers, only compact merges"
+    full = batch.replace("mode: incremental", "mode: full")
+    assert expected_tasks(full, "batch") == sorted(
         ["watcher", "apply.GATE_CUSTOMERS", "apply.GATE_ORDERS", "load.GATE_CUSTOMERS", "load.GATE_ORDERS"]
-    ), "build_source_dags compacts no batch export"
+    ), "a full export's load replaces the table: nothing to merge"
 
 
 GOOD = {
