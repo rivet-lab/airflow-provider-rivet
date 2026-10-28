@@ -225,7 +225,6 @@ def run_preflight(
     upstream_markers: tuple[str, ...] = (),
     extra_args: Sequence[str] = (),
     spreads_hosts: str | None = None,
-    rivet_notifications: bool = False,
 ) -> Preflight:
     """Run every check; raise `PreflightRefusal` or return what the invocation needs."""
     binary = resolve_binary(rivet_bin, env)
@@ -291,13 +290,4 @@ def run_preflight(
             result.warnings.append(
                 ("sqlite_single_host", f"SQLite state in {state_dir}: this setup is single-host; see {SETUP_GUIDE}")
             )
-
-    if "notifications" in config and not rivet_notifications and not caps.has_flag("run", "--no-notify"):
-        result.warnings.append(
-            (
-                "notifications_block",
-                "the config has a `notifications:` block and this rivet has no `--no-notify`: rivet will send its own "
-                "messages beside Airflow's alerts; remove the block from configs run under Airflow",
-            )
-        )
     return result

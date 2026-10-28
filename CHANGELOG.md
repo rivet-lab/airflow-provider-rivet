@@ -51,6 +51,35 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   `state_root` (the documented rule, now enforced); a DAG already built over such a config shows the red `config` task
   at the next parse. In a batch plan, an export named `after_<heavy export>` or `wave_<n>_done` no longer duplicates
   an ordering point's task id (the DAG file did not import): the ordering point is `<id>_barrier`.
+- `operator_kwargs` may no longer set `max_active_tis_per_dag` (every builder, `build_source_dags` included): it is 1 on
+  every rivet task so a task never runs beside another try of itself, and a value there silently replaced it, like a
+  `trigger_rule` (already refused). **Behaviour change:** a DAG file that passed it now fails to import with
+  `operator_kwargs may not set `max_active_tis_per_dag`...`. **Remedy:** delete the key (a limit across
+  tasks is a `pool` in `operator_kwargs`).
+- `RivetInitOperator` (`init_args` of `build_source_dags`): the flags the operator owns are refused in every spelling
+  clap reads (`--output=x`, `-oX`, `--source-env=X`, `--mode=full` in a CDC DAG, `--mode=cdc` in a batch DAG), where
+  only the exact tokens were; and a value that happens to read `cdc` (`--bigquery-dataset cdc`, a source or bucket
+  named `cdc`) is no longer refused as a request for `--mode cdc` in a batch DAG, in a CDC DAG too. A DAG already
+  built keeps working; one that passed `--output=x` now fails to import (before, rivet failed at the `init` task on
+  the repeated flag): delete it from `init_args`.
+- `quickstart/dags/rivet_quickstart.py` refuses, naming the streams, a pipeline whose config has more than one
+  `mode: cdc` stream (it built the first and never captured the others, with green runs), and reads names and tables as
+  rivet does (`name: 2024`, a missing `mode`). `examples/rivet_cdc_per_source.py` builds a stream written as `table:`
+  (it raised `KeyError: 'tables'` at parse). **Remedy for several streams:** build the pipeline with `build_source_dags`.
+
+### Changed (operator input)
+
+- A load, compact or apply task given `-p` / `--param` in `extra_args` is refused before rivet starts
+  (`RIVET_AIRFLOW_PARAM_NOT_ACCEPTED`, not retried): rivet 0.32.2 takes `-p` on `run`, `plan` and `check` only and ends the
+  others `unexpected argument '-p' found` after the lock and the copy of the config. Put the value in `env=`.
+
+- The operators no longer probe the rivet binary for flags it may lack: rivet 0.32.2, the minimum, has `--export`,
+  `--table`, `--summary-output`, `--lock-wait` and `--no-notify` on every step the package runs. Removed with them: the
+  copy of the config cut down to one export for `load` / `compact` (`RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE`), the
+  `<sub> --help` reads, and the `degraded` keys `no_notify`, `lock_wait`, `load_filter`, `load_table_filter`,
+  `load_result` and `load_digest`. A `per_table` entry without `target` or without a digest key is `result_malformed`
+  (it was named from the config, or `load_digest`); a result with no entry for the table is still named from the
+  config. What the package does on 0.32.2 is unchanged.
 
 ## 0.3.0 (2026-10-24)
 

@@ -125,7 +125,9 @@ tables and mode, and writes every command below with those values. Without it, t
    `mkdir /opt/airflow/rivet-state/<pipeline>`.
 4. **The config**, generated inside the Airflow container from the live database by `rivet init`, with the state in
    the pipeline's own database, and `--mode cdc` or `--mode incremental`.
-5. **One line** in `PIPELINES` in `dags/rivet_quickstart.py`:
+5. **One line** in `PIPELINES` in `dags/rivet_quickstart.py` (one `mode: cdc` stream per pipeline: a config of several,
+   as `init` writes outside PostgreSQL `public` and on SQL Server, Oracle and MongoDB, is refused at parse naming them;
+   build it with `build_source_dags`, [DAG builders](dag-builders.md#one-dag-per-database-build_source_dags)):
    `"billing_batch": {"source": "rivet_billing"},`. Optional keys `storage` and `warehouse` name the Connections of
    your own S3 bucket and ClickHouse instead of the stack's.
 6. **Unpause** its DAG as in step 2.

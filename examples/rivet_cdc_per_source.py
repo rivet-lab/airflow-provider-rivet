@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from airflow_provider_rivet.dags import build_cdc_dag
+from airflow_provider_rivet.exports import entries_of, mode_of, name_of, tables_of
 
 SOURCES = [s.strip() for s in os.environ.get("RIVET_EXAMPLE_SOURCES", "").split(",") if s.strip()]
 CONFIG_DIR = Path(os.environ.get("RIVET_EXAMPLE_CONFIG_DIR", "/opt/airflow/dags/rivet"))
@@ -41,8 +42,8 @@ def checked_sources(sources: list[str], config_dir: Path) -> list[str]:
 
 
 def cdc_export(config: Path) -> dict:
-    """The one `mode: cdc` export of a rivet config: its `name` and `tables`."""
-    exports = [e for e in yaml.safe_load(config.read_text())["exports"] if e.get("mode") == "cdc"]
+    """The one `mode: cdc` export of a rivet config; its name and tables are read with `name_of` and `tables_of`."""
+    exports = [e for e in entries_of(yaml.safe_load(config.read_text())) if mode_of(e) == "cdc"]
     if len(exports) != 1:
         raise ValueError(f"{config}: expected one export with `mode: cdc`, found {len(exports)}")
     return exports[0]
@@ -54,8 +55,8 @@ for src in checked_sources(SOURCES, CONFIG_DIR):
     globals()[f"rivet_{src}_cdc"] = build_cdc_dag(
         f"rivet_{src}_cdc",
         config=str(config),
-        export=export["name"],
-        tables=export["tables"],
+        export=name_of(export),
+        tables=tables_of(export),  # `tables:`, or the `table:` init writes for a stream of one table
         state_dir=str(STATE_ROOT / src),
         schedule="0 */2 * * *",
         start_date=datetime(2026, 10, 1),  # in the past: a future start_date gives runs with no tasks
