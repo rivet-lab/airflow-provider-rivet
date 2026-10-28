@@ -135,8 +135,8 @@ def test_golden_cdc_max_events_is_a_note(rig: Rig, log: Recorder) -> None:
 
 
 def test_golden_skipped_nothing_to_do(rig: Rig, log: Recorder) -> None:
-    """A `skip_empty` apply that delivered nothing: SKIPPED, not OK with zero rows. the package does not read an
-    apply entry's `skip_reason`, so the headline gives none."""
+    """A `skip_empty` apply that delivered nothing: SKIPPED, not OK with zero rows. This entry names no `skip_reason`
+    (null), so the headline gives none; one that names it is in test_message_truth.py."""
     rig.scenario(apply={"summary": summary("users", 0, 0, "users_1", "skipped")})
     payload, _ = rig.run(rig.operator(RivetApplyOperator, export="users"))
     assert payload["units"][0]["status"] == "skipped"
@@ -550,7 +550,8 @@ def test_golden_load_of_several_tables_counts_tables_rows_and_jobs(rig: Rig, log
         "2 jobs (rivet_load_orders_1, rivet_load_orders_2), 0 B billed (run 20261006T101900.456-load)"
     ) in shown
     assert (
-        "INFO   table    countries.countries → proj.analytics.countries: skipped, 0 rows (run 20261006T101900.456-load)" in shown
+        "INFO   table    countries.countries → proj.analytics.countries: skipped (up_to_date), 0 rows (run 20261006T101900.456-load)"
+        in shown
     )
     failed = [line for line in shown if line.startswith("INFO   table    events.events")]
     assert failed and failed[0].endswith(", job rivet_load_events_1 (run 20261006T101900.456-load)")

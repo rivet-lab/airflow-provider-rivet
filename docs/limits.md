@@ -45,7 +45,5 @@ run lease too (measured on 0.32.0).
   rivet's output and talks to no warehouse. A live run against BigQuery, Snowflake and ClickHouse
   exists only as the warehouse leg of the live gate (`python -m gate --warehouses ...`, see "Live
   gate"), which reads each warehouse back through a second client and compares it with the source.
-- The package does not read the `skip_reason` of a `run` / `apply` entry (only a `compact` row's): a
-  `skip_empty` apply that delivered nothing is `SKIPPED` without the reason.
 - A failure callback runs where Airflow runs task callbacks, in the task's process on the worker;
   exercised live on Airflow 2.10.5 and 3.3.2 by hand (docs/slack.md), not by the live gate.
