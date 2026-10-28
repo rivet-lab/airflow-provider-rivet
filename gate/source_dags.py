@@ -335,7 +335,7 @@ class SourceDagsLeg(SourceLeg):
             self.host(stand, place).mkdir(parents=True, exist_ok=True)
         self.wait_ready(stand)
         self.sql(stand, self.engine.setup.replace("{password}", getattr(stand.secrets, self.engine.name)))
-        self.sql(stand, self.engine.seed.replace("{orders_instance}", self.capture_instance(stand)))
+        self.sql(stand, self.engine.seed)
         for kind, ds in self.datasets.items():
             sh(["gcloud", "storage", "buckets", "create", f"gs://{self.buckets[kind]}", f"--project={self.cloud.project}",
                 f"--location={self.cloud.location}", "--uniform-bucket-level-access"], timeout=300)  # fmt: skip

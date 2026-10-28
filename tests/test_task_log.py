@@ -190,7 +190,7 @@ def test_golden_skipped_already_applied_by_an_earlier_try(rig: Rig, log: Recorde
 
 
 def test_golden_rivet_answers_a_replay_of_an_applied_plan(rig: Rig, log: Recorder) -> None:
-    """rivet >= 0.32 (#623): the earlier try's record is gone, so the task applies the sealed plan again and rivet
+    """rivet (#623): the earlier try's record is gone, so the task applies the sealed plan again and rivet
     answers with the run that applied it, `already_applied` with that run's counts; the task ends success with them."""
     run_id = "orders_20261017T130550.929_55700"
     entry = summary("orders", 30, 1, run_id, "already_applied", answered_by_run=run_id, mode="full")

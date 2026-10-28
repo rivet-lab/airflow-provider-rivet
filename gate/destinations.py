@@ -108,7 +108,7 @@ def config_path(kind: str) -> str:
 
 def cdc_root(text: str) -> str:
     """The prefix a CDC config's `cdc/<table>/` parts sit under: its stream's destination prefix without the trailing
-    `cdc/` (empty before rivet #664, `<stem>/` after it)."""
+    `cdc/` (init writes `<stem>/`)."""
     doc = yaml.safe_load(text) or {}
     prefixes = [str((e.get("destination") or {}).get("prefix") or "") for e in doc.get("exports") or [] if e.get("mode") == "cdc"]
     if len(prefixes) != 1 or not prefixes[0].endswith("cdc/"):

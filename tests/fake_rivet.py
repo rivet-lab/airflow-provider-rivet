@@ -170,7 +170,7 @@ def stale_artifact(spec, argv, export):
 
 def applied(update=None):
     """The sealed plans this fake state has applied, by the artifact's bytes (`applied.json` beside the fake): rivet
-    >= 0.32 keys a plan's apply by its `plan_id` (state v37, src/pipeline/apply_cmd.rs) and answers a replay of it."""
+    keys a plan's apply by its `plan_id` (state v37, src/pipeline/apply_cmd.rs) and answers a replay of it."""
     path = HERE / "applied.json"
     held = json.loads(path.read_text()) if path.exists() else {}
     if update is not None:
@@ -303,7 +303,7 @@ def main():
     replay = applied().get(artifact_key(argv)) if sub == "apply" else None
     target = value_of(argv, "--summary-output")
     if replay is not None and replay["mode"] != "incremental":
-        # rivet 0.32 (#623): a replay of an applied point-in-time plan extracts nothing and answers with the run that
+        # rivet (#623): a replay of an applied point-in-time plan extracts nothing and answers with the run that
         # applied it, `run_id` == `answered_by_run`, and that run's counts
         entry = run_entry(export, "already_applied", run_id=replay["run_id"], mode=replay["mode"])
         entry.update(answered_by_run=replay["run_id"], rows=replay["rows"], files=replay["files"])

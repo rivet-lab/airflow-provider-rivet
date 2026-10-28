@@ -60,7 +60,7 @@ def state_kind(env: Mapping[str, str]) -> str:
 
 
 def selects_state(env: Mapping[str, str]) -> bool:
-    """Whether `RIVET_STATE_URL` names a state rivet opens: a PostgreSQL URL or a `sqlite:` file (rivet 0.32.1's rule)."""
+    """Whether `RIVET_STATE_URL` names a state rivet opens: a PostgreSQL URL or a `sqlite:` file (rivet's rule)."""
     return STATE_URL_ENV in env and env[STATE_URL_ENV].startswith((*POSTGRES_STATE_SCHEMES, SQLITE_STATE_SCHEME))
 
 
