@@ -64,6 +64,38 @@ def run_summary(entries):
     }
 
 
+TABLE_KEYS = (
+    "export",
+    "table",
+    "target",
+    "buffer",
+    "status",
+    "skip_reason",
+    "rows",
+    "rows_inserted",
+    "rows_updated",
+    "rows_deleted",
+    "rows_merged",
+    "base_rows_after",
+    "files",
+    "runs",
+    "warehouse_job_ids",
+    "bytes_processed",
+    "bytes_billed",
+    "error",
+)
+
+
+def load_row(export, table, status="loaded", **more):
+    """One `per_table` entry as 0.32.2 serialises it: every key, `null` where rivet has none, `target` always the name
+    of the warehouse object the command works on (`TableResult`, src/load/result.rs)."""
+    row = dict.fromkeys(TABLE_KEYS)
+    row |= {"export": export, "table": table, "target": f"p.d.{table}", "status": status, "rows": 0}
+    unknown = set(more) - set(TABLE_KEYS)
+    assert not unknown, f"not a key of rivet's table entry: {sorted(unknown)}"
+    return row | more
+
+
 def load_summary(rows=()):
     """The `--summary-output` document of `rivet load` / `compact`."""
     return {"run_id": "load_1", "per_table": list(rows)}

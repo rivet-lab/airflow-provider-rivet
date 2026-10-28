@@ -152,5 +152,5 @@ def test_every_degradation_is_documented_in_the_readme_and_every_recorded_key_is
     recorded = set(re.findall(r'degraded\.add\("([a-z_]+)"\)', source)) | set(
         re.findall(r'\*payload\["degraded"\], "([a-z_]+)"', source)
     )
-    # 14 -> 13 on 2026-10-28 (see #100): `error_object` is gone, rivet 0.32.2's own line is the normal path, not a degradation.
-    assert len(recorded) >= 13 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)
+    # 8 -> 7 on 2026-10-28 (see #100): `error_object` is gone, rivet 0.32.2's own line is the normal path, not a degradation.
+    assert len(recorded) >= 7 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)

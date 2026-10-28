@@ -1,4 +1,4 @@
-"""Config text fidelity: the package reads and narrows a config the way rivet reads it (D06, D07, D09)."""
+"""Config text fidelity: the package reads a config the way rivet reads it (D06, D07)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from airflow.exceptions import AirflowFailException
 from conftest import FakeTI, Rig
 
 from airflow_provider_rivet import _yaml
-from airflow_provider_rivet.operators import RivetCdcRunOperator, RivetLoadOperator, RivetRunOperator
+from airflow_provider_rivet.operators import RivetCdcRunOperator, RivetRunOperator
 
 PG_STATE = {"RIVET_STATE_URL": "postgresql://state:pw@state-db/rivet_state"}
 POD = {"deployment": "pod"}
@@ -53,43 +53,6 @@ exports: [{name: orders, mode: full, note: '${NOTE}'},
 HOSTILE = ["@abc", "*abc", "!abc", "pa': 'ss", "abc #1", "a: b"]
 
 
-@pytest.mark.parametrize("secret", HOSTILE)
-@pytest.mark.parametrize("layout", ["block", "flow"])
-@pytest.mark.before_0_32_2
-def test_d09_a_quoted_placeholder_reads_the_same_in_the_load_copy_as_in_the_original(rig: Rig, secret: str, layout: str) -> None:
-    """D09: `config_for` re-dumped the YAML, so `'${NOTE}'` lost its quotes; rivet splices the value into the raw text,
-    and a value starting with `@`/`*`/`!` or holding `: ` broke the copy, `abc #1` silently read as `abc`."""
-    text = BLOCK if layout == "block" else FLOW
-    if "'" in secret:
-        text = text.replace("'${NOTE}'", '"${NOTE}"')
-    rig.config.write_text(text)
-    rig.scenario(record_config=True)
-    payload, _ = rig.run(rig.operator(RivetLoadOperator, export="users", env={"RIVET_PG_URL": "x", "NOTE": secret}))
-    load = [c for c in rig.calls() if c["argv"][0] == "load"][-1]
-    assert load["config"] is not None, f"rivet could not read the narrowed copy: {payload}"
-    assert [e["name"] for e in load["config"]["exports"]] == ["users"]
-    assert load["config"]["exports"][0]["note"] == secret, "the value rivet reads must be the value the operator set"
-
-
-@pytest.mark.before_0_32_2
-def test_d09_the_block_copy_keeps_every_byte_of_what_it_keeps(rig: Rig) -> None:
-    """D09: the narrowed copy is the original text with the other items' lines removed: comments, quoting stay."""
-    rig.config.write_text(BLOCK)
-    rig.run(rig.operator(RivetLoadOperator, export="users", env={"RIVET_PG_URL": "x", "NOTE": "n"}))
-    kept = BLOCK.replace("  - name: orders            # first\n    note: '${NOTE}'\n    mode: full\n", "")
-    kept = kept.replace("  - name: countries\n    mode: full\n    note: '${NOTE}'\n", "")
-    assert rig.copy("users").read_text() == kept
-
-
-@pytest.mark.before_0_32_2
-def test_d09_the_flow_copy_keeps_each_kept_item_byte_exact(rig: Rig) -> None:
-    rig.config.write_text(FLOW)
-    rig.run(rig.operator(RivetLoadOperator, export="users", env={"RIVET_PG_URL": "x", "NOTE": "n"}))
-    copy = rig.copy("users").read_text()
-    assert "{name: users, mode: incremental, note: '${NOTE}'}" in copy and "orders" not in copy
-    assert copy.startswith("source: {type: postgres, url_env: RIVET_PG_URL}\nexports: [")
-
-
 ANCHORED = """\
 source: {type: postgres, url_env: RIVET_PG_URL}
 exports:
@@ -99,32 +62,6 @@ exports:
   - <<: *base
     name: users
 """
-
-
-@pytest.mark.before_0_32_2
-def test_d09_a_text_that_cannot_be_cut_safely_is_refused_with_a_code_and_rivet_never_starts(rig: Rig) -> None:
-    """D09: the kept export reads an anchor the dropped one defines; a cut would break it and a re-dump would rewrite the
-    text, so the task refuses rather than guesses, on every try."""
-    rig.config.write_text(ANCHORED)
-    for _cycle in (1, 2):
-        op = rig.operator(RivetLoadOperator, export="users", env={"RIVET_PG_URL": "x"})
-        assert refused(rig, op) == "RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE"
-    assert not [c for c in rig.calls() if c["argv"][0] == "load"]
-
-
-@pytest.mark.before_0_32_2
-def test_backfill_recipes_survive_the_text_cut(rig: Rig) -> None:
-    """PR #5's rule through the D09 text cut: a stream's `backfill: auto` recipes are kept, by `table:`, through the text cut."""
-    rig.config.write_text(
-        "source: {type: postgres, url_env: RIVET_PG_URL}\nexports:\n"
-        "  - name: o\n    table: orders\n    mode: full\n"
-        "  - name: x\n    table: other\n    mode: full\n"
-        "  - name: stream\n    tables: [orders]\n    mode: cdc\n    cdc: {backfill: auto}\n"
-    )
-    rig.scenario(record_config=True)
-    rig.run(rig.operator(RivetLoadOperator, export="stream", env={"RIVET_PG_URL": "x"}))
-    load = [c for c in rig.calls() if c["argv"][0] == "load"][-1]
-    assert [e["name"] for e in load["config"]["exports"]] == ["o", "stream"]
 
 
 # ---- D07: YAML 1.2 scalars as serde_yaml_ng types them; names compared as their text ----
@@ -142,21 +79,6 @@ def test_d07_a_leading_zero_value_does_not_crash_the_preflight(rig: Rig) -> None
     rig.config.write_text(rig.config.read_text().replace("    mode: full\n", "    mode: full\n    chunk_size: 09\n", 1))
     payload, _ = rig.run(rig.operator(RivetRunOperator, export="orders"))
     assert isinstance(payload, dict) and payload["decision"] == "success", payload
-
-
-@pytest.mark.parametrize("name", ["2024", "017", "0x10"])
-@pytest.mark.before_0_32_2
-def test_d07_an_all_digit_export_name_is_found_and_narrowed_as_written(rig: Rig, name: str) -> None:
-    """D07: `name: 2024` became an int and was refused `EXPORT_UNKNOWN`; `017` became 15, also in the narrowed copy."""
-    rig.config.write_text(
-        f"source: {{type: postgres, url_env: RIVET_PG_URL}}\nexports:\n  - name: {name}\n    mode: full\n"
-        "  - name: other\n    mode: full\n"
-    )
-    payload, _ = rig.run(rig.operator(RivetRunOperator, export=name))
-    assert isinstance(payload, dict) and payload["decision"] == "success", payload
-    payload, _ = rig.run(rig.operator(RivetLoadOperator, export=name))
-    assert isinstance(payload, dict), payload
-    assert f"  - name: {name}\n" in rig.copy(name).read_text() and "other" not in rig.copy(name).read_text()
 
 
 # ---- D06: `${...}` in mode / name / cdc.checkpoint resolved with the task env and `-p`, or fail closed ----
@@ -238,38 +160,3 @@ def test_d06_a_templated_load_password_env_resolves_for_the_connection(
     payload, _ = rig.run(rig.operator(RivetRunOperator, export="orders", connections=["ch"], env=env, **extra))
     assert isinstance(payload, dict), payload
     assert rig.calls()[-1]["env"]["CH_PASSWORD"] == "pw", "the password must reach the variable the config names"
-
-
-ALIASED_LAST = """\
-source: {type: postgres, url_env: RIVET_PG_URL}
-x-dest: &s3
-  type: local
-  path: ./out/
-x-tables: &tables [orders]
-exports:
-  - name: orders
-    mode: full
-    destination: *s3
-  - name: users
-    mode: full
-    destination: *s3   # shared
-  - name: stream
-    mode: cdc
-    tables:
-      - *tables
-"""
-
-
-@pytest.mark.parametrize("kept", [0, 1, 2])
-def test_an_export_ending_in_an_alias_of_a_top_level_anchor_is_cut_not_refused(kept: int) -> None:
-    """`destination: *s3` as an item's last line was refused (`RIVET_AIRFLOW_CONFIG_NARROW_UNSAFE`, "shares its last
-    line with other text"): the alias composes to its anchor's node, written above `exports:`, so ` *s3` read as
-    foreign text. The cut is the original with the other items' whole lines removed."""
-    original = _yaml.load(ALIASED_LAST)
-
-    def check(cut: str) -> None:  # the operator's read-back (invocation.narrowed_config)
-        assert _yaml.load(cut) == {**original, "exports": [original["exports"][kept]]}
-
-    head, body = ALIASED_LAST.split("exports:\n")
-    items = ["  - name" + item for item in body.split("  - name")[1:]]
-    assert _yaml.narrow_text(ALIASED_LAST, {kept}, 3, check) == head + "exports:\n" + items[kept]

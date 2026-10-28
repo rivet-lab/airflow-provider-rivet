@@ -53,15 +53,11 @@ QUERY_FILE_RULES = (
 
 
 def flags_of(spec, sub):
-    """{long flag: (short or None, takes a value)} the subcommand accepts: the 0.32.2 table, the scenario's `flags` added
-    and its `without` removed (a binary that models another release)."""
-    extra = spec.get("flags", {})
+    """{long flag: (short or None, takes a value)} the subcommand accepts: rivet 0.32.2's."""
     table = {}
-    for entry in [*GLOBAL_FLAGS, *BASE_FLAGS[sub], *extra.get(sub, []), *extra.get("*", [])]:
+    for entry in [*GLOBAL_FLAGS, *BASE_FLAGS[sub]]:
         short, _, long = entry.rpartition("/")
         table[long.rstrip("=")] = (short or None, long.endswith("="))
-    for entry in [*spec.get("without", {}).get(sub, []), *spec.get("without", {}).get("*", [])]:
-        table.pop(entry, None)
     return table
 
 

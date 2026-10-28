@@ -11,7 +11,7 @@ from pathlib import Path
 
 import rivet_cli
 from conftest import CONFIG, Rig, fixture
-from rivet_shapes import ENTRY_KEYS, load_summary, run_entry, run_summary
+from rivet_shapes import ENTRY_KEYS, TABLE_KEYS, load_row, load_summary, run_entry, run_summary
 
 from airflow_provider_rivet.capabilities import MIN_RIVET_VERSION, probe
 
@@ -81,6 +81,9 @@ def test_the_summary_shapes_the_fake_writes_are_the_pinned_contracts() -> None:
     pinned = list(fixture("run_entry.json"))
     assert list(run_entry("x")) == pinned[: len(ENTRY_KEYS)] and tuple(run_entry("x")) == ENTRY_KEYS
     assert set(load_summary()) == set(fixture("load_result.json"))
+    for name in ("load_result.json", "compact_result.json"):
+        assert all(tuple(row) == TABLE_KEYS for row in fixture(name)["per_table"]), name
+    assert tuple(load_row("e", "t")) == TABLE_KEYS
     summary = run_summary([run_entry("x"), run_entry("y", "failed"), run_entry("z", "skipped")])
     assert (summary["total_exports"], summary["success_count"], summary["failed_count"], summary["skipped_count"]) == (3, 1, 1, 1)
     assert summary["per_export"][1]["error_message"] is None, (

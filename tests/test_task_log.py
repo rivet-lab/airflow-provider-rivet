@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from airflow.exceptions import AirflowException, AirflowFailException, AirflowSkipException
 from conftest import CONFIG, SECRET, FakeTI, Rig, fixture
+from rivet_shapes import load_row
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.capabilities import DEGRADATIONS
@@ -33,7 +34,6 @@ from airflow_provider_rivet.result import DIGEST_KEYS
 
 GUIDE = "https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
 SQLITE = f"  note     SQLite state is single-host — see {GUIDE}"
-OLD_LACKS = "  note     this binary lacks: lock_wait, no_notify (the operator works around them)"
 
 
 class Recorder:
@@ -104,23 +104,6 @@ def test_golden_apply_success_with_counts(rig: Rig, log: Recorder) -> None:
     ]
 
 
-@pytest.mark.before_0_32_2
-def test_golden_apply_success_on_a_degraded_binary(rig: Rig, log: Recorder) -> None:
-    """The owner's case: rivet 0.32.0 (no --lock-wait, no --no-notify) and SQLite state. The missing flags are one
-    note, not a `degraded: [...]` dump that reads like a fault; the counts are apply's summary's."""
-    rig.scenario(apply={"summary": summary("users", 30, 1, "users_1")})
-    payload, _ = rig.run(rig.operator(RivetApplyOperator, export="users"))
-    run_id = payload["units"][0]["run_id"]
-    assert payload["degraded"] == ["lock_wait", "no_notify"]
-    assert log.shown() == [
-        f"INFO rivet apply users → OK: 30 rows, 1 file in 5.0 s (run {run_id})",
-        "INFO   plan     sealed, strategy incremental in 1.0 s",
-        "INFO   apply    done in 1.0 s",
-        f"INFO {SQLITE}",
-    ]
-    assert ("DEBUG", OLD_LACKS) in log.lines  # flags no release has yet: not on every task's INFO (#62)
-
-
 def test_golden_run_of_the_whole_config_lists_each_export(rig: Rig, log: Recorder) -> None:
     """Several units: the headline sums them, one line per unit follows the step."""
     two = {"per_export": summary("orders", 500, 2, "orders_1")["per_export"] + summary("users", 7, 1, "users_1")["per_export"]}
@@ -152,8 +135,8 @@ def test_golden_cdc_max_events_is_a_note(rig: Rig, log: Recorder) -> None:
 
 
 def test_golden_skipped_nothing_to_do(rig: Rig, log: Recorder) -> None:
-    """A `skip_empty` apply that delivered nothing: SKIPPED, not OK with zero rows. rivet 0.32.0's apply summary
-    carries no `skip_reason`, so the headline gives none."""
+    """A `skip_empty` apply that delivered nothing: SKIPPED, not OK with zero rows. the package does not read an
+    apply entry's `skip_reason`, so the headline gives none."""
     rig.scenario(apply={"summary": summary("users", 0, 0, "users_1", "skipped")})
     payload, _ = rig.run(rig.operator(RivetApplyOperator, export="users"))
     assert payload["units"][0]["status"] == "skipped"
@@ -410,9 +393,7 @@ SUCCESS_PATHS = {
         RivetLoadOperator,
         {"export": "orders", "table": "t"},
         {
-            "load": {
-                "summary": {"run_id": "l1", "per_table": [{"export": "orders", "table": "t", "status": "loaded", "rows": 3}]}
-            },
+            "load": {"summary": {"run_id": "l1", "per_table": [load_row("orders", "t", rows=3)]}},
         },
     ),
     "compact": (RivetCompactOperator, {"export": "orders"}, {}),
@@ -423,7 +404,7 @@ SUCCESS_PATHS = {
             "compact": {
                 "summary": {
                     "run_id": "c",
-                    "per_table": [{"export": "orders", "table": "t", "status": "skipped", "skip_reason": "nothing"}],
+                    "per_table": [load_row("orders", "t", "skipped", skip_reason="nothing")],
                 }
             },
         },
@@ -474,12 +455,12 @@ def test_a_failure_headline_is_coloured_red(rig: Rig, log: Recorder) -> None:
 
 
 def test_every_degradation_reads_as_words_without_a_red_keyword() -> None:
-    """Each degradation key has its note (or is a missing flag listed by key); no note holds a red keyword."""
+    """Each degradation key has its note; no note holds a red keyword."""
     from airflow_provider_rivet import tasklog
 
-    assert set(tasklog.NOTES) | set(tasklog.LACKS) == set(DEGRADATIONS)
+    assert set(tasklog.NOTES) == set(DEGRADATIONS)
     words = red_keywords()
-    texts = [t for t in tasklog.NOTES.values() if t] + list(tasklog.LACKS)
+    texts = [t for t in tasklog.NOTES.values() if t]
     assert not [t for t in texts if any(word in t.lower() for word in words)]
 
 
@@ -501,8 +482,7 @@ LOAD_BLOCK = "load:\n  target: bigquery\n  project: rivet-data-tool\n  dataset: 
 def test_golden_load_names_the_warehouse_table_rivet_wrote(rig: Rig, log: Recorder) -> None:
     """Owner, 2026-10-20: the headline names the table, fully qualified, for debugging; rivet's own name wins."""
     rig.config.write_text(CONFIG + LOAD_BLOCK)
-    row = {"export": "orders", "table": "t", "status": "loaded", "rows": 50, "target": "rivet-data-tool.demo_cdc_1432.t"}
-    row["buffer"] = None
+    row = load_row("orders", "t", rows=50, target="rivet-data-tool.demo_cdc_1432.t")
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
     rig.run(rig.operator(RivetLoadOperator, export="orders", table="t"))
     assert log.shown()[0] == "INFO rivet load orders table t → rivet-data-tool.demo_cdc_1432.t: OK: 50 rows in 3.0 s (run l1)"
@@ -511,34 +491,31 @@ def test_golden_load_names_the_warehouse_table_rivet_wrote(rig: Rig, log: Record
 
 
 def test_golden_compact_names_the_buffer_rivet_merged_into_the_base(rig: Rig, log: Recorder) -> None:
-    row = {"export": "orders", "table": "t", "status": "compacted", "target": "p.d.t", "buffer": "p.d.t__changes"}
+    row = load_row("orders", "t", "compacted", target="p.d.t", buffer="p.d.t__changes")
     rig.scenario(compact={"summary": {"run_id": "c1", "per_table": [row]}})
     rig.run(rig.operator(RivetCompactOperator, export="orders", table="t"))
-    assert log.shown()[0] == "INFO rivet compact orders table t → p.d.t__changes into p.d.t: OK in 3.0 s (run c1)"
+    assert log.shown()[0] == "INFO rivet compact orders table t → p.d.t__changes into p.d.t: OK: 0 rows in 3.0 s (run c1)"
 
 
 def test_golden_incremental_load_names_the_log_the_config_names(rig: Rig, log: Recorder) -> None:
-    """`users` is incremental: its load appends to `users__changes`, which the view `users` reads."""
+    """`users` is incremental: its load appends to `users__changes`, which the view `users` reads. rivet's result named no
+    table (`per_table` empty), so the config's `load:` names it."""
     rig.config.write_text(CONFIG + LOAD_BLOCK)
-    rig.scenario(
-        load={"summary": {"run_id": "l1", "per_table": [{"export": "users", "table": "users", "status": "loaded", "rows": 2}]}},
-    )
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": []}})
     rig.run(rig.operator(RivetLoadOperator, export="users", table="users"))
     assert log.shown()[0] == (
-        "INFO rivet load users table users → rivet-data-tool.demo_cdc.users__changes (from config): OK: 2 rows in 3.0 s (run l1)"
+        "INFO rivet load users table users → rivet-data-tool.demo_cdc.users__changes (from config): OK in 3.0 s"
     )
 
 
 def test_golden_compact_names_the_buffer_and_base_the_config_names(rig: Rig, log: Recorder) -> None:
-    """A binary whose result has no `target`: the config's `load:` names it, marked as such."""
+    """A result that names no table: the config's `load:` names it, marked as such."""
     rig.config.write_text(CONFIG + LOAD_BLOCK)
-    rig.scenario(
-        compact={"summary": {"run_id": "c1", "per_table": [{"export": "orders", "table": "t", "status": "compacted"}]}},
-    )
+    rig.scenario(compact={"summary": {"run_id": "c1", "per_table": []}})
     rig.run(rig.operator(RivetCompactOperator, export="orders", table="t"))
     assert log.shown()[0] == (
         "INFO rivet compact orders table t → rivet-data-tool.demo_cdc.t__changes into rivet-data-tool.demo_cdc.t "
-        "(from config): OK in 3.0 s (run c1)"
+        "(from config): OK in 3.0 s"
     )
 
 

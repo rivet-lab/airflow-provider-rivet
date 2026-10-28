@@ -64,10 +64,9 @@ plan ──> apply: [a] [b] ─> wave_2_done ─> [big] ─> after_big ─> [hug
 - `extract="run"` uses `rivet run -e X` instead of plan + apply.
 - **Compact tasks are created only for the exports named in `compact_exports`.** Whether a table
   compacts depends on the load mode, `load.layout` and the warehouse, which only rivet resolves
-  (`full` never compacts; see ADR-0039 D3 for the skip reasons), and today's binary cannot report
-  `skipped` in a form a machine can read. A task that could only skip would show green having done
-  nothing. Once `rivet compact` reports per-table status, a named export that rivet skips shows as
-  an Airflow skip with its `skip_reason` in XCom.
+  (`full` never compacts; see ADR-0039 D3 for the skip reasons). A named export that rivet skips
+  shows as an Airflow skip with its `skip_reason` in XCom; an export left out of `compact_exports`
+  has no compact task to show it.
 - `load=False` drops the load group (a config with no `load:` block).
 
 ### CDC: `build_cdc_dag`

@@ -15,15 +15,13 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .capabilities import DEGRADATIONS
 from .preflight import SETUP_GUIDE
 from .result import BUSY, BUSY_CODES, REFUSED, STOPPED
 
 clock = time.monotonic  # replaced by tests, so a golden log has fixed durations
 Write = Callable[[int, str], None]
 
-# What a degradation that is not a missing flag means, in words an operator reads; a missing flag is listed by its key
-# under "this binary lacks".
+# What a degradation means, in words an operator reads.
 NOTES = {
     "per_unit_error": "several units failed and rivet gave one shared failure object for all of them",
     "stop_reason": "this binary reports no CDC stop reason: a max_events stop reads like caught up",
@@ -32,9 +30,7 @@ NOTES = {
     "result_missing": "rivet wrote no summary file: units are taken from its exit status, counts are unknown",
     "result_malformed": "part of rivet's result did not have the contract's shape and was ignored (XCom `degraded`)",
     "exit_zero_failed_unit": "rivet exited 0 while its summary reports a failed unit",
-    "load_digest": "rivet's load / compact result has no per-table digest: no counts of what the warehouse did, no job ids",
 }
-LACKS = sorted(key for key, detect in DEGRADATIONS.items() if detect == "flag")
 # A single step's line is shown only when the task took this much longer than the step (a lock wait, a slow preflight).
 STEP_SLACK = 1.0
 UNIT_WORD = {"load": "table", "compact": "table"}
@@ -328,19 +324,14 @@ class TaskLog:
         return lines
 
     def _notes(self, payload: dict[str, Any]) -> list[tuple[int, str]]:
-        """What the operator should know: missing flags, single-host state, workarounds; WARNING when they must act."""
+        """What the operator should know: single-host state, workarounds; WARNING when they must act."""
         degraded = [d for d in payload.get("degraded") or [] if isinstance(d, str)]
         warnings = [e for e in self.events if e.get("event") == "rivet.warning"]
         notes: list[tuple[int, str]] = []
-        lacks = [d for d in degraded if d in LACKS]
-        if lacks:
-            # Flags no released rivet may have yet: nothing for the operator to do, so not on every task's INFO (#62).
-            notes.append((logging.DEBUG, f"this binary lacks: {', '.join(lacks)} (the operator works around them)"))
         if any(w.get("warning") == "sqlite_single_host" for w in warnings):
             notes.append((logging.INFO, f"SQLite state is single-host — see {SETUP_GUIDE}"))
         for key in degraded:
-            if key not in LACKS:
-                notes.append((logging.INFO, NOTES.get(key) or f"degraded: {key}"))
+            notes.append((logging.INFO, NOTES.get(key) or f"degraded: {key}"))
         for warning in warnings:
             if warning.get("warning") != "sqlite_single_host":
                 notes.append((logging.WARNING, str(warning.get("text"))))

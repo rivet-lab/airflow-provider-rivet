@@ -96,28 +96,6 @@ def test_d08_a_version_probe_that_times_out_is_refused_without_retry(rig: Rig, m
     assert "--version" in text
 
 
-@pytest.mark.parametrize(
-    ("cls", "sub", "how"),
-    [
-        pytest.param(RivetRunOperator, "run", "exit", id="run_help_exits_non_zero"),
-        pytest.param(RivetRunOperator, "run", "hang", id="run_help_times_out"),
-        pytest.param(RivetLoadOperator, "load", "exit", id="load_help_exits_non_zero"),
-    ],
-)
-def test_c1a_a_help_probe_that_fails_after_the_preflight_is_refused_without_retry(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch, cls: Any, sub: str, how: str
-) -> None:
-    """C1-a: `rivet <sub> --help` is probed lazily while argv is built; its RuntimeError or TimeoutExpired left the
-    operator raw, retried, with no XCom."""
-    # Long enough for the fake's `--version` to answer on a loaded host (0.5 s did not, at load 130), far below its
-    # 90 s hang of `--help`.
-    monkeypatch.setattr(capabilities, "PROBE_TIMEOUT", 10, raising=False)
-    rig.scenario(probe_broken={sub: how})
-    code, text = refusal(rig, rig.operator(cls, export="orders"))
-    assert code == "RIVET_AIRFLOW_BINARY_MISSING"
-    assert f"{sub} --help" in text
-
-
 # ---- `-p` is a flag of rivet run / plan / check only (0.32.2): the others refuse it as clap does ----
 
 PARAM_SPELLINGS = [["-p", "day=2026-10-20"], ["-pday=2026-10-20"], ["--param", "day=2026-10-20"], ["--param=day=2026-10-20"]]
