@@ -67,10 +67,9 @@ def selects_state(env: Mapping[str, str]) -> bool:
 def sqlite_state_file(env: Mapping[str, str], state_dir: Path) -> Path:
     """The SQLite file rivet opens for a config copied into `state_dir`: the `sqlite:` path of `RIVET_STATE_URL` (an
     absolute path as written, a relative one against the config's directory), else `.rivet_state.db` there."""
-    url = env.get(STATE_URL_ENV, "")
-    if not url.startswith(SQLITE_STATE_SCHEME):
+    if STATE_URL_ENV not in env or not env[STATE_URL_ENV].startswith(SQLITE_STATE_SCHEME):
         return state_dir / STATE_DB_NAME
-    path = url.removeprefix(SQLITE_STATE_SCHEME).removeprefix("//")
+    path = env[STATE_URL_ENV].removeprefix(SQLITE_STATE_SCHEME).removeprefix("//")
     return state_dir / path
 
 
