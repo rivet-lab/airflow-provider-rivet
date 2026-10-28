@@ -170,6 +170,7 @@ class Reading:
                     files=self.malformed(entry.get("files"), int),
                     stop_reason=self.malformed(entry.get("stop_reason"), str),
                     error=unit_error,
+                    skip_reason=self.malformed(entry.get("skip_reason"), str),
                 )
             )
         return self.settled(units)
@@ -181,6 +182,8 @@ class Reading:
         one the task asked for when the result has none."""
         rows = self.entries(doc, "per_table")
         if not rows:
+            if error is None and isinstance(doc, dict):
+                self.degraded.add("result_malformed")  # a result that came and names no table: "done" is the task's guess
             status = "failed" if error else DONE_WORD[self.command]
             return [self.without_row(UnitResult(export, table, status=status, error=error))]
         units = []
