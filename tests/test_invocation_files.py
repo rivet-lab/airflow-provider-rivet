@@ -220,6 +220,9 @@ def test_a_long_config_name_is_cut_by_bytes_so_the_copy_and_its_temp_file_fit_th
     first, second = tmp_path / ("a" * 300 + "1.yaml"), tmp_path / ("a" * 300 + "2.yaml")
     assert invocation.copy_name(first) != invocation.copy_name(second)
     assert invocation.copy_name(tmp_path / ("c" + "." + "x" * 40)).endswith(".yaml"), "an extension this long is none"
+    for length, kept in ((15, True), (16, False)):  # the extension with its dot is 16 bytes, then 17
+        extension = "." + "x" * length
+        assert invocation.copy_name(tmp_path / f"c{extension}").endswith(extension if kept else ".yaml"), length
     short = tmp_path / "rivet.yaml"
     assert invocation.copy_name(short) == f"rivet.{hashlib.sha256(str(short).encode()).hexdigest()[:8]}.yaml", "unchanged"
 

@@ -163,6 +163,7 @@ def test_an_odbc_ini_that_cannot_be_read_is_not_a_missing_data_source(tmp_path: 
     with pytest.raises(OdbcFileUnavailable) as absent:
         odbc_connection(str(tmp_path / "absent.ini"), "shop")
     assert absent.value.reason == "does not exist on this worker"
+    assert str(absent.value) == "does not exist on this worker"
     with pytest.raises(OdbcFileUnavailable) as directory:
         odbc_connection(str(tmp_path), "shop")
     assert directory.value.reason == "cannot be read (Is a directory)"
@@ -686,10 +687,18 @@ def test_a_file_whose_first_line_of_substance_is_no_header_names_the_file(tmp_pa
     for unreadable in (b"Driver = MySQL\n[shop]\nServer = h\n", b"; c\n\n  [shop]\nServer = h\n", b"stray\n[shop]\n"):
         path.write_bytes(unreadable)
         assert "is not a readable odbc.ini: line" in str(refusal(lambda: odbc_connection(str(path), "shop")))
-    path.write_bytes(b"; c\n\n  [shop]\nServer = h\n")
-    assert f"{path} is not a readable odbc.ini: line 3 is neither a comment nor inside a [section]" in str(
-        refusal(lambda: odbc_connection(str(path), "shop"))
+    path.write_bytes(b"# c\n; d\n\n  [shop]\nServer = h\n")
+    refused = refusal(lambda: odbc_connection(str(path), "shop"))
+    assert refused.code == "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED"
+    assert str(refused).removeprefix(f"[{refused.code}] ") == (
+        f"{path} is not a readable odbc.ini: line 4 is neither a comment nor inside a [section], "
+        "and unixODBC finds no data source in such a file"
     )
+    path.write_bytes(b"# c\n; d\n[shop]\nDriver = MySQL\nServer = h\n")
+    assert odbc_connection(str(path), "shop").host == "h", "a `#` or `;` comment may come first"
+    path.write_bytes(b"[a\\udcffb]\nDriver = MySQL\nServer = h\n")
+    assert odbc_connection(str(path), "a\udcffb").host == "h", "a lone surrogate in the name reads as its escape"
+    assert odbc_connection(str(path), "c\udcffd") is None
     # Tolerated by unixODBC: a line with no `=`, an empty key and `[]` inside or between sections.
     path.write_bytes(b"; c\n[]\nstray\n[shop]\nno equals\n= v\nDriver = MySQL\nServer = h\n[x]\nstray\n")
     assert odbc_connection(str(path), "shop").host == "h"

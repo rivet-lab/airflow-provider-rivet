@@ -340,22 +340,24 @@ def _param(value: Any) -> str:
 
 
 # The databases rivet reads out of the URL path as written: its SQL Server and Oracle parsers never percent-decode it
-# (`parse_mssql_url`, `parse_oracle_url`), while the PostgreSQL, MySQL and MongoDB drivers do.
-_RAW_PATH = {"sqlserver": "SQL Server", "oracle": "Oracle"}
+# (`parse_mssql_url`, `parse_oracle_url`), while the PostgreSQL, MySQL and MongoDB drivers do. Each has the characters
+# its parser reads as the end of the name or of the credentials.
+_RAW_PATH = {"sqlserver": ("SQL Server", ("@", "?", "#")), "oracle": ("Oracle", ("@", "?", "#", "/"))}
 
 
 def _database_path(scheme: str, database: str, conn_id: str) -> str:
     """The database as the URL path of `scheme`: percent-encoded where the driver decodes it, as written where rivet
-    reads it itself, and refused when a character of it would end the name or the credentials there (`@` `?` `#`,
-    and `/` for Oracle): rivet would connect to another database, or refuse with a wrong cause."""
+    reads it itself, and refused when a character of it would end the name or the credentials there: rivet would
+    connect to another database, or refuse with a wrong cause."""
     if scheme not in _RAW_PATH:
         return _quote(database)
-    for char in "@?#" + ("/" if scheme == "oracle" else ""):
+    engine, cut = _RAW_PATH[scheme]
+    for char in cut:
         if char in database:
             raise PreflightRefusal(
                 UNSUPPORTED,
-                f"connection `{conn_id}` names the {_RAW_PATH[scheme]} database `{database}`, which holds `{char}`: rivet's "
-                f"{_RAW_PATH[scheme]} URL reads that character as the end of the name or of the credentials, so it cannot "
+                f"connection `{conn_id}` names the {engine} database `{database}`, which holds `{char}`: rivet's "
+                f"{engine} URL reads that character as the end of the name or of the credentials, so it cannot "
                 "carry this name; rename the database",
             )
     return database
@@ -463,21 +465,22 @@ def _odbc_section(path: str, name: str) -> dict[str, str] | None:
             "does not exist on this worker" if isinstance(exc, FileNotFoundError) else f"cannot be read ({exc.strerror})"
         ) from None
     wanted = name.encode(errors="backslashreplace").lower()
+    lines = [
+        (number, line)
+        for number, line in enumerate(data.splitlines(), 1)
+        if line.strip() and not line.strip().startswith((b";", b"#"))
+    ]
+    if lines and not lines[0][1].startswith(b"["):
+        # unixODBC reads no data source at all from a file whose first line of substance is not a header at column 0.
+        raise PreflightRefusal(
+            UNSUPPORTED,
+            f"{path} is not a readable odbc.ini: line {lines[0][0]} is neither a comment nor inside a [section], "
+            "and unixODBC finds no data source in such a file",
+        )
     found: dict[bytes, bytes] | None = None
-    opened = False  # a header has been read
-    for number, line in enumerate(data.splitlines(), 1):
+    for _, line in lines:
         body = line.strip()
-        if not body or body.startswith((b";", b"#")):
-            continue
-        if not opened and not line.startswith(b"["):
-            # unixODBC reads no data source at all from a file whose first line of substance is not a header at column 0.
-            raise PreflightRefusal(
-                UNSUPPORTED,
-                f"{path} is not a readable odbc.ini: line {number} is neither a comment nor inside a [section], "
-                "and unixODBC finds no data source in such a file",
-            )
         if body.startswith(b"["):  # once a section is open, an indented or unclosed `[name` is a header too
-            opened = True
             if found is not None:
                 break
             found = {} if body[1:].partition(b"]")[0].strip().lower() == wanted else None
@@ -608,7 +611,7 @@ def resolve_database(ref: Mapping[str, Any], lookup: Callable[[str], Any]) -> tu
         try:
             conn, source = odbc_connection(odbc_ini, dsn), dsn
         except OdbcFileUnavailable as exc:
-            raise missing_connection(conn_id, odbc_ini, dsn, exc.reason) from None
+            raise missing_connection(conn_id, odbc_ini, unreadable=exc.reason) from None
     if conn is None:
         raise missing_connection(conn_id, odbc_ini, dsn)
     return with_database(conn, ref.get("database")), source
