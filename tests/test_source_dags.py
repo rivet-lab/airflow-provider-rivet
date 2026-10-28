@@ -505,7 +505,7 @@ def test_a_batch_export_whose_layout_is_base_buffer_merges_what_it_loads(tmp_pat
     assert (compact.export, compact.table, compact.upstream_task_ids) == ("orders", None, {"load.orders"})
 
 
-@pytest.mark.parametrize("fixture", ["init_oracle_batch_0.32.1", "init_mysql_batch_0.31.0", "init_mssql_batch_0.31.0"])
+@pytest.mark.parametrize("fixture", ["init_oracle_batch", "init_mysql_batch", "init_mssql_batch"])
 def test_the_batch_config_rivet_init_writes_gets_a_compaction_per_export(tmp_path: Path, fixture: str) -> None:
     """The gate's real `rivet init` output (gate/tests/fixtures): incremental exports and `layout: base_buffer`."""
     text = (Path(__file__).parent.parent / "gate" / "tests" / "fixtures" / f"{fixture}.yaml").read_text()

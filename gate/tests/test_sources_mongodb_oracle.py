@@ -1,7 +1,7 @@
 """The MongoDB and Oracle source legs: what the gate reads from `rivet init`'s answers, the known limits it holds init
 to, and the readers that compare the warehouse with the source.
 
-The fixtures are init's output on the gate's MongoDB and Oracle scenarios (rivet 0.32.1), the bucket and dataset renamed.
+The fixtures are init's output on the gate's MongoDB and Oracle scenarios (at MIN_RIVET_VERSION), the bucket and dataset renamed.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from gate import sources, warehouse
 from gate.sources import MONGODB, ORACLE, limit_holds, mongo_canonical, mongo_id, read_config, warehouse_document
 
 FIXTURES = Path(__file__).parent / "fixtures"
-#: What rivet 0.32.1's `init --mode incremental` answers for a MongoDB source (stdout and stderr).
+#: What rivet's `init --mode incremental` answers for a MongoDB source (stdout and stderr).
 MONGO_BATCH_REFUSAL = (
     "Error: [RIVET_CONFIG_SOURCE_MODE_UNSUPPORTED] init: --mode incremental: source type 'Mongo' supports `mode: full` "
     "(batch) and `mode: cdc` (change streams) (got `mode: incremental`). MongoDB has no SQL, so chunked / incremental / "
@@ -31,14 +31,14 @@ MONGO_BATCH_REFUSAL = (
 
 
 def test_oracle_init_names_its_batch_exports_upper_case_and_the_gate_matches_them() -> None:
-    shape = read_config((FIXTURES / "init_oracle_batch_0.32.1.yaml").read_text(), list(ORACLE.tables))
+    shape = read_config((FIXTURES / "init_oracle_batch.yaml").read_text(), list(ORACLE.tables))
     assert shape == {"exports": ["GATE_CUSTOMERS", "GATE_ORDERS"], "streams": [], "extra": []}
 
 
 def test_mongodb_init_writes_one_cdc_export_and_dag_per_collection() -> None:
-    shape = read_config((FIXTURES / "init_mongodb_cdc_0.32.1.yaml").read_text(), list(MONGODB.tables))
+    shape = read_config((FIXTURES / "init_mongodb_cdc.yaml").read_text(), list(MONGODB.tables))
     assert (shape["exports"], shape["extra"]) == ([], [])
-    # rivet 0.32.1 writes the collections in listCollections order, which differs between two inits of one database.
+    # init writes the collections in listCollections order, which differs between two inits of one database.
     assert sorted(shape["streams"], key=lambda s: s["name"]) == [
         {"name": "gate_customers_cdc", "tables": ["gate_customers"], "dag": "_cdc_gate_customers_cdc"},
         {"name": "gate_orders_cdc", "tables": ["gate_orders"], "dag": "_cdc_gate_orders_cdc"},
@@ -57,7 +57,7 @@ def test_the_mongodb_batch_limit_holds_only_while_init_refuses_with_its_code() -
 
 def test_the_oracle_cdc_limit_holds_only_while_init_writes_no_load_block() -> None:
     limit = ORACLE.limits["cdc"]
-    text = (FIXTURES / "init_oracle_cdc_0.32.1.yaml").read_text()
+    text = (FIXTURES / "init_oracle_cdc.yaml").read_text()
     tables = list(ORACLE.tables)
     assert limit_holds(limit, 0, "", text, tables) == []
     doc = yaml.safe_load(text)
@@ -192,7 +192,7 @@ def test_a_limit_kind_runs_init_without_failing_the_leg_and_builds_no_dag(tmp_pa
         if "airflow-worker" in args:
             out = Path(str(stand.rivet_dir) + args[-1].removeprefix("/opt/rivet"))
             if "cdc" in args:
-                out.write_text((FIXTURES / "init_mongodb_cdc_0.32.1.yaml").read_text())
+                out.write_text((FIXTURES / "init_mongodb_cdc.yaml").read_text())
                 return SimpleNamespace(returncode=0, stdout="Config written", stderr="")
             assert check is False, "a kind with a known limit must not fail the leg on init's refusal"
             return SimpleNamespace(returncode=1, stdout="", stderr=MONGO_BATCH_REFUSAL)

@@ -16,7 +16,7 @@ exports:
     mode: cdc
     format: parquet
     cdc:
-      checkpoint: ./cdc/GATE_CUSTOMERS.ckpt  # resume position; keep it (semantics of omitting
+      checkpoint: ./cdc/rivet_GATE_CUSTOMERS.ckpt  # resume position; keep it (semantics of omitting
       # differ per engine — see cdc.md)
       until_current: true  # drain to the current log end and exit (good for a scheduler)
       initial: snapshot  # first run: anchor, then read the whole table as the baseline; later runs
@@ -26,15 +26,15 @@ exports:
     destination:
       type: gcs
       bucket: rivet-afgate-bucket
-      prefix: exports/GATE_CUSTOMERS_cdc/
+      prefix: exports/rivet/GATE_CUSTOMERS_cdc/
   - name: GATE_ORDERS_cdc
     # change data capture — reads the transaction log (grants: docs/reference/cdc.md)
     table: RIVET.GATE_ORDERS
     mode: cdc
     format: parquet
     cdc:
-      checkpoint: ./cdc/GATE_ORDERS.ckpt  # resume position; keep it (semantics of omitting differ
-      # per engine — see cdc.md)
+      checkpoint: ./cdc/rivet_GATE_ORDERS.ckpt  # resume position; keep it (semantics of omitting
+      # differ per engine — see cdc.md)
       until_current: true  # drain to the current log end and exit (good for a scheduler)
       initial: snapshot  # first run: anchor, then read the whole table as the baseline; later runs
       # take only changes
@@ -43,7 +43,7 @@ exports:
     destination:
       type: gcs
       bucket: rivet-afgate-bucket
-      prefix: exports/GATE_ORDERS_cdc/
+      prefix: exports/rivet/GATE_ORDERS_cdc/
     columns:
       AMOUNT: decimal(12,2)
 

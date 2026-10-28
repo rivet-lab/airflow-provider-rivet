@@ -1,7 +1,7 @@
 """The S3 destination leg: what it reads from `rivet init`'s configs, the stand it lays out, and its oracles, each RED
 on the mutant it exists to catch (the Parquet in MinIO, ClickHouse read back, the missing-bucket refusal).
 
-The fixtures are init's output (rivet 0.32.1) on the gate's postgres scenario, as the leg runs it.
+The fixtures are init's output (at MIN_RIVET_VERSION) on the gate's postgres scenario, as the leg runs it.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ TABLES = list(destinations.TABLES)
 
 @pytest.mark.parametrize("kind", ["batch", "cdc", "ch_batch", "ch_cdc", "cleanup"])
 def test_the_configs_init_writes_have_the_shape_the_leg_runs(kind: str) -> None:
-    text = (FIXTURES / f"init_s3_{kind}_0.32.1.yaml").read_text()
+    text = (FIXTURES / f"init_s3_{kind}.yaml").read_text()
     shape = read_config(text, TABLES)
     assert check_shape(kind, shape) == []
     doc = yaml.safe_load(text)
@@ -52,10 +52,10 @@ def test_the_configs_init_writes_have_the_shape_the_leg_runs(kind: str) -> None:
 
 
 def test_a_config_init_wrote_otherwise_fails_the_leg() -> None:
-    cdc = read_config((FIXTURES / "init_s3_cdc_0.32.1.yaml").read_text(), TABLES)
+    cdc = read_config((FIXTURES / "init_s3_cdc.yaml").read_text(), TABLES)
     assert check_shape("cdc", {**cdc, "streams": []}), "no stream"
     assert check_shape("cdc", {**cdc, "extra": ["orders_archive"]}), "an export of another table"
-    batch = read_config((FIXTURES / "init_s3_batch_0.32.1.yaml").read_text(), TABLES)
+    batch = read_config((FIXTURES / "init_s3_batch.yaml").read_text(), TABLES)
     assert check_shape("batch", {**batch, "exports": ["gate_orders"]}), "a table missing"
     assert check_shape("batch", {**batch, "streams": cdc["streams"]}), "a stream in a batch config"
 
@@ -78,10 +78,9 @@ def test_init_gets_the_bucket_and_region_and_no_url_and_clickhouse_only_for_the_
 
 
 def test_the_cdc_parts_are_read_under_the_prefix_init_wrote() -> None:
-    # rivet 0.32.1: `cdc/`; rivet #664: `<stem>/cdc/`. Mutant: the root read as a fixed "" (the parts of a #664 config
-    # are not found, so every CDC cell grades nothing).
-    assert destinations.cdc_root((FIXTURES / "init_s3_cdc_0.32.1.yaml").read_text()) == ""
-    text = (FIXTURES / "init_s3_cdc_0.32.1.yaml").read_text().replace("prefix: cdc/", "prefix: s3_cdc/cdc/")
+    # init writes `<stem>/cdc/`. Mutant: the root read as a fixed "" (the parts are not found, so every CDC cell grades
+    # nothing).
+    text = (FIXTURES / "init_s3_cdc.yaml").read_text()
     assert destinations.cdc_root(text) == "s3_cdc/"
     with pytest.raises(ValueError, match="ending in `cdc/`"):
         destinations.cdc_root(text.replace("prefix: s3_cdc/cdc/", "prefix: changes/"))

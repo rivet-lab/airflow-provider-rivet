@@ -94,9 +94,6 @@ class Engine:
     tls: str = "disable"
     #: Appended to the root password where the server's password policy wants more than hex digits.
     root_suffix: str = ""
-    #: A CDC capture instance under a name other than the engine's default, and the first rivet whose `init` reads it
-    #: from the catalog (an older one writes the default name, so the gate gives it the default name).
-    capture_instance: tuple[str, str, tuple[int, int, int]] | None = None
     #: The database (Oracle: the service name) the URL and the Connection name.
     database: str = "rivet"
     #: The key column of every table (compared by name, lower-case).
@@ -298,7 +295,7 @@ INSERT INTO dbo.gate_orders (customer_id, amount, status, placed_at, payload)
   FROM g;
 EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'gate_customers', @role_name = NULL;
 EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'gate_orders', @role_name = NULL,
-  @capture_instance = N'{orders_instance}';
+  @capture_instance = N'gate_orders_v2';
 """,
     # The last statement waits until the Agent's capture job has read the DELETE, so a CDC run right after sees every
     # change (`cdc.lsn_time_mapping` is filled by the capture job; its times are DATETIME, 3 ms ticks).
@@ -328,7 +325,6 @@ IF @waited >= 180 THROW 50000, 'the CDC capture job did not read the changes wit
     },
     json_select="SET NOCOUNT ON; SELECT {cols} FROM rivet.dbo.{table} FOR JSON PATH, INCLUDE_NULL_VALUES;",
     json_kinds={"updated_at": "ts", "placed_at": "ts", "ext_id": "uuid", "payload": "bytes", "amount": "money"},
-    capture_instance=("gate_orders", "gate_orders_v2", (0, 32, 0)),
 )
 MONGODB = Engine(
     name="mongodb",
@@ -565,8 +561,8 @@ class SourceLeg:
         #: Per DAG, the tasks a documented limit of rivet stops every cycle (their run then ends `failed`).
         self.refused: dict[str, list[str]] = {}
         tag = f"{cloud.tag}-{stack.replace('.', '')}"
-        # A bucket per config: init's prefixes are fixed, and SQL Server's CDC exports write under `exports/<table>/cdc/`,
-        # inside the batch export's `exports/<table>/`, which `rivet load` lists recursively as its own runs.
+        # A bucket per config: init's prefixes are fixed (`exports/<table>/` for a batch export and for the recipes beside
+        # a MySQL stream), so two configs in one bucket would list each other's runs.
         self.buckets = {k: f"rivet-afgate-{tag}-{engine.name}-{k}" for k in ("batch", "cdc")}
         self.datasets = {k: f"{cloud.dataset(stack)}_{engine.name}_{k}" for k in ("batch", "cdc")}
         #: The bucket and dataset of the config made beside a database of the same table names (made only then).
@@ -637,7 +633,7 @@ class SourceLeg:
             (stand.source_state_host / leg_sub(stand, self.engine.name, kind)).mkdir(parents=True, exist_ok=True)
         self.wait_ready(stand)
         self.sql(stand, self.engine.setup.replace("{password}", getattr(stand.secrets, self.engine.name)))
-        self.sql(stand, self.engine.seed.replace("{orders_instance}", self.capture_instance(stand)))
+        self.sql(stand, self.engine.seed)
         for kind, ds in self.datasets.items():
             sh(["gcloud", "storage", "buckets", "create", f"gs://{self.buckets[kind]}", f"--project={self.cloud.project}",
                 f"--location={self.cloud.location}", "--uniform-bucket-level-access"], timeout=300)  # fmt: skip
@@ -821,18 +817,6 @@ class SourceLeg:
     def cycle_tasks(self) -> dict[str, list[str]]:
         """The rivet tasks of the DAGs every cycle runs (not the hot-ALTER DAG, which runs once after the cycles)."""
         return {dag: self.tasks[dag] for dag in self.dags}
-
-    def capture_instance(self, stand: Any) -> str:
-        """The capture instance of the engine's renamed table: its own name when this rivet's init reads the catalog."""
-        if self.engine.capture_instance is None:
-            return ""
-        table, name, since = self.engine.capture_instance
-        shown = stand.compose("exec", "-T", "airflow-worker", "rivet", "--version").stdout
-        if rivet_version(shown) >= since:
-            return name
-        default = f"dbo_{table}"
-        print(f"CAPTURE {self.engine.name} {table}: {default} ({shown.strip()} writes the default name)", flush=True)
-        return default
 
     def apply_changes(self, stand: Any) -> None:
         self.sql(stand, self.engine.changes)
@@ -1683,14 +1667,6 @@ def warehouse_table(table: str) -> str:
     """The BigQuery table rivet loads a source table into: a schema-qualified one is folded, `dbo.t` -> `dbo_t`
     (rivet's `warehouse_table_name`, src/load/plan.rs)."""
     return table.replace(".", "_")
-
-
-def rivet_version(shown: str) -> tuple[int, ...]:
-    """`rivet 0.31.0 (abc)` -> (0, 31, 0)."""
-    found = re.search(r"\brivet (\d+)\.(\d+)\.(\d+)", shown)
-    if not found:
-        raise ValueError(f"no rivet version in {shown!r}")
-    return tuple(int(x) for x in found.groups())
 
 
 FRACTION = re.compile(r"(\.\d{6})\d+")

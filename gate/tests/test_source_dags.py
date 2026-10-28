@@ -1,7 +1,7 @@
 """`--source-dags`: the sources named in the odbc.ini (or a Connection) the stand mounts, the calls the DAG file makes,
 and the oracles of the cells the mode adds (init, shape, the ODBC refusal, a refused stream, Oracle CDC parts).
 
-The configs are init's output on the gate's scenarios (fixtures/, rivet 0.31.0 and 0.32.1, bucket and dataset renamed).
+The configs are init's output on the gate's scenarios (fixtures/, recorded at MIN_RIVET_VERSION, bucket and dataset renamed).
 """
 
 from __future__ import annotations
@@ -148,12 +148,12 @@ def test_the_dag_file_passes_each_call_to_build_source_dags_as_written(tmp_path:
 
 
 def test_the_shape_is_one_group_per_stream_where_init_writes_a_stream_per_table() -> None:
-    mssql = fixture("init_mssql_cdc_0.31.0.yaml")
+    mssql = fixture("init_mssql_cdc.yaml")
     want = expected_tasks(mssql, "cdc")
     assert want == sorted(
         ["watcher"]
-        + [f"{s}.{g}{t}" for s in ("gate_customers", "gate_orders") for g, t in (("run", ""),)]
-        + [f"{s}.{g}.dbo_{s}" for s in ("gate_customers", "gate_orders") for g in ("load", "compact")]
+        + [f"{s}_cdc.run" for s in ("gate_customers", "gate_orders")]
+        + [f"{s}_cdc.{g}.dbo_{s}" for s in ("gate_customers", "gate_orders") for g in ("load", "compact")]
     )
     assert shape_problems(want, mssql, "cdc", grouped=True) == []
     assert shape_problems(["init"], mssql, "cdc", grouped=True), "the DAG was never rebuilt"
@@ -164,7 +164,7 @@ def test_the_shape_is_one_group_per_stream_where_init_writes_a_stream_per_table(
 
 
 def test_mysql_keeps_one_stream_at_the_top_and_oracle_cdc_has_no_load_or_compaction() -> None:
-    mysql = fixture("init_mysql_cdc_0.31.0.yaml")
+    mysql = fixture("init_mysql_cdc.yaml")
     assert expected_tasks(mysql, "cdc") == sorted(
         ["watcher", "run", "load.gate_customers", "load.gate_orders", "compact.gate_customers", "compact.gate_orders"]
     ), "the batch recipes beside the stream are no tasks of a CDC DAG"
@@ -175,9 +175,9 @@ def test_mysql_keeps_one_stream_at_the_top_and_oracle_cdc_has_no_load_or_compact
     assert "compact.gate_orders" in expected_tasks(unwritten, "cdc"), "an unwritten layout of a `backfill:` stream is a base"
     changelog = yaml.safe_dump({**doc, "load": {**doc["load"], "layout": "log_view"}})
     assert "compact.gate_orders" not in expected_tasks(changelog, "cdc"), "a change log has no buffer to merge"
-    oracle_cdc = fixture("init_oracle_cdc_0.32.1.yaml")
+    oracle_cdc = fixture("init_oracle_cdc.yaml")
     assert expected_tasks(oracle_cdc, "cdc") == ["GATE_CUSTOMERS_cdc.run", "GATE_ORDERS_cdc.run", "watcher"]
-    batch = fixture("init_oracle_batch_0.32.1.yaml")
+    batch = fixture("init_oracle_batch.yaml")
     assert expected_tasks(batch, "batch") == sorted(
         [f"{g}.GATE_{t}" for g in ("apply", "load", "compact") for t in ("CUSTOMERS", "ORDERS")] + ["watcher"]
     ), "init writes incremental exports with `layout: base_buffer`: their load buffers, only compact merges"
@@ -250,7 +250,7 @@ def leg_with(engine, texts: dict[str, str]) -> SourceDagsLeg:
 
 
 def test_oracle_cdc_runs_its_capturable_stream_graded_on_files_and_its_refused_stream_apart() -> None:
-    leg = leg_with(ORACLE, {"batch": fixture("init_oracle_batch_0.32.1.yaml"), "cdc": fixture("init_oracle_cdc_0.32.1.yaml")})
+    leg = leg_with(ORACLE, {"batch": fixture("init_oracle_batch.yaml"), "cdc": fixture("init_oracle_cdc.yaml")})
     assert leg.graded == [("oracle/source-dags/tables", [])]
     assert (leg.kinds, leg.file_kinds) == (("batch",), ("cdc",))
     assert leg.dags == ["rivet_oracle_batch_batch", "rivet_oracle_cdc_cdc"]
@@ -260,15 +260,15 @@ def test_oracle_cdc_runs_its_capturable_stream_graded_on_files_and_its_refused_s
 
 
 def test_sql_server_streams_load_and_may_skip_a_compaction_in_their_groups() -> None:
-    leg = leg_with(MSSQL, {"batch": fixture("init_mssql_batch_0.31.0.yaml"), "cdc": fixture("init_mssql_cdc_0.31.0.yaml")})
+    leg = leg_with(MSSQL, {"batch": fixture("init_mssql_batch.yaml"), "cdc": fixture("init_mssql_cdc.yaml")})
     assert leg.kinds == ("batch", "cdc") and leg.file_kinds == () and leg.refused == {}
-    assert leg.may_skip["rivet_mssql_cdc_cdc"] == ("gate_customers.compact.", "gate_orders.compact.")
+    assert leg.may_skip["rivet_mssql_cdc_cdc"] == ("gate_customers_cdc.compact.", "gate_orders_cdc.compact.")
     assert leg.targets["cdc"] == {"gate_customers": "dbo_gate_customers", "gate_orders": "dbo_gate_orders"}
-    assert "watcher" not in leg.tasks["rivet_mssql_cdc_cdc"] and "gate_orders.run" in leg.tasks["rivet_mssql_cdc_cdc"]
+    assert "watcher" not in leg.tasks["rivet_mssql_cdc_cdc"] and "gate_orders_cdc.run" in leg.tasks["rivet_mssql_cdc_cdc"]
 
 
 def test_a_full_batch_export_keeps_no_deleted_key_and_moves_every_row() -> None:
-    doc = yaml.safe_load(fixture("init_mysql_batch_0.31.0.yaml"))
+    doc = yaml.safe_load(fixture("init_mysql_batch.yaml"))
     doc["exports"][1]["mode"] = "full"
     leg = leg_with(MYSQL, {"batch": yaml.safe_dump(doc)})
     source = {"gate_customers": [{"updated_at": 1}] * 3, "gate_orders": [{"updated_at": 1}] * 7}

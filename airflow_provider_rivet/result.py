@@ -16,7 +16,7 @@ CLASS_BY_EXIT = {
 }
 CLASSES = frozenset(CLASS_BY_EXIT.values()) | {"crashed"}
 STOP_RANK = ("crashed", "generic", "retryable", "schema_drift", "refusal", "internal", "data_integrity")
-# `already_applied` (rivet >= 0.32, ADR-0039 D3): an apply that replayed a point-in-time plan rivet had already applied
+# `already_applied` (ADR-0039 D3): an apply that replayed a point-in-time plan rivet had already applied
 # answers with the run that applied it (`run_id` == `answered_by_run`) and extracts nothing.
 STATUSES = frozenset({"success", "failed", "skipped", "loaded", "compacted", "already_applied"})
 # rivet's stops for a lease another live process holds: their remedy is "wait for the holder to end, then repeat", which

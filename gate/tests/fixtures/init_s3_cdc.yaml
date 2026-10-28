@@ -76,12 +76,12 @@ exports:
       backfill: auto  # baseline through the batch exports above (a table's recipe = the export
       # reading it), after the anchor — no gap
       until_current: true  # drain to the current log end and exit (good for a scheduler)
-      slot: rivet_public_cdc  # ONE logical slot for the whole stream; source needs
+      slot: rivet_s3_cdc_public_cdc  # ONE logical slot for the whole stream; source needs
       # wal_level=logical + a REPLICATION role
     destination:
       type: s3
       bucket: gate-s3-cdc
-      prefix: cdc/
+      prefix: s3_cdc/cdc/
       region: us-east-1
     columns:
       "gate_orders.amount": decimal(12,2)

@@ -1,7 +1,7 @@
 """Source legs: what the gate reads from `rivet init`'s configs, the names it gives the cloud, the stand it lays out.
 
-The fixtures are init's output on the gate's MySQL and SQL Server scenarios (rivet 0.31.0), the bucket and dataset
-renamed.
+The fixtures are init's output (at MIN_RIVET_VERSION) on the gate's MySQL and SQL Server scenarios, the bucket and
+dataset renamed.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from gate import __main__ as gate_main
 from gate import sources
-from gate.sources import BUCKET_SHAPE, MSSQL, MYSQL, SourceLeg, init_argv, parse_json_rows, read_config, rivet_version
+from gate.sources import BUCKET_SHAPE, MSSQL, MYSQL, SourceLeg, init_argv, parse_json_rows, read_config
 from gate.warehouse import DATASET_SHAPE
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,32 +25,30 @@ TABLES = list(MYSQL.tables)
 
 
 def test_the_batch_config_init_writes_names_one_export_per_table() -> None:
-    shape = read_config((FIXTURES / "init_mysql_batch_0.31.0.yaml").read_text(), TABLES)
+    shape = read_config((FIXTURES / "init_mysql_batch.yaml").read_text(), TABLES)
     assert shape == {"exports": ["gate_customers", "gate_orders"], "streams": [], "extra": []}
 
 
 def test_the_cdc_config_init_writes_is_one_stream_over_the_tables_beside_its_recipes() -> None:
-    text = (FIXTURES / "init_mysql_cdc_0.31.0.yaml").read_text()
+    text = (FIXTURES / "init_mysql_cdc.yaml").read_text()
     shape = read_config(text, TABLES)
     stream = {"name": "cdc", "tables": ["gate_customers", "gate_orders"], "dag": "_cdc"}
     assert shape == {"exports": ["gate_customers", "gate_orders"], "streams": [stream], "extra": []}
-    # The fixed replica id rivet 0.31 writes (0.32.1 names it from -o): one CDC config per MySQL server is safe.
-    [stream] = [e for e in yaml.safe_load(text)["exports"] if e["name"] == "cdc"]
-    assert stream["cdc"]["server_id"] == 4271
 
 
 def test_sql_server_captures_per_table_so_its_cdc_config_is_one_stream_and_dag_per_table() -> None:
-    shape = read_config((FIXTURES / "init_mssql_cdc_0.31.0.yaml").read_text(), list(MSSQL.tables))
+    shape = read_config((FIXTURES / "init_mssql_cdc.yaml").read_text(), list(MSSQL.tables))
     assert shape == {
         "exports": [],
         "streams": [
-            {"name": "gate_customers", "tables": ["dbo.gate_customers"], "dag": "_cdc_gate_customers"},
-            {"name": "gate_orders", "tables": ["dbo.gate_orders"], "dag": "_cdc_gate_orders"},
+            {"name": "gate_customers_cdc", "tables": ["dbo.gate_customers"], "dag": "_cdc_gate_customers_cdc"},
+            {"name": "gate_orders_cdc", "tables": ["dbo.gate_orders"], "dag": "_cdc_gate_orders_cdc"},
         ],
         "extra": [],
     }
-    # Their CDC exports carry the batch exports' names: each config needs a state of its own (Stand.connections).
-    batch = read_config((FIXTURES / "init_mssql_batch_0.31.0.yaml").read_text(), list(MSSQL.tables))
+    # init names a CDC export `<table>_cdc`, so the two configs' exports differ; each config still has a state of its own
+    # (Stand.connections).
+    batch = read_config((FIXTURES / "init_mssql_batch.yaml").read_text(), list(MSSQL.tables))
     assert batch == {"exports": ["gate_customers", "gate_orders"], "streams": [], "extra": []}
     # rivet folds a schema-qualified table into one BigQuery name (src/load/plan.rs `warehouse_table_name`).
     assert sources.warehouse_table("dbo.gate_orders") == "dbo_gate_orders" and sources.warehouse_table("t") == "t"
@@ -152,7 +150,7 @@ def test_init_leaving_a_state_beside_the_config_fails_the_leg(tmp_path: Path, mo
         calls.append((args, extra_env))
         if "airflow-worker" in args:
             out = Path(str(stand.rivet_dir) + args[-1].removeprefix("/opt/rivet")).parent
-            (out / "rivet.yaml").write_text((FIXTURES / "init_mysql_batch_0.31.0.yaml").read_text())
+            (out / "rivet.yaml").write_text((FIXTURES / "init_mysql_batch.yaml").read_text())
             (out / ".rivet_state.db").write_text("")
 
     monkeypatch.setattr(stand, "compose", compose)
@@ -206,21 +204,14 @@ def test_the_sql_server_source_is_read_from_its_json_with_microseconds_cut_not_r
         parse_json_rows('[{"id":1}]', ["id", "amount"], {})
 
 
-def test_the_renamed_capture_instance_is_given_only_to_a_rivet_whose_init_reads_the_catalog(monkeypatch) -> None:
-    leg = SourceLeg(CLOUD, "3.3.2", MSSQL)
-
-    class Shown:
-        def __init__(self, text: str) -> None:
-            self.stdout = text
-
-    for shown, want in (("rivet 0.31.0 (unknown)\n", "dbo_gate_orders"), ("rivet 0.32.0 (4119c8c)\n", "gate_orders_v2")):
-        stand = type("S", (), {"compose": staticmethod(lambda *a, text=shown, **k: Shown(text))})()
-        assert leg.capture_instance(stand) == want
-    assert "@capture_instance = N'{orders_instance}'" in MSSQL.seed
-    assert SourceLeg(CLOUD, "3.3.2", MYSQL).capture_instance(None) == ""
-    assert rivet_version("rivet 1.2.10 (x)") == (1, 2, 10)
-    with pytest.raises(ValueError):
-        rivet_version("command not found")
+def test_the_renamed_capture_instance_is_the_one_inits_cdc_config_names() -> None:
+    """The seed makes `gate_orders` a capture instance of a name other than SQL Server's default; init reads it from
+    `cdc.change_tables` (the recorded config names it)."""
+    [orders] = [
+        e for e in yaml.safe_load((FIXTURES / "init_mssql_cdc.yaml").read_text())["exports"] if e["table"] == "dbo.gate_orders"
+    ]
+    assert f"@capture_instance = N'{orders['cdc']['capture_instance']}'" in MSSQL.seed
+    assert orders["cdc"]["capture_instance"] != "dbo_gate_orders"
 
 
 def test_the_engines_changes_wait_for_the_capture_job_before_a_cdc_run_reads() -> None:
@@ -231,7 +222,7 @@ def test_the_engines_changes_wait_for_the_capture_job_before_a_cdc_run_reads() -
 def test_an_export_init_writes_for_a_table_the_scenario_does_not_hold_fails_the_leg(tmp_path: Path, monkeypatch) -> None:
     stand = laid_out(tmp_path, sources=(MYSQL,))
     leg = SourceLeg(CLOUD, "2.10.5", MYSQL)
-    doc = yaml.safe_load((FIXTURES / "init_mysql_batch_0.31.0.yaml").read_text())
+    doc = yaml.safe_load((FIXTURES / "init_mysql_batch.yaml").read_text())
     doc["exports"].append({**doc["exports"][0], "name": "audit_log"})
 
     def compose(*args, extra_env=None, **kw):
