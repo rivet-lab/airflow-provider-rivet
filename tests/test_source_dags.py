@@ -486,6 +486,59 @@ def test_batch_runs_and_loads_every_export(tmp_path: Path) -> None:
     assert {t.task_id for t in dag.tasks} == {"apply.orders", "apply.customers", "load.orders", "load.customers", "watcher"}
 
 
+def batch_tasks(tmp_path: Path, text: str) -> set[str]:
+    (tmp_path / "shop.yaml").write_text(text)
+    return {t.task_id for t in build(tmp_path, mode="batch")["rivet_shop_batch"].tasks}
+
+
+BATCH_BASE_BUFFER = BATCH_CONFIG.replace("  dataset: shop\n", "  dataset: shop\n  layout: base_buffer\n")
+
+
+def test_a_batch_export_whose_layout_is_base_buffer_merges_what_it_loads(tmp_path: Path) -> None:
+    """`rivet init --mode incremental` with BigQuery writes this: the load appends to `<t>__changes`, only compact merges."""
+    found = batch_tasks(tmp_path, BATCH_BASE_BUFFER)
+    assert found == {"apply.orders", "load.orders", "compact.orders", "apply.customers", "load.customers", "watcher"}
+    compact = build(tmp_path, mode="batch")["rivet_shop_batch"].get_task("compact.orders")
+    assert (compact.export, compact.table, compact.upstream_task_ids) == ("orders", None, {"load.orders"})
+
+
+@pytest.mark.parametrize("fixture", ["init_oracle_batch_0.32.1", "init_mysql_batch_0.31.0", "init_mssql_batch_0.31.0"])
+def test_the_batch_config_rivet_init_writes_gets_a_compaction_per_export(tmp_path: Path, fixture: str) -> None:
+    """The gate's real `rivet init` output (gate/tests/fixtures): incremental exports and `layout: base_buffer`."""
+    text = (Path(__file__).parent.parent / "gate" / "tests" / "fixtures" / f"{fixture}.yaml").read_text()
+    found = batch_tasks(tmp_path, text)
+    applied = {t.removeprefix("apply.") for t in found if t.startswith("apply.")}
+    assert applied and {t for t in found if t.startswith("compact.")} == {f"compact.{n}" for n in applied}
+
+
+def test_a_batch_export_without_a_mode_is_full_and_never_compacts(tmp_path: Path) -> None:
+    text = BATCH_BASE_BUFFER.replace("    mode: incremental\n", "").replace("    mode: full\n", "")
+    assert batch_tasks(tmp_path, text) == {"apply.orders", "load.orders", "apply.customers", "load.customers", "watcher"}
+
+
+def test_a_stream_with_a_backfill_and_no_layout_merges_what_it_loads(tmp_path: Path) -> None:
+    """rivet resolves an unwritten layout of a `backfill:` stream on BigQuery to a base and a buffer (ADR-0034 D7)."""
+    text = cdc_config(load="  target: bigquery\n  project: p\n  dataset: shop\n", stream="    table: orders\n")
+    assert tasks(tmp_path, text) == {"run", "load.orders", "watcher"}
+    assert tasks(tmp_path, text.replace("      checkpoint:", "      backfill: auto\n      checkpoint:")) == {
+        "run",
+        "load.orders",
+        "compact.orders",
+        "watcher",
+    }
+
+
+def test_the_layout_of_a_captured_table_decides_its_own_compaction(tmp_path: Path) -> None:
+    text = cdc_config().replace("    cdc:\n", "    load:\n      tables:\n        customers: {layout: log_view}\n    cdc:\n")
+    assert tasks(tmp_path, text) == {"run", "load.orders", "load.customers", "compact.orders", "watcher"}
+
+
+def test_a_numeric_export_name_is_the_text_rivet_reads(tmp_path: Path) -> None:
+    assert "run" in tasks(tmp_path, cdc_config().replace("name: shop_cdc", "name: 2024"))
+    assert build(tmp_path)["rivet_shop_cdc"].get_task("run").export == "2024"
+    assert batch_tasks(tmp_path, BATCH_CONFIG.replace("name: orders", "name: 0x10")) >= {"apply.0x10", "load.0x10"}
+
+
 @pytest.mark.parametrize("sources", [["Shop"], ["shop-1"], ["shop", "shop"], "shop"])
 def test_source_names_are_distinct_file_and_database_names(tmp_path: Path, sources: Any) -> None:
     with pytest.raises(ValueError):
