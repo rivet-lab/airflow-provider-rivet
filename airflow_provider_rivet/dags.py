@@ -217,7 +217,6 @@ def _cdc_dag(
     """The CDC DAG of one or more streams: one stream's tasks at the top (`run`, `load.T`, `compact.T`), several streams'
     each in a group named after its export (rivet init writes one stream per table on SQL Server, Oracle, MongoDB and
     PostgreSQL outside `public`); the streams run side by side, each under its own export's lock."""
-    streams = [(export, _names("tables", tables), compacted) for export, tables, compacted in streams]
     if load and any(not tables for _, tables, _ in streams):
         raise ValueError("`tables` lists the captured tables the load and compact tasks are built for")
     with _dag(dag_id, ("rivet", "cdc"), dag_kwargs) as dag:
