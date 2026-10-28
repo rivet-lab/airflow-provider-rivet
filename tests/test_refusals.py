@@ -133,6 +133,8 @@ def test_a_param_given_to_a_task_whose_rivet_subcommand_has_no_p_is_refused_befo
     code, text = refusal(rig, rig.operator(cls, export="orders", extra_args=extra_args))
     assert code == "RIVET_AIRFLOW_PARAM_NOT_ACCEPTED"
     assert "run, plan and check" in text and "env=" in text
+    # the remedy names the operators that do take it, spelled as the classes are, and the `${name}` it is about
+    assert "RivetRunOperator, RivetCdcRunOperator and RivetPlanOperator" in text and "`${name}`" in text
 
 
 @pytest.mark.parametrize("extra_args", PARAM_SPELLINGS, ids=lambda a: a[0])
