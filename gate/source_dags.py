@@ -27,7 +27,7 @@ import yaml
 from airflow_provider_rivet import _yaml
 from airflow_provider_rivet.exports import compacts, entries_of, mode_of, name_of, tables_of
 
-from . import dagspec, oracle, warehouse
+from . import cycle_effect, dagspec, oracle, warehouse
 from .sources import ENGINES, Engine, SourceLeg, read_config, short, task_log, warehouse_table
 from .stand import sh
 
@@ -71,8 +71,6 @@ CDC_REFUSED = {
         )
     }
 }
-#: The change events of each cycle in the CDC parts graded as files (Oracle's `changes` on its CDC-able table).
-FILE_OPS = {"delta": {"GATE_CUSTOMERS": {"insert": 20, "update": 10}}}
 #: The order of Oracle change events: the commit SCN in `__pos`, then `__seq` (rivet's cheat-sheet, `__pos`).
 ORACLE_POS = "json_extract_string(__pos, '$.commit_scn')::UBIGINT"
 #: The rivet tasks build_source_dags adds beside the rivet commands: the run's watcher.
@@ -497,19 +495,37 @@ class SourceDagsLeg(SourceLeg):
         return 0 if self.batch_mode(table) == "full" else super().kept_by_batch(cycle, table)
 
     def delta_kinds(self) -> set[str]:
-        """A batch config of `full` exports only replaces its tables (init writes no `layout`): its load block is not
-        the delta client's."""
+        """The configs whose `load:` block is the delta client's: those that load at all (an Oracle CDC config only writes
+        files), but a batch config of `full` exports only replaces its tables (init writes no `layout`)."""
+        loaded = {k for k, text in self.texts.items() if (yaml.safe_load(text) or {}).get("load")}
         doc = yaml.safe_load(self.texts.get("batch") or "") or {}
         full = bool(doc.get("exports")) and all(e.get("mode") == "full" for e in doc["exports"])
-        return set(self.texts) - ({"batch"} if full else set())
+        return loaded - ({"batch"} if full else set())
+
+    def stream_of(self, dag: str, task: str) -> tuple[list[str], str]:
+        """A CDC DAG holds a group per stream when the config has several (the export's name, a dot, the task)."""
+        if dag != self.source_dags.get("cdc"):
+            return list(self.engine.tables), task
+        streams = self.shape["cdc"]["streams"]
+        grouped = next((s for s in streams if task.startswith(f"{s['name']}.")), None) if len(streams) > 1 else None
+        if len(streams) > 1 and grouped is None:
+            raise LookupError(f"task {task!r} belongs to none of the streams {[s['name'] for s in streams]}")
+        stream = grouped or streams[0]
+        return list(stream["tables"]), task.removeprefix(f"{stream['name']}.") if grouped else task
 
     def expected_rows(
-        self, kind: str, task: str, source: dict[str, list[dict[str, Any]]], ops: dict[str, dict[str, int]], baseline: bool
+        self,
+        kind: str,
+        dag: str,
+        task: str,
+        source: dict[str, list[dict[str, Any]]],
+        ops: dict[str, dict[str, int]],
+        baseline: bool,
     ) -> int | None:
         group, _, unit = task.partition(".")
         if kind == "batch" and group in ("apply", "load") and self.batch_mode(unit) == "full":
             return len(source[unit])
-        return super().expected_rows(kind, task, source, ops, baseline)
+        return super().expected_rows(kind, dag, task, source, ops, baseline)
 
     def fetch(self, stand: Any, parts: Sequence[str]) -> int:
         """Copy Parquet parts from the bucket to the stand's folder, by their path in the bucket."""
@@ -549,7 +565,7 @@ class SourceDagsLeg(SourceLeg):
                 cycle = [str(self.local[p]) for p in mine if p in changes and p in new]
                 self.history.setdefault(table, []).append(cycle)
                 cell = f"{name}/{eng}/files/{kind}/{table}"
-                v.check(cell + "/operations", oracle.cdc_ops, con, cycle, FILE_OPS.get(name, {}).get(table, {}), cell)
+                v.check(cell + "/operations", oracle.cdc_ops, con, cycle, cycle_effect.ops(name)[table.lower()], cell)
                 relation = source_relation(con, table, source[table], cols)
                 v.check(
                     cell + "/replay-equals-source",

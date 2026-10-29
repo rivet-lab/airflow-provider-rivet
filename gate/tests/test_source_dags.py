@@ -275,8 +275,11 @@ def test_a_full_batch_export_keeps_no_deleted_key_and_moves_every_row() -> None:
     assert leg.kept_by_batch("delta", "gate_orders") == 0
     assert leg.delta_kinds() == {"batch"}, "one export still loads deltas: its load block is the client's"
     doc["exports"][0]["mode"] = "full"
-    assert leg_with(MYSQL, {"batch": yaml.safe_dump(doc), "cdc": "exports: []"}).delta_kinds() == {"cdc"}
-    assert leg.expected_rows("batch", "load.gate_orders", source, {}, False) == 7
+    both = {"batch": yaml.safe_dump(doc), "cdc": fixture("init_mysql_cdc.yaml")}
+    assert leg_with(MYSQL, both).delta_kinds() == {"cdc"}
+    oracle_both = {"batch": fixture("init_oracle_batch.yaml"), "cdc": fixture("init_oracle_cdc.yaml")}
+    assert leg_with(ORACLE, oracle_both).delta_kinds() == {"batch"}, "a CDC config without a `load:` block loads nothing"
+    assert leg.expected_rows("batch", leg.source_dags["batch"], "load.gate_orders", source, {}, False) == 7
     assert leg.kept_by_batch("delta", "gate_customers") == source_dags.SourceLeg.kept_by_batch(leg, "delta", "gate_customers")
 
 

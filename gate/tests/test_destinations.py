@@ -18,7 +18,7 @@ import yaml
 from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from gate import __main__ as gate_main
-from gate import cleanup, dagspec, destinations, oracle
+from gate import cleanup, cycle_effect, dagspec, destinations, oracle
 from gate.destinations import CONFIGS, MISSING_BUCKET_CODE, S3Leg, check_shape, init_argv, missing_bucket, table_parts
 from gate.scenario import Verdicts
 from gate.sources import read_config
@@ -312,10 +312,7 @@ def leg_on(root: Path) -> S3Leg:
 
 def grade_parquet(leg: S3Leg, con, name: str, reported: dict, cursors: dict, monkeypatch) -> dict[str, str]:
     """The leg's Parquet cells for one cycle; FAIL cells with their detail."""
-    monkeypatch.setattr(destinations, "DELETED_BY_BATCH", {"initial": {}, "delta": {"gate_orders": 1}})
-    from gate import scenario
-
-    monkeypatch.setattr(scenario, "CHANGED_OPS", OPS)
+    monkeypatch.setattr(cycle_effect, "DELTA", OPS)
     v = Verdicts("3.3.2")
     leg.grade_parquet(FakeStand(reported, cursors), v, name, f"gate_{name}", con)
     assert v.rows, "no cell graded"
@@ -410,7 +407,7 @@ def faithful_clickhouse() -> dict[tuple[str, str], list[dict]]:
 
 
 def grade_clickhouse(monkeypatch, rows: dict) -> dict[str, str]:
-    monkeypatch.setattr(destinations, "DELETED_BY_BATCH", {"delta": {"gate_orders": 1}})
+    monkeypatch.setattr(cycle_effect, "DELTA", OPS)
     monkeypatch.setattr(S3Leg, "source_rows", lambda self, dsn: copy.deepcopy(SOURCE))
     monkeypatch.setattr(S3Leg, "read_clickhouse", lambda self, stand, db, t: copy.deepcopy(rows[(db, t)]))
     v = Verdicts("3.3.2")

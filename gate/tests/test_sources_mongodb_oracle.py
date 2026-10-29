@@ -18,7 +18,7 @@ from bson import Binary, Decimal128, Int64, ObjectId
 from test_stand_hygiene import Loader, compose_view, laid_out, written_specs
 
 from airflow_provider_rivet.connections import connection_url
-from gate import sources, warehouse
+from gate import cycle_effect, sources, warehouse
 from gate.sources import MONGODB, ORACLE, limit_holds, mongo_canonical, mongo_id, read_config, warehouse_document
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -145,8 +145,8 @@ def test_oracle_numbers_compare_exactly_whatever_the_reader_hands_back() -> None
 
 def test_the_batch_deletes_of_each_engine_are_the_count_the_oracle_expects() -> None:
     assert "BETWEEN 4996 AND 5000" in ORACLE.changes
-    assert [sources.deleted_by_batch("delta", t) for t in ORACLE.tables] == [0, 5]
-    assert [sources.deleted_by_batch("initial", t) for t in ORACLE.tables] == [0, 0]
+    assert [cycle_effect.kept_by_batch("delta", t) for t in ORACLE.tables] == [0, 5]
+    assert [cycle_effect.kept_by_batch("initial", t) for t in ORACLE.tables] == [0, 0]
 
 
 def test_compaction_is_judged_on_the_upper_case_names_bigquery_keeps() -> None:
