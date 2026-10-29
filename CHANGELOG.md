@@ -81,6 +81,16 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- **Behaviour change.** The quickstart's DAG file refused a pipeline whose config has more than one `mode: cdc` stream
+  (#98, because it built only the first). It now builds every stream: one DAG per pipeline with a group per stream
+  (`<export>.run`, `<export>.load.<table>`), through the new `build_config_dag`, which builds a config's DAG the way
+  `build_source_dags` does (the shape code is now one function for both). So the quickstart reads its configs with the
+  provider's config reader: a config `rivet` would refuse (an export that is not a mapping) is refused at parse, coded;
+  load tasks follow the config's `load:` section; a compact task follows the config's layout instead of being always
+  off; task ids name the warehouse table (`dbo.orders` is `load.dbo_orders`). The quickstart's own configs build the
+  DAGs they built before (same dag_id, task ids and arguments; checked against the old call). Nothing is stored and
+  nothing to migrate.
+
 - A failed task says why. rivet's error text (the `error` of the `--json-errors` line, and for a failed unit the
   `error_message` of its `--summary-output` entry or the `message` of its error object) is on the failure headline and
   on a failed unit's line of the task log, at the end of the `AirflowException` / `AirflowFailException` text

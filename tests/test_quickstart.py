@@ -6,10 +6,13 @@ from __future__ import annotations
 import importlib.util
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 import yaml
+
+from airflow_provider_rivet.dags import build_cdc_dag
 
 QUICKSTART = Path(__file__).resolve().parents[1] / "quickstart"
 DAG_FILE = QUICKSTART / "dags" / "rivet_quickstart.py"
@@ -68,6 +71,7 @@ def test_a_cdc_config_of_one_table_and_own_storage_and_warehouse(tmp_path: Path)
     (dags / "rivet" / "billing_cdc.yaml").write_text(
         "source: {type: postgres, url_env: RIVET_SOURCE_URL}\n"
         "exports:\n  - name: invoices_cdc\n    table: invoices\n    mode: cdc\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: billing_cdc}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     line = '    "billing_cdc": {"source": "rivet_billing", "storage": "rivet_s3_aws", "warehouse": "rivet_clickhouse_own"},\n'
@@ -77,25 +81,103 @@ def test_a_cdc_config_of_one_table_and_own_storage_and_warehouse(tmp_path: Path)
     assert tuple(dag.get_task("run").connections) == ("rivet_s3_aws", "rivet_clickhouse_own")
 
 
-def test_a_config_of_several_streams_is_refused_naming_them_not_built_with_the_first(tmp_path: Path) -> None:
+def test_a_config_of_several_streams_builds_a_group_per_stream_with_each_tables_load(tmp_path: Path) -> None:
     dags = tmp_path / "dags"
     shutil.copytree(DAG_FILE.parent, dags)
     (dags / "rivet" / "erp_cdc.yaml").write_text(
         "source: {type: sqlserver, url_env: RIVET_SOURCE_URL}\n"
         "exports:\n"
-        "  - {name: dbo_orders, table: dbo.orders, mode: cdc}\n"
+        "  - {name: dbo_orders, tables: [dbo.orders, dbo.lines], mode: cdc}\n"
         "  - {name: dbo_customers, table: dbo.customers, mode: cdc}\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: erp_cdc}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     (dags / "rivet_quickstart.py").write_text(
         text.replace("PIPELINES = {\n", 'PIPELINES = {\n    "erp_cdc": {"source": "rivet_erp"},\n', 1)
     )
-    with pytest.raises(ValueError) as exc:
-        load(dags)
-    assert str(exc.value) == (
-        f"{dags / 'rivet' / 'erp_cdc.yaml'} has 2 `mode: cdc` streams (dbo_orders, dbo_customers) and this DAG builds one, "
-        "which would leave the others uncaptured: build the pipeline with build_source_dags "
-        "(a group per stream, docs/dag-builders.md)"
+    dag = load(dags).rivet_erp_cdc
+    assert set(dag.task_group.children) == {"dbo_orders", "dbo_customers", "watcher"}
+    assert set(dag.task_ids) == {
+        "dbo_orders.run",
+        "dbo_orders.load.dbo_orders",
+        "dbo_orders.load.dbo_lines",
+        "dbo_customers.run",
+        "dbo_customers.load.dbo_customers",
+        "watcher",
+    }  # ClickHouse: no compact, as for one stream; the warehouse names, as build_source_dags builds them
+    for stream, tables in (("dbo_orders", ("dbo_orders", "dbo_lines")), ("dbo_customers", ("dbo_customers",))):
+        run = dag.get_task(f"{stream}.run")
+        assert run.export == stream and run.upstream_task_ids == set()
+        for table in tables:
+            task = dag.get_task(f"{stream}.load.{table}")
+            assert (task.export, task.table) == (stream, table)
+            assert task.upstream_task_ids == {f"{stream}.run"}, "a stream's load waits for its own drain"
+    assert dag.get_task("watcher").upstream_task_ids == set(dag.task_ids) - {"watcher"}
+
+
+def test_a_single_stream_builds_the_dag_build_cdc_dag_built_before_every_stream_was_built(tmp_path: Path) -> None:
+    module = load(DAG_FILE.parent)
+    for pipeline in ("mysql_cdc", "postgres_cdc"):
+        stream = next(
+            e for e in yaml.safe_load(CONFIGS.joinpath(f"{pipeline}.yaml").read_text())["exports"] if e.get("mode") == "cdc"
+        )
+        conns = module.PIPELINES[pipeline]
+        before = build_cdc_dag(  # the call the quickstart made for its one stream before it built every stream
+            f"rivet_{pipeline}",
+            config=str(CONFIGS / f"{pipeline}.yaml"),
+            export=stream["name"],
+            tables=stream.get("tables") or [stream["table"]],
+            compact=False,
+            state_dir=f"/opt/airflow/rivet-state/{pipeline}",
+            schedule="*/10 * * * *",
+            start_date=datetime(2026, 1, 1),
+            catchup=False,
+            operator_kwargs={
+                "env_from_connections": {"RIVET_SOURCE_URL": conns["source"], "RIVET_STATE_URL": f"rivet_state_{pipeline}"},
+                "connections": ["rivet_s3", "rivet_clickhouse"],
+            },
+        )
+        assert shape(getattr(module, f"rivet_{pipeline}")) == shape(before), pipeline
+        assert set(before.task_group.children) == {"run", "load", "watcher"}, "one stream has no group"
+
+
+def shape(dag) -> dict:
+    """What a DAG is to Airflow: its settings, its groups, and each task with its edges and its arguments."""
+    tasks = {
+        t.task_id: {
+            "class": type(t).__name__,
+            "group": t.task_group.group_id if t.task_group else None,
+            "upstream": sorted(t.upstream_task_ids),
+            "downstream": sorted(t.downstream_task_ids),
+            "trigger_rule": t.trigger_rule,
+            "export": getattr(t, "export", None),
+            "table": getattr(t, "table", None),
+            "config": getattr(t, "config", None),
+            "state_dir": getattr(t, "state_dir", None),
+            "env_from_connections": getattr(t, "env_from_connections", None),
+            "connections": tuple(getattr(t, "connections", None) or ()),
+        }
+        for t in dag.tasks
+    }
+    return {
+        "dag_id": dag.dag_id,
+        "schedule": timetable(dag.timetable),
+        "start_date": dag.start_date,
+        "catchup": dag.catchup,
+        "max_active_runs": dag.max_active_runs,
+        "tags": sorted(dag.tags),
+        "default_args": dict(dag.default_args),
+        "groups": sorted(dag.task_group.children),
+        "tasks": tasks,
+    }
+
+
+def timetable(t) -> tuple:
+    """A timetable by value: Airflow 2's repr is its address, and the cron fields are private there."""
+    return (
+        type(t).__name__,
+        getattr(t, "expression", None) or getattr(t, "_expression", None),
+        str(getattr(t, "timezone", None) or getattr(t, "_timezone", None)),
     )
 
 
@@ -103,7 +185,8 @@ def test_a_stream_without_a_written_mode_or_with_a_numeric_name_is_read_as_rivet
     dags = tmp_path / "dags"
     shutil.copytree(DAG_FILE.parent, dags)
     (dags / "rivet" / "num_batch.yaml").write_text(
-        "source: {type: postgres, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: 2024, table: t}\n  - not an export\n"
+        "source: {type: postgres, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: 2024, table: t}\n"
+        "load: {target: clickhouse, url: 'http://clickhouse:8123', database: num_batch}\n"
     )
     text = (dags / "rivet_quickstart.py").read_text()
     (dags / "rivet_quickstart.py").write_text(

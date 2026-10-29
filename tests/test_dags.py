@@ -14,8 +14,9 @@ from conftest import DOCS, fixture
 
 from airflow_provider_rivet import __version__, get_provider_info
 from airflow_provider_rivet.callbacks import format_failure
-from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, read_plan_layout
+from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_config_dag, read_plan_layout
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetRunOperator, RivetRunWatcher, RivetWaveBarrier
+from airflow_provider_rivet.preflight import ConfigRefusal
 
 
 def edges(dag: object) -> set[tuple[str, str]]:
@@ -202,6 +203,64 @@ def test_cdc_dag_without_compact_or_load() -> None:
         "watcher",
     ]
     assert sorted(build_cdc_dag("c2", config="c", export="e", tables=[], load=False).task_ids) == ["run", "watcher"]
+
+
+def test_config_dag_is_a_group_per_cdc_stream_with_the_warehouse_tables_the_target_compacts(tmp_path: Path) -> None:
+    config = tmp_path / "erp.yaml"
+    config.write_text(
+        "source: {type: sqlserver, url_env: RIVET_SOURCE_URL}\n"
+        "exports:\n"
+        "  - {name: orders_cdc, tables: [dbo.orders, dbo.lines], mode: cdc}\n"
+        "  - {name: users_cdc, table: dbo.users, mode: cdc}\n"
+        "load: {target: bigquery, project: p, dataset: d, layout: base_buffer}\n"
+    )
+    dag = build_config_dag("c", config=str(config), state_dir="/s", operator_kwargs={"env": {"A": "1"}}, catchup=False)
+    assert set(dag.task_group.children) == {"orders_cdc", "users_cdc", "watcher"}
+    assert sorted(dag.task_ids) == [
+        "orders_cdc.compact.dbo_lines",
+        "orders_cdc.compact.dbo_orders",
+        "orders_cdc.load.dbo_lines",
+        "orders_cdc.load.dbo_orders",
+        "orders_cdc.run",
+        "users_cdc.compact.dbo_users",
+        "users_cdc.load.dbo_users",
+        "users_cdc.run",
+        "watcher",
+    ]
+    assert dag.get_task("users_cdc.run").upstream_task_ids == set(), "streams run side by side"
+    load = dag.get_task("users_cdc.load.dbo_users")
+    assert (load.export, load.table, load.state_dir, load.env) == ("users_cdc", "dbo_users", "/s", {"A": "1"})
+    assert dag.catchup is False
+    assert set(dag.tags) == {"rivet", "cdc"}
+    assert dag.get_task("watcher").upstream_task_ids == set(dag.task_ids) - {"watcher"}
+
+
+def test_config_dag_reads_its_mode_from_the_config_and_refuses_a_mode_with_nothing_to_build(tmp_path: Path) -> None:
+    batch = tmp_path / "batch.yaml"
+    batch.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\n"
+        "exports:\n  - {name: orders, table: orders, mode: full}\n  - {name: users, table: users, mode: full}\n"
+        "load: {target: clickhouse, url: 'http://c:8123', database: d}\n"
+    )
+    dag = build_config_dag("b", config=str(batch))
+    assert set(dag.tags) == {"rivet", "batch"}
+    assert not [t for t in dag.task_ids if "compact" in t], "ClickHouse merges by key itself"
+    assert {"load.orders", "load.users"} <= set(dag.task_ids)
+    cdc = tmp_path / "cdc.yaml"
+    cdc.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [t], mode: cdc}\n")
+    assert sorted(build_config_dag("c", config=str(cdc)).task_ids) == ["run", "watcher"], "no `load:`, no load task"
+    assert set(build_config_dag("c", config=str(cdc)).tags) == {"rivet", "cdc"}, "read from the config"
+    with pytest.raises(ConfigRefusal) as refused:
+        build_config_dag("c", config=str(batch), mode="cdc")
+    assert str(refused.value) == (
+        f"[RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT] {batch} has no export with `mode: cdc`, so there is no stream for a CDC "
+        "DAG; build this source with mode='batch', or delete the file to have `init` write it again with the CDC mode"
+    )
+    with pytest.raises(ConfigRefusal) as refused:
+        build_config_dag("c", config=str(cdc), mode="batch")
+    assert refused.value.code == "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT"
+    with pytest.raises(ValueError, match=exactly("`mode` is 'cdc', 'batch' or None (read from the config)")):
+        build_config_dag("c", config=str(cdc), mode="CDC")
 
 
 def test_the_provider_entry_point_names_the_distribution_and_the_version_has_one_source_and_the_metadata_is_exact() -> None:

@@ -1,6 +1,6 @@
 # DAG builders
 
-`build_batch_dag` and `build_cdc_dag` build whole DAGs from the operators.
+`build_batch_dag`, `build_cdc_dag` and `build_config_dag` build whole DAGs from the operators.
 
 ## DAG builders
 
@@ -100,6 +100,35 @@ dag = build_cdc_dag(
   `compact=False` keeps `load.T` and drops `compact.T`. Use `compact=False` on Snowflake and
   ClickHouse, where there is nothing to compact (see ["Storage and warehouse connections"](connections-and-secrets.md#storage-and-warehouse-connections)).
 - `operator_kwargs` go to every task, as in the batch builder.
+
+### From a config: `build_config_dag`
+
+`build_config_dag` builds the DAG of one rivet config the way `build_source_dags` builds a source's DAG from its
+config, with no Connection or `init` step of its own; the quickstart builds each pipeline through it.
+
+```python
+from airflow_provider_rivet.dags import build_config_dag
+
+dag = build_config_dag(
+    "rivet_erp_cdc",
+    config="/opt/pipelines/erp.yaml",
+    state_dir="/var/lib/rivet/erp",
+    operator_kwargs={"env_from_connections": {"RIVET_SOURCE_URL": "erp", "RIVET_STATE_URL": "rivet_state_erp"}},
+)
+```
+
+- `mode` is `"cdc"` or `"batch"`; left out, it is `"cdc"` when the config has a `mode: cdc` export. A CDC DAG of a
+  config with no `mode: cdc` export, a batch DAG of one with any, and a config with no export are refused, coded
+  (`RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_NO_EXPORT`).
+- Load tasks are built when the config has a `load:` section; a compact task follows a table's load only where rivet
+  resolves it to a base and a buffer (a compacting warehouse with `layout: base_buffer`, or a stream with `backfill:`).
+  ClickHouse and Snowflake get none. Task ids name the warehouse table: `dbo.orders` is `load.dbo_orders`.
+- One CDC stream is built as `build_cdc_dag` builds it: `run`, `load.T`, `compact.T` at the top. Several streams
+  (`rivet init` writes one per table on SQL Server, Oracle, MongoDB and PostgreSQL outside `public`) are a `TaskGroup`
+  each, named after the export (`dbo_orders.run`, `dbo_orders.load.dbo_orders`); they have no edges between them and
+  run side by side, each under its own export's lock, and the one `watcher` ends the DAG.
+- **Adding a second stream renames the first stream's task ids** (`run` becomes `<export>.run`): Airflow keeps the old
+  ids' history under the old names, and the new ids start with none.
 
 ### One DAG per database: `build_source_dags`
 
