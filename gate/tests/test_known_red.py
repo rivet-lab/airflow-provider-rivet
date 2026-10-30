@@ -33,3 +33,12 @@ def test_an_unknown_red_cell_fails_and_an_empty_run_does_not_pass() -> None:
 
 def test_every_known_cell_names_an_issue() -> None:
     assert all("#" in issue for issue in KNOWN.values())
+
+
+def test_the_staged_parts_reds_of_every_engine_that_leaves_the_cdc_baseline_are_known() -> None:
+    # #671: the CDC baseline leaves its snapshot Parquet staged on every engine that grades it (#108 grades mssql and mongodb).
+    for engine in ("mysql", "mssql", "mongodb"):
+        cell = f"initial/{engine}/cdc/staged-parts-cleaned"
+        v = Verdicts("3.3.2")
+        v.grade(cell, ["2 objects left"])
+        assert v.rows[0]["status"] == "XFAIL", cell

@@ -43,6 +43,7 @@ from .invocation import (
     crashed_retry_allowed,
     invoke,
     spawn,
+    warehouse_table,
     worker_environment,
 )
 from .preflight import PreflightRefusal, read_config, resolve_binary
@@ -208,7 +209,7 @@ class _RivetTask(BaseOperator):
         run_id = str(context.get("run_id") or getattr(ti, "run_id", "run"))
         map_index = getattr(ti, "map_index", None)
         task_part = ti.task_id if map_index in (-1, None) else f"{ti.task_id}[{map_index}]"
-        self._tasklog = TaskLog(self.command, self.export, self.table, self._write)
+        self._tasklog = TaskLog(self.command, self.export, self.table and warehouse_table(self.table), self._write)
         secrets = Path(tempfile.mkdtemp(prefix="rivet-airflow-secrets-"))
         try:
             return self._run_with_secrets(ti, run_id, task_part, secrets)

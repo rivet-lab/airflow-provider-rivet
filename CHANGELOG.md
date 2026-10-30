@@ -10,8 +10,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - A source can name its URL or password by a Google Secret Manager secret: `url_secret` (in place of `url`, `url_env`
   or `url_file`) and `password_secret` (in place of `password` or `password_env`), read by rivet with the credential the
   GCS and BigQuery legs use. A DAG built from such a config reads no source Connection. A task whose rivet is older than
-  the version that reads these keys is refused before it starts, naming the version needed (`RIVET_AIRFLOW_BINARY_TOO_OLD`);
-  the version is one constant in `capabilities.py`, a placeholder until rivet releases the feature. The guide is
+  0.33.0, the release that ships these keys, is refused before it starts, naming the version needed
+  (`RIVET_AIRFLOW_BINARY_TOO_OLD`). The guide is
   "Source credentials from Google Secret Manager" in `docs/connections-and-secrets.md`.
 - `password_secret` without `url_env` (the host, user and database written in the config) reads no source Connection either,
   as `url_secret` does; with `url_env` the Connection still supplies the URL.
@@ -23,6 +23,17 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- A batch DAG of `build_source_dags` or `build_config_dag` over a config with an export whose
+  `mode: ${VAR}` may resolve to `cdc` was built, though preflight already treated that export as CDC; it is now
+  refused `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, naming the export and the mode.
+- `build_config_dag` raised on a config it could not build, which dropped every DAG of the file (the quickstart builds
+  all its pipelines in one file); it now returns a DAG whose one task, `config`, fails naming the refusal, as
+  `build_source_dags` does.
+- A task folder (work, temp or stderr logs) that could not be created failed the task with a bare `OSError` and left
+  the temp work folder of a diskless worker behind; it is now `RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE` and the temp
+  folder is removed.
+- The task log headline of a load or compaction of a schema-qualified table named the captured table (`dbo.orders`);
+  it now names the warehouse table rivet loads (`dbo_orders`), as the task id does.
 - Documentation: the task releases an export lock by an explicit unlock when it ends, so a process rivet left behind
   that holds a copy of the descriptor no longer keeps the lock (measured with a grandchild that kept it; before the
   documentation said the lock lasted until that process exits). A killed task process still leaves the lock to rivet.
@@ -96,6 +107,16 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   now cut by bytes, and the hash keeps two long names apart. Names under the limit are unchanged.
 
 ### Changed (behaviour change)
+
+- **Behaviour change.** The quickstart's DAG file refused a pipeline whose config has more than one `mode: cdc` stream
+  (#98, because it built only the first). It now builds every stream: one DAG per pipeline with a group per stream
+  (`<export>.run`, `<export>.load.<table>`), through the new `build_config_dag`, which builds a config's DAG the way
+  `build_source_dags` does (the shape code is now one function for both). So the quickstart reads its configs with the
+  provider's config reader: a config `rivet` would refuse (an export that is not a mapping) is refused at parse, coded;
+  load tasks follow the config's `load:` section; a compact task follows the config's layout instead of being always
+  off; task ids name the warehouse table (`dbo.orders` is `load.dbo_orders`). The quickstart's own configs build the
+  DAGs they built before (same dag_id, task ids and arguments; checked against the old call). Nothing is stored and
+  nothing to migrate.
 
 - A failed task says why. rivet's error text (the `error` of the `--json-errors` line, and for a failed unit the
   `error_message` of its `--summary-output` entry or the `message` of its error object) is on the failure headline and

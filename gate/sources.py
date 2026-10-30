@@ -24,7 +24,7 @@ from typing import Any
 import duckdb
 import yaml
 
-from . import dagspec, warehouse
+from . import cycle_effect, dagspec, warehouse
 from .stand import COMPOSE_STATE_ROLE, METASTORE_DB, sh, state_conn_id, state_db
 
 #: A bucket the gate made for one config of a stack and engine: `rivet-afgate-<tag>-<stack>-<engine>-<batch|cdc>`, or
@@ -80,7 +80,6 @@ class Engine:
     #: Statements run once the server answers, before the seed (grants rivet needs).
     setup: str
     seed: str
-    changes: str
     #: The tables of the scenario and the columns compared (the key first is `id`).
     tables: dict[str, list[str]]
     #: DuckDB's scanner for the engine and the attach string (host port and password filled in); without one, the
@@ -109,11 +108,13 @@ class Engine:
     reader: str = ""
     select: dict[str, str] = field(default_factory=dict)
     ready_timeout: float = 300
-    #: The change events each cycle's `changes` make, per table and operation; with it, every rivet task of the leg's
-    #: DAGs has its XCom unit and task log graded against the counts the gate made (not rivet's own report).
-    ops: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)
     #: The cursor column of the batch exports (the rows an incremental extract reads are the ones past its high-water).
     cursor: str = "updated_at"
+    #: For a cursor finer than a microsecond: the count of the rows an incremental extract reads, taken by the engine at
+    #: the cursor's own precision (rivet's high-water is kept to the microsecond). `{table}`, `{where}` (`past_where`
+    #: with `{cursor}` and the mark, or empty on the first run).
+    past_count: str = ""
+    past_where: str = ""
     #: A column added mid-stream, after the cycles (the MySQL client stack's schema change).
     hot: HotDdl | None = None
     #: After the hot ALTER: a second CDC config on the first stream's checkpoint must be refused, and these changes
@@ -129,6 +130,11 @@ class Engine:
     duplicate_db: str = ""
     #: Two overlapping runs of the stream (one held inside rivet, one started beside it): these changes, once.
     overlap: tuple[str, dict[str, dict[str, int]]] | None = None
+
+    @property
+    def changes(self) -> str:
+        """The delta script of the cycle, in this engine's dialect."""
+        return cycle_effect.script(self.name)
 
     @property
     def service(self) -> str:
@@ -191,26 +197,12 @@ INSERT INTO gate_customers (name, tier) WITH RECURSIVE g(n) AS (SELECT 1 UNION A
 INSERT INTO gate_orders (customer_id, amount, status) WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 5000)
   SELECT 1 + n % 1000, ROUND((n % 997) * 1.37, 2), 'new' FROM g;
 """,
-    # Every update changes a value (MySQL logs no event and keeps `updated_at` for a row an UPDATE leaves as it was).
-    changes="""
-SET SESSION cte_max_recursion_depth = 10000;
-INSERT INTO gate_customers (name, tier) WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 20)
-  SELECT CONCAT('новый клиент ', n), 'free' FROM g;
-INSERT INTO gate_orders (customer_id, amount, status) WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 100)
-  SELECT 1 + n % 1000, 9.99 * n, 'new' FROM g;
-UPDATE gate_orders SET status = 'shipped' ORDER BY id LIMIT 30;
-UPDATE gate_customers SET tier = 'vip' ORDER BY id LIMIT 10;
-DELETE FROM gate_orders WHERE id <= 5000 ORDER BY id DESC LIMIT 5;
-""",
     tables={
         "gate_customers": ["id", "name", "tier", "updated_at"],
         "gate_orders": ["id", "customer_id", "amount", "status", "updated_at"],
     },
     duck_type="mysql",
     duck_dsn="host=127.0.0.1 port={port} user=rivet password={password} database=rivet",
-    ops={
-        "delta": {"gate_customers": {"insert": 20, "update": 10}, "gate_orders": {"insert": 100, "update": 30, "delete": 5}},
-    },
     # A nullable column (MySQL fills no old row, and the binlog carries none), added at the end (ALGORITHM=INSTANT on
     # 8.4); `after` sets it on old rows, on a row `before` changed, on new rows (one left NULL), and deletes one row.
     hot=HotDdl(
@@ -297,34 +289,14 @@ EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'gate_cust
 EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'gate_orders', @role_name = NULL,
   @capture_instance = N'gate_orders_v2';
 """,
-    # The last statement waits until the Agent's capture job has read the DELETE, so a CDC run right after sees every
-    # change (`cdc.lsn_time_mapping` is filled by the capture job; its times are DATETIME, 3 ms ticks).
-    changes="""
-USE rivet;
-SET NOCOUNT ON;
-WITH g AS (SELECT TOP (20) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects)
-INSERT INTO dbo.gate_customers (name, tier) SELECT CONCAT(N'новый клиент ', n), 'free' FROM g;
-WITH g AS (SELECT TOP (100) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects)
-INSERT INTO dbo.gate_orders (customer_id, amount, status, placed_at, payload)
-  SELECT 1 + n % 1000, 9.99 * n, N'new', TODATETIMEOFFSET(SYSUTCDATETIME(), '-05:30'), 0x00FF10 FROM g;
-UPDATE dbo.gate_orders SET status = N'отправлен', updated_at = SYSUTCDATETIME()
-  WHERE id IN (SELECT TOP (30) id FROM dbo.gate_orders ORDER BY id);
-UPDATE dbo.gate_customers SET tier = 'vip', updated_at = SYSUTCDATETIME()
-  WHERE id IN (SELECT TOP (10) id FROM dbo.gate_customers ORDER BY id);
-WAITFOR DELAY '00:00:00.200';
-DECLARE @before DATETIME = DATEADD(MILLISECOND, -20, SYSDATETIME());
-DELETE FROM dbo.gate_orders WHERE id IN (SELECT TOP (5) id FROM dbo.gate_orders WHERE id <= 5000 ORDER BY id DESC);
-DECLARE @waited INT = 0;
-WHILE NOT EXISTS (SELECT 1 FROM cdc.lsn_time_mapping WHERE tran_begin_time >= @before) AND @waited < 180
-BEGIN WAITFOR DELAY '00:00:01'; SET @waited += 1; END;
-IF @waited >= 180 THROW 50000, 'the CDC capture job did not read the changes within 180 s', 1;
-""",
     tables={
         "gate_customers": ["id", "name", "tier", "ext_id", "updated_at"],
         "gate_orders": ["id", "customer_id", "amount", "status", "placed_at", "payload", "updated_at"],
     },
     json_select="SET NOCOUNT ON; SELECT {cols} FROM rivet.dbo.{table} FOR JSON PATH, INCLUDE_NULL_VALUES;",
     json_kinds={"updated_at": "ts", "placed_at": "ts", "ext_id": "uuid", "payload": "bytes", "amount": "money"},
+    past_count="SET NOCOUNT ON; SELECT COUNT(*) FROM rivet.dbo.{table}{where};",
+    past_where=" WHERE {cursor} > CAST('{mark}' AS datetime2(7))",
 )
 MONGODB = Engine(
     name="mongodb",
@@ -371,19 +343,6 @@ for (let n = 1; n <= 5000; n++) orders.push({
   items: [{sku: "s" + n, qty: NumberInt(1 + n % 5), price: NumberDecimal("1.10")}], status: "new",
   payload: n % 7 ? BinData(0, "AP8Q") : null, placed_at: new Date(Date.UTC(2026, 0, 1, 7) + n * 1000)});
 db.gate_orders.insertMany(orders);
-""",
-    changes="""
-const now = new Date();
-const some = db.gate_customers.find().sort({_id: 1}).limit(10).toArray().map(d => d._id);
-db.gate_customers.insertMany(Array.from({length: 20}, (_, i) => ({
-  name: "новый клиент " + (i + 1), tier: "free", addr: {city: "Львів", tags: []}, balance: NumberDecimal("0.00"),
-  updated_at: now})));
-db.gate_orders.insertMany(Array.from({length: 100}, (_, i) => ({
-  _id: NumberLong(String(5001 + i)), customer_id: some[i % 10], amount: NumberDecimal((9.99 * (i + 1)).toFixed(2)),
-  items: [], status: "new", placed_at: now})));
-db.gate_orders.updateMany({_id: {$lte: NumberLong("30")}}, {$set: {status: "отправлен", updated_at: now}});
-db.gate_customers.updateMany({_id: {$in: some}}, {$set: {tier: "vip", "addr.tags": ["vip"]}});
-db.gate_orders.deleteMany({_id: {$gte: NumberLong("4996"), $lte: NumberLong("5000")}});
 """,
     tables={"gate_customers": ["_id", "document"], "gate_orders": ["_id", "document"]},
     key="_id",
@@ -471,20 +430,6 @@ GRANT SELECT ON gate_customers TO c##rivetcdc;
 GRANT SELECT ON gate_orders TO c##rivetcdc;
 EXIT
 """,
-    changes="""
-ALTER SESSION SET CONTAINER = FREEPDB1;
-ALTER SESSION SET CURRENT_SCHEMA = rivet;
-INSERT INTO gate_customers (name, tier) SELECT N'новый клиент ' || LEVEL, 'free' FROM dual CONNECT BY LEVEL <= 20;
-INSERT INTO gate_orders (customer_id, amount, status, placed_at, payload, doc)
-  SELECT 1 + MOD(LEVEL, 1000), 9.99 * LEVEL, N'new', SYSTIMESTAMP AT TIME ZONE '-05:30', HEXTORAW('00FF10'),
-    TO_BLOB(HEXTORAW('00FF10'))
-  FROM dual CONNECT BY LEVEL <= 100;
-UPDATE gate_orders SET status = N'отправлен', updated_at = SYS_EXTRACT_UTC(SYSTIMESTAMP) WHERE id <= 30;
-UPDATE gate_customers SET tier = 'vip', updated_at = SYS_EXTRACT_UTC(SYSTIMESTAMP) WHERE id <= 10;
-DELETE FROM gate_orders WHERE id BETWEEN 4996 AND 5000;
-COMMIT;
-EXIT
-""",
     # Unquoted names fold upper-case: init names the exports GATE_CUSTOMERS / GATE_ORDERS (the read-back is compared
     # by lower-case column name).
     tables={
@@ -505,14 +450,6 @@ EXIT
     json_kinds={"placed_at": "ts"},
 )
 ENGINES = {e.name: e for e in (MYSQL, MSSQL, MONGODB, ORACLE)}
-#: Keys an incremental extract cannot see deleted, left in the batch target after each cycle.
-DELETED_BY_BATCH = {"initial": {}, "delta": {"gate_orders": 5}, "idle": {"gate_orders": 5}}
-
-
-def deleted_by_batch(cycle: str, table: str) -> int:
-    """Keys of `table` the batch target keeps after `cycle` although the source deleted them (Oracle's names are
-    upper-case)."""
-    return DELETED_BY_BATCH.get(cycle, {}).get(table.lower(), 0)
 
 
 def init_argv(kind: str, engine: Engine, bucket: str, project: str, dataset: str, out: str) -> list[str]:
@@ -583,6 +520,8 @@ class SourceLeg:
         self.texts: dict[str, str] = {}
         #: Each table's cursor high-water after the last graded batch run (what the next extract reads past).
         self.high_water: dict[str, Any] = {}
+        #: Per table, the rows the next incremental extract reads as the engine counts them (`Engine.past_count`).
+        self.past: dict[str, int] = {}
         #: The DAG of the stream whose run pauses after it opened (the hot ALTER), when the engine has one.
         self.hot_dag = ""
         #: The DAG of the second of two overlapping stream runs.
@@ -896,25 +835,24 @@ class SourceLeg:
     def grade(self, stand: Any, v: Any, name: str, run_id: str = "") -> None:
         """Batch: each compacted base equals the source, with only the keys the cycle deleted extra. CDC: each base
         without the rows flagged deleted equals the source. Both: no buffer is left after `compact`. A kind the engine
-        cannot run: init still answers with the known limit (graded once, on the first cycle). An engine whose changes
-        the gate counts (`ops`): init's `load:` block is the client's, every rivet task's XCom unit and task log carry
-        the rows the gate made, and no staged Parquet is left after the load."""
+        cannot run: init still answers with the known limit (graded once, on the first cycle). With a run id: init's
+        `load:` block is the client's, every rivet task's XCom unit and task log carry the rows the cycle made
+        (`cycle_effect.ops`), and no staged Parquet is left after the load."""
         if name == "initial":
             for kind, problems in sorted(self.limits.items()):
                 limit = self.engine.limits[kind]
                 v.check(
                     f"{name}/{self.engine.name}/{kind}/known-limit", lambda p=problems: p, ok=f"{limit.shape}: {limit.documented}"
                 )
-            if self.engine.ops:
-                for kind, text in sorted(self.texts.items()):
-                    if kind not in self.delta_kinds():
-                        continue
-                    v.check(
-                        f"{name}/{self.engine.name}/{kind}/load-block-as-written",
-                        load_block_problems,
-                        text,
-                        ok=", ".join(f"{k}: {w}" for k, w in CLIENT_LOAD.items()),
-                    )
+            for kind, text in sorted(self.texts.items()):
+                if kind not in self.delta_kinds():
+                    continue
+                v.check(
+                    f"{name}/{self.engine.name}/{kind}/load-block-as-written",
+                    load_block_problems,
+                    text,
+                    ok=", ".join(f"{k}: {w}" for k, w in CLIENT_LOAD.items()),
+                )
         source = v.guard(f"{name}/{self.engine.name}/source", self.source_rows, stand)
         if source is None:
             return
@@ -936,15 +874,28 @@ class SourceLeg:
                 ),
                 ok=f"{self.stale_copy.name} in the state_dir, the run through repo/ succeeded",
             )
-        if self.engine.ops and run_id:
-            ops = self.engine.ops.get(name, {})
+        if run_id:
+            ops = cycle_effect.ops(name)
+            self.past = self.past_rows(stand) if self.engine.past_count else {}
             self.grade_tasks(stand, v, name, run_id, self.dags, source, ops, baseline=name == "initial")
             self.grade_staged(v, name, self.kinds)
             self.high_water = {t: high_water(rows, self.engine.cursor) for t, rows in source.items()}
 
+    def past_rows(self, stand: Any) -> dict[str, int]:
+        """Per table, the rows an incremental extract reads now (past the previous high-water), counted by the engine at
+        the cursor's precision: rivet keeps the high-water to the microsecond, so the rows of the mark's microsecond that
+        the source keeps finer are read again, and a count in Python (to the microsecond) misses them."""
+        out = {}
+        for table in self.engine.tables:
+            mark = self.high_water.get(table)
+            where = "" if mark is None else self.engine.past_where.format(cursor=self.engine.cursor, mark=mark.isoformat(sep=" "))
+            text = self.sql(stand, self.engine.past_count.format(table=table, where=where))
+            out[table] = int(re.findall(r"^\s*(\d+)\s*$", text, re.M)[-1])
+        return out
+
     def kept_by_batch(self, cycle: str, table: str) -> int:
         """Keys of `table` the batch target keeps after `cycle` although the source deleted them."""
-        return deleted_by_batch(cycle, table)
+        return cycle_effect.kept_by_batch(cycle, table)
 
     def delta_kinds(self) -> set[str]:
         """The configs that load deltas (a base and a buffer `compact` merges): every config the leg's init wrote."""
@@ -974,21 +925,49 @@ class SourceLeg:
                 if objects is not None:
                     v.check(cell + "/compacted", warehouse.compacted, objects, self.targets[kind][table], cell)
 
+    def stream_of(self, dag: str, task: str) -> tuple[list[str], str]:
+        """The source tables (as init wrote them) whose changes the task's stream reads, and the task's id without the
+        group of its stream: a CDC DAG is one stream (its spec names the tables), a batch DAG reads every table."""
+        spec = next((s for s in self.specs if s["dag_id"] == dag and s["kind"] == "cdc"), None)
+        return (list(spec["build"]["tables"]) if spec else list(self.engine.tables)), task
+
+    def table_of(self, tables: Sequence[str], unit: str) -> str:
+        """The scenario table a task's unit names: the table as init wrote it (`dbo.gate_orders`), the warehouse name it
+        loads under (`dbo_gate_orders`) or the export's name, in either case."""
+        known = {k.lower(): k for k in self.engine.tables}
+        names = {n.lower(): known[short(t).lower()] for t in tables for n in (t, warehouse_table(t))}
+        if unit.lower() not in names:
+            raise LookupError(f"no table of this stream is named {unit!r} (it reads {sorted(names)})")
+        return names[unit.lower()]
+
     def expected_rows(
-        self, kind: str, task: str, source: dict[str, list[dict[str, Any]]], ops: dict[str, dict[str, int]], baseline: bool
+        self,
+        kind: str,
+        dag: str,
+        task: str,
+        source: dict[str, list[dict[str, Any]]],
+        ops: dict[str, dict[str, int]],
+        baseline: bool,
     ) -> int | None:
-        """The rows a rivet task moved, from what the gate did: a CDC run, the change events of the cycle (and the
-        baseline on the first); a CDC load of a table, that table's; a batch extract or load, the rows past the previous
-        high-water. A compaction: not counted (None)."""
+        """The rows a rivet task moved, from what the gate did: a CDC run, the change events of its stream's tables in the
+        cycle (and their baseline on the first); a CDC load, its table's; a batch extract or load, the rows past the
+        previous high-water. A compaction: not counted (None)."""
+        tables, task = self.stream_of(dag, task)
         group, _, unit = task.partition(".")
-        events = {t: sum(ops.get(t, {}).values()) + (len(source[t]) if baseline else 0) for t in self.engine.tables}
+        events = {}
+        for t in tables:
+            key = self.table_of(tables, t)
+            events[key] = sum(ops.get(key.lower(), {}).values()) + (len(source[key]) if baseline else 0)
         if group == "run":
             return sum(events.values())
         if group == "compact":
             return None
+        table = self.table_of(tables, unit)
         if kind == "batch":
-            return rows_past(source[unit], self.engine.cursor, self.high_water.get(unit))
-        return events.get(short(unit))
+            if table in self.past:
+                return self.past[table]
+            return rows_past(source[table], self.engine.cursor, self.high_water.get(table))
+        return events[table]
 
     def grade_tasks(
         self,
@@ -1014,7 +993,11 @@ class SourceLeg:
                     continue
                 print(f"XCOM {name} {dag} {task} {json.dumps(payload, default=str)}", flush=True)
                 kind = "batch" if dag.endswith("_batch") else "cdc"
-                rows = self.expected_rows(kind, task, source, ops, baseline)
+                try:
+                    rows = self.expected_rows(kind, dag, task, source, ops, baseline)
+                except LookupError as exc:
+                    v.check(cell + "/xcom-unit", lambda e=exc: [str(e)])
+                    continue
                 v.check(cell + "/xcom-unit", xcom_problems, payload, rows, ok=f"{unit_rows(payload)} row(s)")
                 if xcom_problems(payload, rows):
                     print(f"STDERR {name} {dag} {task}:\n{stderr_tail(stand, payload)}", flush=True)
@@ -1082,7 +1065,7 @@ class SourceLeg:
         if source is None:
             return
         old = {t: [{c: r[c] for c in cols} for r in source[t]] for t, cols in self.engine.tables.items()}
-        gone = {t: deleted_by_batch("idle", t) + (hot.deleted if t == hot.table else 0) for t in self.engine.tables}
+        gone = {t: cycle_effect.kept_by_batch("idle", t) + (hot.deleted if t == hot.table else 0) for t in self.engine.tables}
         self.grade_targets(v, name, old, ("batch",), {"batch": gone})
         self.grade_targets(v, name, source, ("cdc",), {}, added={hot.table: [hot.column]})
         target = self.targets["cdc"][hot.table]
@@ -1824,13 +1807,12 @@ def column_reached(got: Sequence[dict[str, Any]], source: Sequence[dict[str, Any
 
 
 def window_problems(opened: float | None, done: float, pause_ms: int, margin: float = 5.0) -> list[str]:
-    """The hot ALTER and the writes after it landed while the run was still paused after it opened (`opened`, `done`:
-    monotonic seconds; the pause sleeps `pause_ms` from the moment its marker was written)."""
+    """The gate's work after a paused run's marker (`opened`, `done`: monotonic s) ended `margin` s before the pause did."""
     if opened is None:
         return ["the CDC run never reached cdc_after_open (no marker)"]
     took = done - opened
     if took > pause_ms / 1000 - margin:
-        return [f"the ALTER and its writes ended {took:.1f} s after the pause opened; the pause is {pause_ms} ms"]
+        return [f"the gate's work ended {took:.1f} s after the pause opened; the pause is {pause_ms} ms"]
     return []
 
 

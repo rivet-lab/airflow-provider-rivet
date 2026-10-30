@@ -7,9 +7,7 @@ import re
 import subprocess
 
 MIN_RIVET_VERSION = (0, 32, 2)
-# The first rivet that reads a source credential from Google Secret Manager (`url_secret`, `password_secret`; rivet-lab/rivet
-# #717). TODO: set this to the release that ships #717 once it is cut. 0.33.0 is a placeholder: #717 is open and unreleased,
-# and its branch build still reports 0.32.2, so a branch binary is refused by this gate too.
+#: The first rivet that reads a source credential from Google Secret Manager (rivet-lab/rivet #717).
 GCP_SECRET_MIN_RIVET_VERSION = (0, 33, 0)
 PROBE_TIMEOUT = 60
 _VERSION_RE = re.compile(r"rivet\s+(\d+)\.(\d+)\.(\d+)")

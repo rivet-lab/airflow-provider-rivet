@@ -142,7 +142,7 @@ source:
 - A config with `url_secret`, or with `password_secret` and no `url_env` (its host, user and database written in the config),
   reads no source Connection: a DAG built from it (below) needs only the state Connection. A `password_secret` with
   `url_env` still reads the Connection for the URL.
-- **rivet version.** Secret sources need rivet 0.33.0 or newer <!-- TODO: the version rivet-lab/rivet#717 ships in -->.
+- **rivet version.** Secret sources need rivet 0.33.0 or newer.
   An older rivet is refused before it starts with `RIVET_AIRFLOW_BINARY_TOO_OLD`, naming the version needed.
 
 `rivet init` writes `url_env:`. To source a config from a secret, write the file yourself, or change the written

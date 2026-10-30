@@ -14,7 +14,7 @@ import yaml
 from test_conns import CLOUD
 from test_stand_hygiene import laid_out, written_specs
 
-from gate import dagspec, sources
+from gate import cycle_effect, dagspec, sources
 from gate.sources import (
     MYSQL,
     SourceLeg,
@@ -129,7 +129,7 @@ def test_every_value_of_the_added_column_must_reach_the_warehouse() -> None:
 def test_the_alter_must_land_while_the_run_is_still_paused() -> None:
     # Mutant: `>` -> `<`, or the margin dropped (an ALTER that ended as the pause did passes).
     assert window_problems(100.0, 110.0, 45000) == []
-    assert window_problems(100.0, 141.0, 45000)[0].startswith("the ALTER and its writes ended 41.0 s")
+    assert window_problems(100.0, 141.0, 45000)[0].startswith("the gate's work ended 41.0 s")
     assert window_problems(None, 0.0, 45000) == ["the CDC run never reached cdc_after_open (no marker)"]
 
 
@@ -211,18 +211,19 @@ def test_the_rows_each_task_moved_come_from_what_the_gate_did(tmp_path: Path, mo
         "gate_customers": [{"updated_at": t[0]}, {"updated_at": t[2]}],
         "gate_orders": [{"updated_at": t[1]}, {"updated_at": t[2]}, {"updated_at": t[2]}],
     }
-    ops = MYSQL.ops["delta"]
+    ops = cycle_effect.ops("delta")
+    cdc, batch = "gate_src_mysql_cdc", "gate_src_mysql_batch"
     # Mutant: the baseline left out of the first run, or added to every run.
-    assert leg.expected_rows("cdc", "run", source, ops, baseline=False) == 165
-    assert leg.expected_rows("cdc", "run", source, {}, baseline=True) == 5
+    assert leg.expected_rows("cdc", cdc, "run", source, ops, baseline=False) == 165
+    assert leg.expected_rows("cdc", cdc, "run", source, {}, baseline=True) == 5
     # Mutant: a CDC load counted over every table, not its own.
-    assert leg.expected_rows("cdc", "load.gate_orders", source, ops, baseline=False) == 135
-    assert leg.expected_rows("cdc", "compact.gate_orders", source, ops, baseline=False) is None
+    assert leg.expected_rows("cdc", cdc, "load.gate_orders", source, ops, baseline=False) == 135
+    assert leg.expected_rows("cdc", cdc, "compact.gate_orders", source, ops, baseline=False) is None
     leg.high_water = {"gate_orders": t[1]}
     # Mutant: the kind read from the unit's name (init names the CDC config's recipes after the tables, as the batch
     # exports): a batch unit counted as change events, or a CDC load as rows past the high-water.
-    assert leg.expected_rows("batch", "apply.gate_orders", source, ops, baseline=False) == 2
-    assert leg.expected_rows("batch", "load.gate_orders", source, ops, baseline=False) == 2
+    assert leg.expected_rows("batch", batch, "apply.gate_orders", source, ops, baseline=False) == 2
+    assert leg.expected_rows("batch", batch, "load.gate_orders", source, ops, baseline=False) == 2
 
 
 def test_a_task_log_is_the_newest_attempt_of_its_task(tmp_path: Path) -> None:
@@ -239,7 +240,7 @@ def test_a_task_log_is_the_newest_attempt_of_its_task(tmp_path: Path) -> None:
 @pytest.mark.parametrize("cycle", ["delta"])
 def test_the_counted_changes_are_the_ones_the_engine_makes(cycle: str) -> None:
     changes = MYSQL.changes
-    ops = MYSQL.ops[cycle]
+    ops = cycle_effect.ops(cycle)
     assert "LIMIT 30" in changes and ops["gate_orders"]["update"] == 30
     assert "LIMIT 10" in changes and ops["gate_customers"]["update"] == 10
     assert "LIMIT 5" in changes and ops["gate_orders"]["delete"] == 5

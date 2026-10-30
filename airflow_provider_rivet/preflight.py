@@ -12,7 +12,7 @@ from typing import Any
 
 from . import _yaml
 from .capabilities import GCP_SECRET_MIN_RIVET_VERSION, MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
-from .exports import entries_of, mode_of, name_of
+from .exports import entries_of, may_be_cdc, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
@@ -110,11 +110,6 @@ def resolve_binary(rivet_bin: str, env: Mapping[str, str]) -> str:
         where = " nor installed by the rivet-cli package" if rivet_bin == "rivet" else ""
         raise PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"no rivet binary `{rivet_bin}` on the worker's PATH{where}")
     return found
-
-
-def binary_unanswering(exc: ProbeFailed) -> PreflightRefusal:
-    """The refusal for a binary that does not answer a probe, before the preflight or while argv is built."""
-    return PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}")
 
 
 def _where(exc: Exception) -> str:
@@ -257,7 +252,7 @@ def run_preflight(
     try:
         caps = probe(binary)
     except ProbeFailed as exc:
-        raise binary_unanswering(exc) from exc
+        raise PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}") from exc
     if not caps.new_enough():
         floor = ".".join(str(n) for n in MIN_RIVET_VERSION)
         raise PreflightRefusal(
@@ -282,9 +277,7 @@ def run_preflight(
             if "${" in name:
                 refuse_unresolved(config_path, "export name", name)
         raise PreflightRefusal("RIVET_AIRFLOW_EXPORT_UNKNOWN", f"config {config_path} has no export `{export}`")
-    touched = [mode for name, mode in modes.items() if export in (None, name)]
-    # D06: a mode no variable resolves may be `cdc`; the guards treat it as one (fail closed).
-    is_cdc = cdc or any(mode == "cdc" or "${" in mode for mode in touched)
+    is_cdc = cdc or any(may_be_cdc(mode) for name, mode in modes.items() if export in (None, name))
 
     if where == "pod":
         if kind != "postgres":

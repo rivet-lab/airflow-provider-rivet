@@ -13,7 +13,7 @@ import pytest
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.invocation import Request, hashed_name, path_name
-from airflow_provider_rivet.preflight import STATE_URL_ENV
+from airflow_provider_rivet.preflight import STATE_URL_ENV, PreflightRefusal
 from airflow_provider_rivet.reading import Reading
 
 LABEL = ("dag", "run", "task", 2)
@@ -114,6 +114,20 @@ def test_a_result_file_on_exit_zero_records_what_is_wrong_with_it(tmp_path: Path
     assert s.degraded == degraded
 
 
+@pytest.mark.parametrize(
+    ("command", "done"), [("run", "success"), ("apply", "success"), ("load", "loaded"), ("compact", "compacted")]
+)
+def test_a_unit_without_a_result_row_or_an_error_carries_the_commands_done_word(command: str, done: str) -> None:
+    """Reading.run_units 19/22/23, Reading.load_units 16."""
+    step = SimpleNamespace(signal=None, exit_status=0)
+    read = Reading(set(), {}, command)
+    if command in ("run", "apply"):
+        units = read.run_units(step, None, None, "orders")  # type: ignore[arg-type]
+    else:
+        units = read.load_units(step, {}, None, "orders", "t")  # type: ignore[arg-type]
+    assert [(u.export, u.status, u.error) for u in units] == [("orders", done, None)]
+
+
 # --- the worker's variables -----------------------------------------------------------------------------------------
 
 
@@ -205,3 +219,18 @@ def test_a_failed_unit_without_its_own_error_takes_the_one_rivet_printed() -> No
     assert units[0].error == printed and printed.code
     units = read.run_units(_Step(0, None, None), {"per_export": [{"export_name": "a", "status": "failed"}]}, None, None)
     assert units[0].error == EXIT_ZERO and EXIT_ZERO.message == "rivet exited 0 and printed no error object"
+
+
+def test_a_task_folder_that_cannot_be_made_is_refused_coded_and_leaves_no_temp_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diskless session whose stderr folder is a file: refused STATE_DIR_NOT_WRITABLE, its temp work folder removed."""
+    made: list[str] = []
+    real = invocation.tempfile.mkdtemp
+    monkeypatch.setattr(invocation.tempfile, "mkdtemp", lambda **kw: made.append(real(dir=tmp_path, **kw)) or made[-1])
+    (tmp_path / "file").write_text("")
+    with pytest.raises(PreflightRefusal) as refused:
+        session(tmp_path, state=False, stderr_dir=str(tmp_path / "file" / "logs"))
+    assert refused.value.code == "RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE"
+    assert str(refused.value).startswith("[RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE] cannot create a task folder: ")
+    assert len(made) == 1 and not Path(made[0]).exists()

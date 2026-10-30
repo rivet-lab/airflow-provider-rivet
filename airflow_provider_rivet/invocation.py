@@ -26,8 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _yaml
-from .capabilities import ProbeFailed
-from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, binary_unanswering, run_preflight, selects_state
+from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
 
@@ -262,24 +261,40 @@ class _Session:
         self.name = path_name(*request.label[1:3], attempt)
         self.global_name = path_name(*request.label[:3], attempt)
         self.log_name = f"{run}__{attempt}"
-        if pf.state_dir is not None:
-            self.work = _private_dir(pf.state_dir, WORK, dag)
+        try:
+            self._make_dirs(dag, task)
+        except OSError as exc:
+            self._drop_tmp()
+            raise PreflightRefusal("RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"cannot create a task folder: {exc}") from exc
+        except BaseException:
+            self._drop_tmp()
+            raise
+
+    def _make_dirs(self, dag: str, task: str) -> None:
+        """The work folder (the state directory's, or a fresh temp one) and the stderr log folder."""
+        if self.pf.state_dir is not None:
+            self.work = _private_dir(self.pf.state_dir, WORK, dag)
         else:
             self.tmp = Path(tempfile.mkdtemp(prefix="rivet-airflow-"))
             self.work = self.tmp
-        if request.stderr_dir:
-            Path(request.stderr_dir).mkdir(parents=True, exist_ok=True)
-            self.logs = _private_dir(Path(request.stderr_dir), dag, task)
-        elif pf.state_dir is not None:
-            self.logs = _private_dir(pf.state_dir, LOGS, dag, task)
+        if self.req.stderr_dir:
+            Path(self.req.stderr_dir).mkdir(parents=True, exist_ok=True)
+            self.logs = _private_dir(Path(self.req.stderr_dir), dag, task)
+        elif self.pf.state_dir is not None:
+            self.logs = _private_dir(self.pf.state_dir, LOGS, dag, task)
         else:
             self.logs = _private_dir(_temp_base(), LOGS, dag, task)
             self.degraded.add("stderr_temp")
 
+    def _drop_tmp(self) -> None:
+        """Remove the temp work folder of a diskless worker, if one was made."""
+        if self.tmp is not None:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+
     def close(self) -> None:
         """Drop the scratch directory of a diskless worker and the log files past the retention."""
         if self.tmp is not None:
-            shutil.rmtree(self.tmp, ignore_errors=True)
+            self._drop_tmp()
         else:
             _prune_stale(self.work)
         if self.req.log_keep is not None:
@@ -962,15 +977,12 @@ _DISPATCH = {"run": _run, "cdc_run": _run, "apply": _apply, "plan": _plan, "load
 def invoke(
     request: Request, emit: Emit, on_process: Callable | None = None, stopped: Callable[[], bool] | None = None
 ) -> Outcome:
-    """Preflight, run and classify one rivet task; a probe of the binary that fails at any point is a refusal.
+    """Preflight, run and classify one rivet task.
 
     `stopped` answers whether Airflow asked the task to stop; once it does, no further rivet step starts (D40)."""
     if request.command not in _DISPATCH:
         raise ValueError(f"unknown rivet command {request.command!r}")
-    try:
-        return _invoke(request, emit, on_process, stopped)
-    except ProbeFailed as exc:
-        raise binary_unanswering(exc) from exc
+    return _invoke(request, emit, on_process, stopped)
 
 
 #: The commands whose rivet subcommand has `-p` / `--param` (rivet 0.32.2: run, plan and check); load, compact and apply refuse it.
