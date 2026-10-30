@@ -1807,13 +1807,12 @@ def column_reached(got: Sequence[dict[str, Any]], source: Sequence[dict[str, Any
 
 
 def window_problems(opened: float | None, done: float, pause_ms: int, margin: float = 5.0) -> list[str]:
-    """The hot ALTER and the writes after it landed while the run was still paused after it opened (`opened`, `done`:
-    monotonic seconds; the pause sleeps `pause_ms` from the moment its marker was written)."""
+    """The gate's work after a paused run's marker (`opened`, `done`: monotonic s) ended `margin` s before the pause did."""
     if opened is None:
         return ["the CDC run never reached cdc_after_open (no marker)"]
     took = done - opened
     if took > pause_ms / 1000 - margin:
-        return [f"the ALTER and its writes ended {took:.1f} s after the pause opened; the pause is {pause_ms} ms"]
+        return [f"the gate's work ended {took:.1f} s after the pause opened; the pause is {pause_ms} ms"]
     return []
 
 

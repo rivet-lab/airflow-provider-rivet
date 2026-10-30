@@ -158,7 +158,10 @@ def test_duplicates_passes_once_and_catches_a_version_or_event_written_on_both_h
     change(con)
     b = write(con, tmp_path / "b.parquet", DELTA)
     assert oracle.duplicates(con, [a, b], ["id", "updated_at"], "x") == [], "an update is a new version, not a repeat"
-    assert oracle.duplicates(con, [], ["id"], "x") == []
+    assert oracle.duplicates(con, [], ["id"], "x") == ["x: no rows to check (0 file(s))"], "nothing read is no evidence"
+    assert oracle.duplicates(con, [], ["id"], "x", empty_ok=True) == [], "a cycle with no change has no event"
+    empty = write(con, tmp_path / "empty.parquet", "SELECT * FROM src.public.orders WHERE false")
+    assert oracle.duplicates(con, [empty], ["id"], "x") == ["x: no rows to check (1 file(s))"]
     mutants = {
         "the delta extracted again on the other host": [a, b, write(con, tmp_path / "again.parquet", DELTA)],
         "the whole table re-read by a host with an empty state": [

@@ -153,10 +153,12 @@ def inside(inner: Sequence[tuple[str, str]], outer: tuple[str, str], what: str) 
     return [f"{what}: {late} not inside {outer}"] if late or not inner else []
 
 
-def duplicates(con: duckdb.DuckDBPyConnection, files: Sequence[str], columns: Sequence[str], what: str) -> list[str]:
-    """No combination of `columns` occurs twice across the files: one version of a row, or one event, written once."""
-    if not files:
-        return []
+def duplicates(
+    con: duckdb.DuckDBPyConnection, files: Sequence[str], columns: Sequence[str], what: str, empty_ok: bool = False
+) -> list[str]:
+    """No combination of `columns` occurs twice across the files, which hold a row unless `empty_ok`."""
+    if not rows_in(con, files):
+        return [] if empty_ok else [f"{what}: no rows to check ({len(files)} file(s))"]
     cols = ", ".join(columns)
     rows = con.execute(
         f"SELECT {cols}, count(*) AS n FROM read_parquet({_files(files)}, union_by_name=true) GROUP BY ALL HAVING n > 1 "
