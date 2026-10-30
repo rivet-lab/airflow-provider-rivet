@@ -1047,6 +1047,16 @@ def test_a_config_naming_no_url_env_gets_the_source_under_rivet_source_url(tmp_p
     assert set(build(tmp_path)["rivet_shop_cdc"].get_task("run").env_from_connections) == {"RIVET_SOURCE_URL", "RIVET_STATE_URL"}
 
 
+def test_a_config_naming_a_secret_url_reads_no_source_connection(tmp_path: Path) -> None:
+    # rivet reads the URL from Secret Manager (`url_secret`): the source Connection of the DAG is not read, so it is not required
+    (tmp_path / "shop.yaml").write_text(
+        CDC_CONFIG.format(env="RIVET_SOURCE_URL").replace(
+            "  url_env: RIVET_SOURCE_URL\n", "  url_secret: projects/p/secrets/shop-url\n"
+        )
+    )
+    assert set(build(tmp_path)["rivet_shop_cdc"].get_task("run").env_from_connections) == {"RIVET_STATE_URL"}
+
+
 def test_a_stream_naming_no_table_without_a_warehouse_only_runs(tmp_path: Path) -> None:
     assert tasks(tmp_path, cdc_config(load="", stream="")) == {"run", "watcher"}
 

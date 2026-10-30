@@ -280,6 +280,7 @@ def build_source_dags(
     state_root: str,
     state_connection: str,
     source_connection: str = "{name}",
+    env_from_variables: Mapping[str, str] | None = None,
     init_args: Sequence[str] = (),
     odbc_ini: str | None = "/etc/odbc.ini",
     operator_kwargs: Mapping[str, Any] | None = None,
@@ -294,6 +295,11 @@ def build_source_dags(
     and compaction per table, or every batch export with its load. The state of a source is the database
     `rivet_state_<name>` on the PostgreSQL server of `state_connection` (created by `init` if missing) and the folder
     `<state_root>/<name>`. Reads only files at parse time: no database is reached until a task runs.
+
+    `env_from_variables` maps an environment variable to the Airflow Variable that holds its value (`{name}` replaced
+    in the key), e.g. `{"RIVET_SOURCE_URL_SECRET": "rivet_{name}_url_secret"}` for a config with
+    `url_secret: ${RIVET_SOURCE_URL_SECRET}`. Every task of the source reads its Variables when it runs, never at parse;
+    a missing one fails that source's tasks with `RIVET_AIRFLOW_VARIABLE_MISSING` and no other source.
     """
     names = _names("sources", sources)
     bad = [n for n in names if not SOURCE_NAME.fullmatch(n)]
@@ -302,7 +308,7 @@ def build_source_dags(
         raise ValueError(f"source names are distinct and of [a-z0-9_]: {bad or twice}")
     if mode not in ("cdc", "batch"):
         raise ValueError("`mode` is 'cdc' or 'batch'")
-    taken = sorted({"env_from_connections", "config", "state_dir"} & set(operator_kwargs or {}))
+    taken = sorted({"env_from_connections", "env_from_variables", "config", "state_dir"} & set(operator_kwargs or {}))
     if taken:
         raise ValueError(f"operator_kwargs may not set {taken}: each source's DAG sets them")
     _refuse_owned_kwargs(operator_kwargs)  # before any source has a config, as the builders it calls later
@@ -314,9 +320,11 @@ def build_source_dags(
             **({"odbc_ini": odbc_ini, "dsn": name} if odbc_ini else {}),
         }
         state = {"conn_id": state_connection, "database": f"rivet_state_{name}"}
+        variables = {env: key.replace("{name}", name) for env, key in (env_from_variables or {}).items()}
         kwargs = {
             **(operator_kwargs or {}),
             "env_from_connections": {SOURCE_ENV: source, "RIVET_STATE_URL": state},
+            "env_from_variables": variables,
         }
         settings = {"is_paused_upon_creation": True, **dag_kwargs}
         dag_id = f"rivet_{name}_{mode}"
@@ -342,8 +350,13 @@ def _config_dag(
 ) -> DAG:
     """The DAG built from a source's config."""
     doc = read_config(str(config))
-    url_env = (doc.get("source") or {}).get("url_env")
-    if url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
+    source_block = doc.get("source") or {}
+    url_env = source_block.get("url_env")
+    # rivet reads the secret itself: no source Connection is read for a `url_secret`, nor for a `password_secret` whose
+    # host, user and database are written in the config; a `password_secret` with `url_env` still reads the URL's Connection
+    if source_block.get("url_secret") is not None or (source_block.get("password_secret") is not None and not url_env):
+        kwargs["env_from_connections"] = {"RIVET_STATE_URL": state}
+    elif url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
     return _dag_of_config(dag_id, mode == "cdc", config, doc, common)
 

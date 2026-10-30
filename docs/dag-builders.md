@@ -229,6 +229,13 @@ unpausing runs `init` at once, and the stream starts at the next scheduled run (
   `wave_<n>_done`) keeps its id; the ordering point gets `_barrier` appended.
 - A config moved from cron (`docs/cron-to-airflow-cdc.md`) works as it is: the source goes to the variable its
   `url_env` names.
-- `operator_kwargs` go to every task, `init` included; `env_from_connections`, `config` and `state_dir` are the
-  builder's.
+- `operator_kwargs` go to every task, `init` included; `env_from_connections`, `env_from_variables`, `config` and
+  `state_dir` are the builder's.
+- `env_from_variables` (`{ENV_NAME: "<variable key>"}`, `{name}` replaced in the key) fills an environment variable from an
+  Airflow Variable per source, read when each task runs and never at parse. For a config with
+  `url_secret: ${RIVET_SOURCE_URL_SECRET}`: `env_from_variables={"RIVET_SOURCE_URL_SECRET": "rivet_{name}_url_secret"}`,
+  one Variable `rivet_<name>_url_secret` per source. A missing Variable fails that source's tasks with
+  `RIVET_AIRFLOW_VARIABLE_MISSING`, before rivet starts, and no other source. The walk-through, the IAM grant and the
+  comparison with Airflow's Secret Manager backend are in
+  [Connections and secrets](connections-and-secrets.md#one-variable-per-source-the-secret-name-at-task-run-time).
 - The DAG file reads only files: no database is reached while the scheduler parses it.

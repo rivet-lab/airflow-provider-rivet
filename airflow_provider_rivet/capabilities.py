@@ -7,6 +7,8 @@ import re
 import subprocess
 
 MIN_RIVET_VERSION = (0, 32, 2)
+#: The first rivet that reads a source credential from Google Secret Manager (rivet-lab/rivet #717).
+GCP_SECRET_MIN_RIVET_VERSION = (0, 33, 0)
 PROBE_TIMEOUT = 60
 _VERSION_RE = re.compile(r"rivet\s+(\d+)\.(\d+)\.(\d+)")
 
@@ -58,6 +60,10 @@ class Capabilities:
     def new_enough(self) -> bool:
         """True when the binary is at or above the minimum the package was written against."""
         return self.version >= MIN_RIVET_VERSION
+
+    def at_least(self, version: tuple[int, ...]) -> bool:
+        """True when the binary is at or above `version`."""
+        return self.version >= version
 
 
 _CACHE: dict[tuple, Capabilities] = {}
