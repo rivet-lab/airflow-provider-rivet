@@ -700,3 +700,12 @@ def test_no_reason_is_no_text_after_the_line(text: object) -> None:
 
     assert _why(text) == ""
     assert _why("because") == ": because"
+
+
+def test_golden_load_of_a_schema_qualified_table_names_the_table_rivet_loads(rig: Rig, log: Recorder) -> None:
+    """`dbo.orders` is loaded as `dbo_orders`: the headline names what `rivet load --table` got."""
+    rig.config.write_text(CONFIG + LOAD_BLOCK)
+    row = load_row("orders", "dbo_orders", rows=5, target="p.d.dbo_orders")
+    rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
+    rig.run(rig.operator(RivetLoadOperator, export="orders", table="dbo.orders"))
+    assert log.shown()[0] == "INFO rivet load orders table dbo_orders → p.d.dbo_orders: OK: 5 rows in 3.0 s (run l1)"

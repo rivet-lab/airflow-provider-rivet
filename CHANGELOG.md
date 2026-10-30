@@ -7,6 +7,17 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- A batch DAG of `build_source_dags` or `build_config_dag` over a config with an export whose
+  `mode: ${VAR}` may resolve to `cdc` was built, though preflight already treated that export as CDC; it is now
+  refused `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, naming the export and the mode.
+- `build_config_dag` raised on a config it could not build, which dropped every DAG of the file (the quickstart builds
+  all its pipelines in one file); it now returns a DAG whose one task, `config`, fails naming the refusal, as
+  `build_source_dags` does.
+- A task folder (work, temp or stderr logs) that could not be created failed the task with a bare `OSError` and left
+  the temp work folder of a diskless worker behind; it is now `RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE` and the temp
+  folder is removed.
+- The task log headline of a load or compaction of a schema-qualified table named the captured table (`dbo.orders`);
+  it now names the warehouse table rivet loads (`dbo_orders`), as the task id does.
 - Documentation: the task releases an export lock by an explicit unlock when it ends, so a process rivet left behind
   that holds a copy of the descriptor no longer keeps the lock (measured with a grandchild that kept it; before the
   documentation said the lock lasted until that process exits). A killed task process still leaves the lock to rivet.

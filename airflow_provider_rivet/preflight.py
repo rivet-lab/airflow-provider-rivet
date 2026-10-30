@@ -12,7 +12,7 @@ from typing import Any
 
 from . import _yaml
 from .capabilities import MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
-from .exports import entries_of, mode_of, name_of
+from .exports import entries_of, may_be_cdc, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
@@ -259,9 +259,7 @@ def run_preflight(
             if "${" in name:
                 refuse_unresolved(config_path, "export name", name)
         raise PreflightRefusal("RIVET_AIRFLOW_EXPORT_UNKNOWN", f"config {config_path} has no export `{export}`")
-    touched = [mode for name, mode in modes.items() if export in (None, name)]
-    # D06: a mode no variable resolves may be `cdc`; the guards treat it as one (fail closed).
-    is_cdc = cdc or any(mode == "cdc" or "${" in mode for mode in touched)
+    is_cdc = cdc or any(may_be_cdc(mode) for name, mode in modes.items() if export in (None, name))
 
     if where == "pod":
         if kind != "postgres":

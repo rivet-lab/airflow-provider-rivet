@@ -134,6 +134,14 @@ REFUSED = {
         "database of the CDC DAG, and load the same tables beside it. A source in both a CDC and a batch DAG needs two "
         "names, or a `config_dir` and a `state_root` per mode: build the batch DAG from its own",
     ),
+    "a_mode_a_variable_holds_in_a_batch_dag": (
+        "batch",
+        GOOD_BATCH + "  - name: shop_cdc\n    mode: ${SHOP_MODE}\n    tables: [orders]\n",
+        "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+        "{cfg} has `mode: cdc` exports (shop_cdc: `${{SHOP_MODE}}` may be cdc): a batch DAG over it would run on the config "
+        "and the state database of the CDC DAG, and load the same tables beside it. A source in both a CDC and a batch DAG "
+        "needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG from its own",
+    ),
     "a_stream_beside_batch_exports_in_a_batch_dag": (
         "batch",
         GOOD_BATCH + "  - name: shop_cdc\n    mode: cdc\n    tables: [orders]\n",

@@ -13,7 +13,7 @@ import pytest
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.invocation import Request, hashed_name, path_name
-from airflow_provider_rivet.preflight import STATE_URL_ENV
+from airflow_provider_rivet.preflight import STATE_URL_ENV, PreflightRefusal
 from airflow_provider_rivet.reading import Reading
 
 LABEL = ("dag", "run", "task", 2)
@@ -219,3 +219,18 @@ def test_a_failed_unit_without_its_own_error_takes_the_one_rivet_printed() -> No
     assert units[0].error == printed and printed.code
     units = read.run_units(_Step(0, None, None), {"per_export": [{"export_name": "a", "status": "failed"}]}, None, None)
     assert units[0].error == EXIT_ZERO and EXIT_ZERO.message == "rivet exited 0 and printed no error object"
+
+
+def test_a_task_folder_that_cannot_be_made_is_refused_coded_and_leaves_no_temp_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diskless session whose stderr folder is a file: refused STATE_DIR_NOT_WRITABLE, its temp work folder removed."""
+    made: list[str] = []
+    real = invocation.tempfile.mkdtemp
+    monkeypatch.setattr(invocation.tempfile, "mkdtemp", lambda **kw: made.append(real(dir=tmp_path, **kw)) or made[-1])
+    (tmp_path / "file").write_text("")
+    with pytest.raises(PreflightRefusal) as refused:
+        session(tmp_path, state=False, stderr_dir=str(tmp_path / "file" / "logs"))
+    assert refused.value.code == "RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE"
+    assert str(refused.value).startswith("[RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE] cannot create a task folder: ")
+    assert len(made) == 1 and not Path(made[0]).exists()
