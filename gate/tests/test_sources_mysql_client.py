@@ -129,7 +129,7 @@ def test_every_value_of_the_added_column_must_reach_the_warehouse() -> None:
 def test_the_alter_must_land_while_the_run_is_still_paused() -> None:
     # Mutant: `>` -> `<`, or the margin dropped (an ALTER that ended as the pause did passes).
     assert window_problems(100.0, 110.0, 45000) == []
-    assert window_problems(100.0, 141.0, 45000)[0].startswith("the ALTER and its writes ended 41.0 s")
+    assert window_problems(100.0, 141.0, 45000)[0].startswith("the gate's work ended 41.0 s")
     assert window_problems(None, 0.0, 45000) == ["the CDC run never reached cdc_after_open (no marker)"]
 
 
