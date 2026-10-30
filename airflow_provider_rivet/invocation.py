@@ -26,8 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _yaml
-from .capabilities import ProbeFailed
-from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, binary_unanswering, run_preflight, selects_state
+from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
 
@@ -962,15 +961,12 @@ _DISPATCH = {"run": _run, "cdc_run": _run, "apply": _apply, "plan": _plan, "load
 def invoke(
     request: Request, emit: Emit, on_process: Callable | None = None, stopped: Callable[[], bool] | None = None
 ) -> Outcome:
-    """Preflight, run and classify one rivet task; a probe of the binary that fails at any point is a refusal.
+    """Preflight, run and classify one rivet task.
 
     `stopped` answers whether Airflow asked the task to stop; once it does, no further rivet step starts (D40)."""
     if request.command not in _DISPATCH:
         raise ValueError(f"unknown rivet command {request.command!r}")
-    try:
-        return _invoke(request, emit, on_process, stopped)
-    except ProbeFailed as exc:
-        raise binary_unanswering(exc) from exc
+    return _invoke(request, emit, on_process, stopped)
 
 
 #: The commands whose rivet subcommand has `-p` / `--param` (rivet 0.32.2: run, plan and check); load, compact and apply refuse it.
