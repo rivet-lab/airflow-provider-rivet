@@ -20,4 +20,7 @@
 # since G1b went (#58), which this change removes.
 # 2026-10-24: 14: the four equivalents of _run_units 44/45 and _load 140/141 moved into reading.Reading, where the
 # exit-0 fallback is the constant EXIT_ZERO and no such mutant exists (#88).
-14
+# 2026-10-29: 6: full run on the Mac (main 1717ea7, OrbStack, mutmut 3.8.0): 7593 mutants, 21 survived, 0 timeout,
+# 0 segfault; tests kill _apply 48/50/51/57, _plan 47/54/59/60, Reading.run_units 19/22/23, Reading.load_units 16 and
+# copy_name 18/19, and invoke 11 went with invoke's unreachable `except ProbeFailed`.
+6

@@ -57,6 +57,8 @@ def test_apply_on_a_binary_with_the_contract_flags_passes_them_and_degrades_noth
     payload, _ = rig.run(rig.operator(RivetApplyOperator, export="orders", lock_wait=30))
     apply = rig.argv("apply")
     assert apply[2:] == ["--summary-output", apply[3], "--json-errors", "--no-notify", "--lock-wait", "30"]
+    plan = ["plan", "--config", str(rig.copy()), "--export", "orders", "--format", "json", "--output", apply[1]]
+    assert rig.argv("plan") == [*plan, "--json-errors"]
     assert not any(c["argv"][0] == "metrics" for c in rig.calls())
     assert payload["degraded"] == [] and payload["units"][0]["rows"] == 7
 
@@ -362,10 +364,11 @@ def test_a_failed_plan_reports_rivets_own_class(rig: Rig, line: dict, raised: ty
 
 
 def test_a_plan_without_a_layout_is_a_final_internal_failure_and_a_new_layout_file_is_world_readable(rig: Rig) -> None:
-    """mutants _plan 38, 45-57"""
+    """mutants _plan 38, 45-60"""
     target = rig.tmp / "pg.plan.json"
     rig.scenario(plan_list=[])
     exc, ti = rig.run(rig.operator(RivetPlanOperator, plan_file=str(target)))
+    assert str(exc) == "internal: rivet plan printed no plan layout"
     error = {"code": None, "kind": None, "class": "internal", "exit_code": 6, "retryable": False, "action": None}
     payload = ti.store[("task", "return_value")]
     assert isinstance(exc, AirflowFailException) and payload["error"] == error and payload["units"] == [failed_unit(error)]

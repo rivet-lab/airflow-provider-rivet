@@ -446,7 +446,8 @@ class MultiHost:
             v.check(c + "/replay-equals-source", oracle.cdc_replay, con, baseline, stream, f"src.public.{table}", cols, "id")
             v.check(c + "/baseline-once", oracle.duplicates, con, baseline, ["id"], c + " baseline")
             events = sorted(f for f in self.files(p, f"{self.cdc_prefix}/{table}") if "/snapshot/" not in f)
-            v.check(c + "/each-event-once", oracle.duplicates, con, events, ["__pos", "__seq"], c)
+            quiet = not any(ops[table].values())
+            v.check(c + "/each-event-once", oracle.duplicates, con, events, ["__pos", "__seq"], c, quiet)
         xcom = v.guard(f"{cell}/cdc/xcom-rows", self.stand.xcom, p.dag, run_id, "run")
         if xcom is not None:
             reported = sum(u.get("rows") or 0 for u in xcom["units"])

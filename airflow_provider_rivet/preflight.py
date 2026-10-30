@@ -102,11 +102,6 @@ def resolve_binary(rivet_bin: str, env: Mapping[str, str]) -> str:
     return found
 
 
-def binary_unanswering(exc: ProbeFailed) -> PreflightRefusal:
-    """The refusal for a binary that does not answer a probe, before the preflight or while argv is built."""
-    return PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}")
-
-
 def _where(exc: Exception) -> str:
     """Where a YAML error is, in the text rivet and the operator both read: `" at line 3, column 7: <what is wrong>"`; the
     library's own words for the problem, never the text of the config."""
@@ -247,7 +242,7 @@ def run_preflight(
     try:
         caps = probe(binary)
     except ProbeFailed as exc:
-        raise binary_unanswering(exc) from exc
+        raise PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}") from exc
     if not caps.new_enough():
         floor = ".".join(str(n) for n in MIN_RIVET_VERSION)
         raise PreflightRefusal(

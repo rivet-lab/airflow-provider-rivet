@@ -107,9 +107,9 @@ class Verdicts:
             self.grade(cell, problems, ok=ok)
 
 
-#: The SQLite CDC run holds itself open here, and the marker file tells the gate it got there (the pause window in which
-#: the SQLite batch run writes beside it).
-PAUSE_AT = "cdc_after_open:20000"
+#: How long the SQLite CDC run holds itself open after its marker, for the SQLite batch run to write beside it.
+PAUSE_MS = 45000
+PAUSE_AT = f"cdc_after_open:{PAUSE_MS}"
 MARKER = "cdc_sqlite"
 
 
@@ -224,11 +224,11 @@ def trigger_cycle(stand: Stand, v: Verdicts, name: str, run_id: str, dags: list[
     marker = stand.rivet_dir / "markers" / MARKER
     marker.unlink(missing_ok=True)
     stand.trigger("gate_cdc_sqlite", run_id)
-    opened = wait_file(marker)
-    v.grade(f"{name}/sqlite-pause-window-opened", [] if opened else ["the SQLite CDC run never reached cdc_after_open"])
+    opened = time.monotonic() if wait_file(marker) else None
     for dag in dags:
         if dag != "gate_cdc_sqlite":
             stand.trigger(dag, run_id)
+    v.grade(f"{name}/sqlite-pause-window-opened", sources.window_problems(opened, time.monotonic(), PAUSE_MS))
     return wait_runs(stand, dags, run_id)
 
 

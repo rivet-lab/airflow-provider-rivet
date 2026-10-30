@@ -209,7 +209,7 @@ def test_a_copy_of_a_config_without_a_suffix_is_named_yaml(tmp_path: Path) -> No
 
 def test_a_long_config_name_is_cut_by_bytes_so_the_copy_and_its_temp_file_fit_the_file_system(tmp_path: Path) -> None:
     """A name over 255 bytes is refused by the file system (ENAMETOOLONG); the hash keeps two long names apart."""
-    for stem in ("a" * 300, "é" * 130, "日本" * 60):
+    for stem in ("a" * 300, "é" * 130, "日本" * 60, "a" + "é" * 130, "a" + "日本" * 60):
         source = tmp_path / f"{stem}.yaml"
         name = invocation.copy_name(source)
         assert len(name.encode()) <= invocation.COPY_NAME_BYTES, stem[:3]

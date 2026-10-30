@@ -114,6 +114,20 @@ def test_a_result_file_on_exit_zero_records_what_is_wrong_with_it(tmp_path: Path
     assert s.degraded == degraded
 
 
+@pytest.mark.parametrize(
+    ("command", "done"), [("run", "success"), ("apply", "success"), ("load", "loaded"), ("compact", "compacted")]
+)
+def test_a_unit_without_a_result_row_or_an_error_carries_the_commands_done_word(command: str, done: str) -> None:
+    """Reading.run_units 19/22/23, Reading.load_units 16."""
+    step = SimpleNamespace(signal=None, exit_status=0)
+    read = Reading(set(), {}, command)
+    if command in ("run", "apply"):
+        units = read.run_units(step, None, None, "orders")  # type: ignore[arg-type]
+    else:
+        units = read.load_units(step, {}, None, "orders", "t")  # type: ignore[arg-type]
+    assert [(u.export, u.status, u.error) for u in units] == [("orders", done, None)]
+
+
 # --- the worker's variables -----------------------------------------------------------------------------------------
 
 
