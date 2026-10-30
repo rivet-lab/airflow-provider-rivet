@@ -288,6 +288,13 @@ def test_a_config_dag_over_a_config_it_cannot_read_fails_its_own_task_and_ends_n
     assert (dag.task_ids, set(dag.tags)) == (["config"], {"rivet", "config", "refused"})
     assert refused_text(dag).startswith(f"[RIVET_AIRFLOW_CONFIG_UNREADABLE] cannot read config {broken}: ")
     assert set(build_config_dag("m", config=str(tmp_path / "missing.yaml")).task_ids) == {"config"}
+    odd = tmp_path / "odd.yaml"
+    odd.write_text("exports:\n  - {name: s, mode: cdc, tables: 5}\n")
+    assert refused_text(build_config_dag("o", config=str(odd))) == (
+        f"[RIVET_AIRFLOW_CONFIG_UNBUILDABLE] cannot build a DAG from {odd}: TypeError: 'ScalarInt' object is not iterable"
+    )
+    with pytest.raises(ValueError, match="operator_kwargs may not set `trigger_rule`"):
+        build_config_dag("k", config=str(broken), operator_kwargs={"trigger_rule": "all_done"})
 
 
 def test_the_provider_entry_point_names_the_distribution_and_the_version_has_one_source_and_the_metadata_is_exact() -> None:
