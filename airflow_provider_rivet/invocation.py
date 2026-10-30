@@ -262,24 +262,40 @@ class _Session:
         self.name = path_name(*request.label[1:3], attempt)
         self.global_name = path_name(*request.label[:3], attempt)
         self.log_name = f"{run}__{attempt}"
-        if pf.state_dir is not None:
-            self.work = _private_dir(pf.state_dir, WORK, dag)
+        try:
+            self._make_dirs(dag, task)
+        except OSError as exc:
+            self._drop_tmp()
+            raise PreflightRefusal("RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"cannot create a task folder: {exc}") from exc
+        except BaseException:
+            self._drop_tmp()
+            raise
+
+    def _make_dirs(self, dag: str, task: str) -> None:
+        """The work folder (the state directory's, or a fresh temp one) and the stderr log folder."""
+        if self.pf.state_dir is not None:
+            self.work = _private_dir(self.pf.state_dir, WORK, dag)
         else:
             self.tmp = Path(tempfile.mkdtemp(prefix="rivet-airflow-"))
             self.work = self.tmp
-        if request.stderr_dir:
-            Path(request.stderr_dir).mkdir(parents=True, exist_ok=True)
-            self.logs = _private_dir(Path(request.stderr_dir), dag, task)
-        elif pf.state_dir is not None:
-            self.logs = _private_dir(pf.state_dir, LOGS, dag, task)
+        if self.req.stderr_dir:
+            Path(self.req.stderr_dir).mkdir(parents=True, exist_ok=True)
+            self.logs = _private_dir(Path(self.req.stderr_dir), dag, task)
+        elif self.pf.state_dir is not None:
+            self.logs = _private_dir(self.pf.state_dir, LOGS, dag, task)
         else:
             self.logs = _private_dir(_temp_base(), LOGS, dag, task)
             self.degraded.add("stderr_temp")
 
+    def _drop_tmp(self) -> None:
+        """Remove the temp work folder of a diskless worker, if one was made."""
+        if self.tmp is not None:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+
     def close(self) -> None:
         """Drop the scratch directory of a diskless worker and the log files past the retention."""
         if self.tmp is not None:
-            shutil.rmtree(self.tmp, ignore_errors=True)
+            self._drop_tmp()
         else:
             _prune_stale(self.work)
         if self.req.log_keep is not None:

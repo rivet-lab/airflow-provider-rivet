@@ -26,6 +26,11 @@ def mode_of(entry: Mapping[str, Any]) -> str:
     return str(_yaml.text_of(entry.get("mode")) or "full")
 
 
+def may_be_cdc(mode: str) -> bool:
+    """Whether an export's mode (`mode_of`) is, or may resolve to, `cdc`: a mode a `${...}` still holds may."""
+    return mode == "cdc" or "${" in mode
+
+
 def tables_of(entry: Mapping[str, Any]) -> list[str]:
     """The tables the export names, as written: `tables:`, else the one `table:`."""
     named = entry.get("tables") or ([entry["table"]] if entry.get("table") else [])

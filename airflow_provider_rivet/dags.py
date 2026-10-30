@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ._compat import DAG, TaskGroup
-from .exports import compacts, entries_of, mode_of, name_of, tables_of
+from .exports import compacts, entries_of, may_be_cdc, mode_of, name_of, tables_of
 from .invocation import PLAN_ERRORS, plan_layout, warehouse_table
 from .operators import (
     RivetApplyOperator,
@@ -360,13 +360,17 @@ def build_config_dag(
     """The DAG of a rivet config, built as build_source_dags builds it: every `mode: cdc` stream (a group per stream
     when there are several) with a load and, where the target merges, a compaction per table, or every batch export
     with its load. `mode` is inferred from the config when not given: 'cdc' if it has a `mode: cdc` export. Reads only
-    the config at parse time."""
+    the config at parse time; a config it cannot build is a DAG whose one task fails naming why, as in build_source_dags."""
     if mode not in (None, "cdc", "batch"):
         raise ValueError("`mode` is 'cdc', 'batch' or None (read from the config)")
-    doc = read_config(config)
-    as_cdc = any(mode_of(e) == "cdc" for e in entries_of(doc)) if mode is None else mode == "cdc"
+    _refuse_owned_kwargs(operator_kwargs)
     common = {"config": config, "state_dir": state_dir, "operator_kwargs": dict(operator_kwargs or {}), **dag_kwargs}
-    return _dag_of_config(dag_id, as_cdc, Path(config), doc, common)
+    try:
+        doc = read_config(config)
+        as_cdc = any(mode_of(e) == "cdc" for e in entries_of(doc)) if mode is None else mode == "cdc"
+        return _dag_of_config(dag_id, as_cdc, Path(config), doc, common)
+    except Exception as exc:
+        return _refused_dag(dag_id, mode or "config", Path(config), exc, common)
 
 
 def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
@@ -392,11 +396,16 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
         task_common = _common(common["config"], common["state_dir"], common["operator_kwargs"])
         dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
         return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
-    if cdc:
+    maybe = [
+        name_of(e) if mode_of(e) == "cdc" else f"{name_of(e)}: `{mode_of(e)}` may be cdc"
+        for e in exports
+        if may_be_cdc(mode_of(e))
+    ]
+    if maybe:
         raise ConfigRefusal(
             "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
-            f"{config} has `mode: cdc` exports ({', '.join(name_of(e) for e in cdc)}): a batch DAG over it would run on "
-            "the config and the state database of the CDC DAG, and load the same tables beside it. A source in both a "
+            f"{config} has `mode: cdc` exports ({', '.join(maybe)}): a batch DAG over it would run on the config and the "
+            "state database of the CDC DAG, and load the same tables beside it. A source in both a "
             "CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG "
             "from its own",
         )

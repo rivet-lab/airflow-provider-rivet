@@ -10,13 +10,13 @@ from importlib import metadata
 from pathlib import Path
 
 import pytest
-from conftest import DOCS, fixture
+from conftest import DOCS, FakeTI, fixture
 
 from airflow_provider_rivet import __version__, get_provider_info
+from airflow_provider_rivet._compat import AirflowFailException
 from airflow_provider_rivet.callbacks import format_failure
 from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_config_dag, read_plan_layout
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetRunOperator, RivetRunWatcher, RivetWaveBarrier
-from airflow_provider_rivet.preflight import ConfigRefusal
 
 
 def edges(dag: object) -> set[tuple[str, str]]:
@@ -250,17 +250,44 @@ def test_config_dag_reads_its_mode_from_the_config_and_refuses_a_mode_with_nothi
     cdc.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [t], mode: cdc}\n")
     assert sorted(build_config_dag("c", config=str(cdc)).task_ids) == ["run", "watcher"], "no `load:`, no load task"
     assert set(build_config_dag("c", config=str(cdc)).tags) == {"rivet", "cdc"}, "read from the config"
-    with pytest.raises(ConfigRefusal) as refused:
-        build_config_dag("c", config=str(batch), mode="cdc")
-    assert str(refused.value) == (
+    refused = build_config_dag("c", config=str(batch), mode="cdc")
+    assert (refused.task_ids, set(refused.tags)) == (["config"], {"rivet", "cdc", "refused"})
+    assert refused_text(refused) == (
         f"[RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT] {batch} has no export with `mode: cdc`, so there is no stream for a CDC "
         "DAG; build this source with mode='batch', or delete the file to have `init` write it again with the CDC mode"
     )
-    with pytest.raises(ConfigRefusal) as refused:
-        build_config_dag("c", config=str(cdc), mode="batch")
-    assert refused.value.code == "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT"
+    assert refused_text(build_config_dag("c", config=str(cdc), mode="batch")).startswith("[RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT] ")
     with pytest.raises(ValueError, match=exactly("`mode` is 'cdc', 'batch' or None (read from the config)")):
         build_config_dag("c", config=str(cdc), mode="CDC")
+
+
+def refused_text(dag: object) -> str:
+    """The text the one task of a refused DAG fails with."""
+    with pytest.raises(AirflowFailException) as exc:
+        dag.get_task("config").execute({"ti": FakeTI(task_id="config")})
+    return str(exc.value)
+
+
+def test_a_config_dag_whose_mode_a_variable_holds_is_never_a_batch_dag(tmp_path: Path) -> None:
+    """`mode: ${MODE}` may resolve to cdc at run time, as preflight reads it: the inferred batch DAG is refused."""
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, table: t, mode: '${MODE}'}\n")
+    assert refused_text(build_config_dag("c", config=str(cfg))) == (
+        f"[RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT] {cfg} has `mode: cdc` exports (s: `${{MODE}}` may be cdc): a batch DAG "
+        "over it would run on the config and the state database of the CDC DAG, and load the same tables beside it. A "
+        "source in both a CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the "
+        "batch DAG from its own"
+    )
+
+
+def test_a_config_dag_over_a_config_it_cannot_read_fails_its_own_task_and_ends_no_dag_file(tmp_path: Path) -> None:
+    """A DAG file with one broken config among several (the quickstart's loop) still builds the others."""
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("exports:\n  - name: a\n   mode: full\n")
+    dag = build_config_dag("b", config=str(broken))
+    assert (dag.task_ids, set(dag.tags)) == (["config"], {"rivet", "config", "refused"})
+    assert refused_text(dag).startswith(f"[RIVET_AIRFLOW_CONFIG_UNREADABLE] cannot read config {broken}: ")
+    assert set(build_config_dag("m", config=str(tmp_path / "missing.yaml")).task_ids) == {"config"}
 
 
 def test_the_provider_entry_point_names_the_distribution_and_the_version_has_one_source_and_the_metadata_is_exact() -> None:

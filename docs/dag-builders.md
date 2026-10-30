@@ -118,8 +118,11 @@ dag = build_config_dag(
 ```
 
 - `mode` is `"cdc"` or `"batch"`; left out, it is `"cdc"` when the config has a `mode: cdc` export. A CDC DAG of a
-  config with no `mode: cdc` export, a batch DAG of one with any, and a config with no export are refused, coded
-  (`RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_NO_EXPORT`).
+  config with no `mode: cdc` export, a batch DAG of one with any (or with a `mode: ${VAR}` that may resolve to `cdc`),
+  and a config with no export are refused, coded (`RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT`,
+  `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_NO_EXPORT`). As in `build_source_dags`, a refused or
+  unreadable config is a DAG of one task, `config`, that fails naming the refusal; it never ends the DAG file, so a
+  loop over several configs (the quickstart's) still builds the others. A `mode` other than these is a `ValueError`.
 - Load tasks are built when the config has a `load:` section; a compact task follows a table's load only where rivet
   resolves it to a base and a buffer (a compacting warehouse with `layout: base_buffer`, or a stream with `backfill:`).
   ClickHouse and Snowflake get none. Task ids name the warehouse table: `dbo.orders` is `load.dbo_orders`.
