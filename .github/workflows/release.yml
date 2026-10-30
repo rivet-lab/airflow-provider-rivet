@@ -22,7 +22,7 @@ jobs:
           tool: uv
       - uses: actions/checkout@v7
         with:
-          repository: panchenkoai/rivet
+          repository: rivet-lab/rivet
           path: rivet
           sparse-checkout: |
             tests/fixtures/scheduler

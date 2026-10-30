@@ -16,7 +16,7 @@ from .exports import entries_of, may_be_cdc, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
 STATE_DB_NAME = ".rivet_state.db"
-SETUP_GUIDE = "https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
+SETUP_GUIDE = "https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
 STATE_URL_ENV = "RIVET_STATE_URL"
 # The `source:` keys that name a Google Secret Manager secret: rivet reads them from GCP_SECRET_MIN_RIVET_VERSION on.
 SECRET_SOURCE_KEYS = ("url_secret", "password_secret")

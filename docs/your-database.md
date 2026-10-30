@@ -14,7 +14,7 @@ copy. On GitHub the form is not rendered: replace the `{{…}}` placeholders by 
 ## 1. The stack
 
 ```bash
-git clone --depth 1 https://github.com/panchenkoai/airflow-provider-rivet.git
+git clone --depth 1 https://github.com/rivet-lab/airflow-provider-rivet.git
 cd airflow-provider-rivet/quickstart/{{FOLDER}}
 cp ../.env.example .env                  # on Linux: set AIRFLOW_UID to the output of `id -u`
 docker compose up -d --build --wait      # then http://localhost:8080, airflow / airflow
@@ -61,7 +61,7 @@ recorded in the pipeline's own state:
 ```
 
 Review the file before the first run: `rivet init` guesses partitions and modes from the tables (see
-[rivet's config reference](https://panchenkoai.github.io/rivet/reference/config.html)).
+[rivet's config reference](https://rivet-lab.github.io/rivet/reference/config.html)).
 
 ## 6. The DAG
 
@@ -96,11 +96,11 @@ latest version; a CDC table keeps a deleted key with `__is_deleted = 1`.
 
 - **Batch and the key.** A batch config reads each table through a `query:`, and for a `query:` export `rivet run`
   records no key, so the builder writes `pk: [<key>]` into the config instead of leaving `pk: auto`
-  ([rivet#679](https://github.com/panchenkoai/rivet/issues/679)).
+  ([rivet#679](https://github.com/rivet-lab/rivet/issues/679)).
 - **Your own bucket or ClickHouse** gets its own Connection, named in the pipeline's `PIPELINES` line (`storage`,
   `warehouse`). The demo pipelines keep the stack's MinIO and ClickHouse.
 - **CeleryExecutor**: pick `airflow-worker` as the service that runs tasks.
-- **ClickHouse** loading is a preview: [known limits](https://panchenkoai.github.io/rivet/recipes/clickhouse-load.html).
+- **ClickHouse** loading is a preview: [known limits](https://rivet-lab.github.io/rivet/recipes/clickhouse-load.html).
 - What the builder's commands were proven with: every command for a PostgreSQL CDC pipeline on Airflow 3.3.2 and for
   a MySQL batch pipeline with its own ClickHouse Connection on Airflow 2.10.5 was run as generated against the
   quickstart stack, and the ClickHouse tables were compared with the source. The `s3` (AWS) bucket branch was not run.

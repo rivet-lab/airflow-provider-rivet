@@ -3,7 +3,7 @@
 All notable changes to `airflow-provider-rivet`. The package is versioned independently of the
 rivet binary; its release tags will use the prefix `airflow-v`.
 
-## Unreleased
+## 0.4.0 (2026-10-30)
 
 ### Added
 

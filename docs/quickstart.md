@@ -13,7 +13,7 @@ warehouse. Four pipelines are ready to run:
 Everything runs on your machine: no cloud account is needed. The same files then take your own database: the
 [command builder](your-database.md) writes the commands for it.
 
-The files are in [`quickstart/`](https://github.com/panchenkoai/airflow-provider-rivet/tree/main/quickstart):
+The files are in [`quickstart/`](https://github.com/rivet-lab/airflow-provider-rivet/tree/main/quickstart):
 
 | File | What it is |
 |---|---|
@@ -54,7 +54,7 @@ Every port is bound to `127.0.0.1`. Every password is a demo value: change them 
 Needs Docker with Compose v2 and about 6 GB of memory for Docker. The commands are for `bash`.
 
 ```bash
-git clone --depth 1 https://github.com/panchenkoai/airflow-provider-rivet.git
+git clone --depth 1 https://github.com/rivet-lab/airflow-provider-rivet.git
 cd airflow-provider-rivet/quickstart/airflow-3.3        # or airflow-2.10
 cp ../.env.example .env                                 # on Linux: set AIRFLOW_UID to the output of `id -u`
 docker compose up -d --build --wait
@@ -117,7 +117,7 @@ tables and mode, and writes every command below with those values. Without it, t
 
 1. **Grants** on your database: `SELECT` on the tables; for MySQL CDC also `REPLICATION SLAVE` and
    `REPLICATION CLIENT` and the binlog settings above; for PostgreSQL CDC the `REPLICATION` attribute and
-   `wal_level = logical` ([rivet's CDC guide](https://panchenkoai.github.io/rivet/reference/cdc.html)).
+   `wal_level = logical` ([rivet's CDC guide](https://rivet-lab.github.io/rivet/reference/cdc.html)).
 2. **A Connection** for the source, e.g. `airflow connections add rivet_billing --conn-type postgres ...`. The host must
    resolve from the containers: a database on your machine is `host.docker.internal`.
 3. **The pipeline's own state database, bucket, ClickHouse database and `state_dir`**: `createdb` in `rivet-state`,
@@ -138,7 +138,7 @@ table in one ClickHouse database; and a pipeline's cursors and checkpoint belong
 
 A batch config: `rivet init` writes a `query:` for each table and `pk: auto` in `load:`. For a `query:` export
 `rivet run` records no key, so `pk: auto` works only while the key `init` recorded is in the state the DAG uses
-([rivet#679](https://github.com/panchenkoai/rivet/issues/679)). The demo configs and the builder's commands declare
+([rivet#679](https://github.com/rivet-lab/rivet/issues/679)). The demo configs and the builder's commands declare
 `pk: [id]`; for your tables, name their key. Without it a load stops with `RIVET_LOAD_PRIMARY_KEY_MISSING`.
 
 ## Airflow 2.10 and 3.3
@@ -164,7 +164,7 @@ The demo services, the Connections, the DAG file and the configs are the same fi
 - **Back up** the `rivet-state` volume and `./rivet-state`: a CDC checkpoint is a file there, and a lost one means a
   new baseline.
 - **ClickHouse** loading is a preview in rivet
-  ([known limits](https://panchenkoai.github.io/rivet/recipes/clickhouse-load.html)).
+  ([known limits](https://rivet-lab.github.io/rivet/recipes/clickhouse-load.html)).
 
 ## Stop and clean up
 

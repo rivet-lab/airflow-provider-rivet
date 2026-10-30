@@ -32,7 +32,7 @@ from airflow_provider_rivet.operators import (
 )
 from airflow_provider_rivet.result import DIGEST_KEYS
 
-GUIDE = "https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
+GUIDE = "https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide"
 SQLITE = f"  note     SQLite state is single-host — see {GUIDE}"
 
 

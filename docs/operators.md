@@ -84,7 +84,7 @@ step, and indented `note` lines. A successful apply with SQLite state:
 rivet apply users → OK: 30 rows, 1 file in 4.1 s (run users_20261016T092509.120_4242)
   plan     sealed, strategy incremental in 0.8 s
   apply    done in 2.9 s
-  note     SQLite state is single-host — see https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide
+  note     SQLite state is single-host — see https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide
 ```
 
 A failed one (a retry whose sealed plan another run has overtaken):
@@ -95,7 +95,7 @@ rivet apply users → REFUSED [RIVET_PLAN_ARTIFACT_STALE], final
   apply    exit 5 in 0.6 s
   export   users: failed [RIVET_PLAN_ARTIFACT_STALE] refusal
   stderr   <state_dir>/logs/<dag_id>/<task_id>-<hash>/<run_id>__try2.apply.stderr.log
-  note     SQLite state is single-host — see https://github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide
+  note     SQLite state is single-host — see https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/state.md#local-worker-setup-guide
 ```
 
 A task of one step that took the task's time (a load, a compact, a run) has no step line: the
