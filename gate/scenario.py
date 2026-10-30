@@ -69,9 +69,9 @@ RIVET_TASKS = {f"gate_batch_{s}": [f"apply.{s}_{short}" for short, _ in TABLES.v
 #: Cells red by a known product defect: graded XFAIL with the issue while red, XPASS (a failure of the run) once green,
 #: so the entry is removed when the fix lands.
 KNOWN = {
-    "initial/mysql/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
-    "initial/mssql/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
-    "initial/mongodb/cdc/staged-parts-cleaned": "panchenkoai/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
+    "initial/mysql/cdc/staged-parts-cleaned": "rivet-lab/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
+    "initial/mssql/cdc/staged-parts-cleaned": "rivet-lab/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
+    "initial/mongodb/cdc/staged-parts-cleaned": "rivet-lab/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
 }
 
 

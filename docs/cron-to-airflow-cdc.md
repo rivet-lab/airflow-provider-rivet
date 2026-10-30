@@ -79,7 +79,7 @@ mkdir -p "rivet-state/$name" && sudo chown -R "${AIRFLOW_UID}:0" "rivet-state/$n
   `host:port/database`: `127.0.0.1` and the server's DNS name are two sources. A CDC stream still continues, because its
   position is in the checkpoint file. An incremental export, however, finds no cursor and silently re-reads its table in
   full: exit 0, duplicate rows at the destination
-  ([rivet#690](https://github.com/panchenkoai/rivet/issues/690)).
+  ([rivet#690](https://github.com/rivet-lab/rivet/issues/690)).
 - `sslmode=disable` is for a state server reached only over the compose network. rivet refuses a state URL to another
   host that names no `sslmode` (`RIVET_STATE_URL_TLS_REQUIRED`).
 - A Connection with the same id in a secrets backend wins over these: Airflow asks the backend first.

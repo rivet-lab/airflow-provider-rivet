@@ -32,7 +32,7 @@ jobs:
         # so the `-glibc2.28` asset every release from 0.32 on carries is the one taken.
         run: |
           tag="${{ inputs.rivet }}"
-          [ -n "$tag" ] || tag=$(gh release view -R panchenkoai/rivet --json tagName -q .tagName)
+          [ -n "$tag" ] || tag=$(gh release view -R rivet-lab/rivet --json tagName -q .tagName)
           case "$tag" in v*) ;; *) tag="v$tag" ;; esac
           # An older binary than the provider admits is refused: the minimum is MIN_RIVET_VERSION (dev/min_rivet.py).
           min=v$(python3 dev/min_rivet.py)
@@ -40,7 +40,7 @@ jobs:
             echo "::error::rivet $tag is older than the minimum $min the gate runs against"; exit 1
           fi
           asset="rivet-$tag-x86_64-unknown-linux-gnu-glibc2.28.tar.gz"
-          gh release download "$tag" -R panchenkoai/rivet -p "$asset" -D rivet-dl
+          gh release download "$tag" -R rivet-lab/rivet -p "$asset" -D rivet-dl
           tar -xzf "rivet-dl/$asset" -C rivet-dl
           find rivet-dl -type f -name rivet -exec cp {} ./rivet-bin \;
           chmod +x rivet-bin

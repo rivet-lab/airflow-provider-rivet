@@ -79,7 +79,7 @@ def test_the_readme_links_every_doc_page_by_an_absolute_url() -> None:
     reachable from it."""
     readme = DOC_FILES[0].read_text()
     pages = [p.name for p in DOC_FILES[1:]]
-    missing = [n for n in pages if f"github.com/panchenkoai/airflow-provider-rivet/blob/main/docs/{n})" not in readme]
+    missing = [n for n in pages if f"github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/{n})" not in readme]
     assert not missing, f"README links no page {missing}"
 
 

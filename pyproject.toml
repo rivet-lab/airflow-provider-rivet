@@ -35,10 +35,10 @@ gate = ["duckdb>=1.1", "pytz", "pytest>=8", "pyyaml>=6", "google-cloud-bigquery>
 required-version = ">=0.6.3"
 
 [project.urls]
-Homepage = "https://github.com/panchenkoai/airflow-provider-rivet"
-Source = "https://github.com/panchenkoai/airflow-provider-rivet"
-Issues = "https://github.com/panchenkoai/airflow-provider-rivet/issues"
-rivet = "https://github.com/panchenkoai/rivet"
+Homepage = "https://github.com/rivet-lab/airflow-provider-rivet"
+Source = "https://github.com/rivet-lab/airflow-provider-rivet"
+Issues = "https://github.com/rivet-lab/airflow-provider-rivet/issues"
+rivet = "https://github.com/rivet-lab/rivet"
 
 [project.entry-points.apache_airflow_provider]
 provider_info = "airflow_provider_rivet:get_provider_info"

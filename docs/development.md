@@ -5,7 +5,7 @@ Running the tests, mutation testing and the live gate.
 ## Development
 
 ```bash
-git clone https://github.com/panchenkoai/rivet ../rivet   # the contract fixtures the tests read
+git clone https://github.com/rivet-lab/rivet ../rivet   # the contract fixtures the tests read
 uv sync                                                   # latest Airflow 3 from uv.lock, plus pytest
 uv run pytest -q
 ```
@@ -265,7 +265,7 @@ database's tables are `mig_customers` / `mig_orders`: rivet refuses an unqualifi
 server also holds. Last of all, `unqualified/mysql/cdc/same-names-in-another-db` makes that case on purpose: a database
 `rivet_dup` with the scenario's table names, then init's CDC config over `rivet` (its own bucket, dataset and state),
 used as written, run once. It must run (init named `<db>.<table>`: BigQuery equals the source) or be refused by code at
-exit 5 on Airflow's first try (panchenkoai/rivet#675, fixed in 0.32.2; earlier builds stop the run at exit 1). Every
+exit 5 on Airflow's first try (rivet-lab/rivet#675, fixed in 0.32.2; earlier builds stop the run at exit 1). Every
 command a client runs is printed as a `COMMAND` line.
 
 `--sources mongodb` and `--sources oracle` (together: `--sources mongodb,oracle`) are the same leg where rivet can run

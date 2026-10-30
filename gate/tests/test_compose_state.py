@@ -150,7 +150,7 @@ def test_a_try_log_is_read_by_its_number(tmp_path: Path) -> None:
     assert sources.task_log(stand, "d", "r", "run", attempt=3) is None
 
 
-# --- init's CDC config beside a database of the same table names (panchenkoai/rivet#675) --------------------------------
+# --- init's CDC config beside a database of the same table names (rivet-lab/rivet#675) --------------------------------
 
 
 def test_the_unqualified_config_must_run_or_be_refused_at_exit_5() -> None:

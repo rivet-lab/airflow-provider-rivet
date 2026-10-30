@@ -126,7 +126,7 @@ class Engine:
     #: After the worker container is recreated: these changes (with their events) must reach the stream intact.
     recreate: tuple[str, dict[str, dict[str, int]]] | None = None
     #: A database of the same server holding the scenario's table names, made last: init's CDC config over the leg's
-    #: database must run (it names `<db>.<table>`) or be refused by code at exit 5 (panchenkoai/rivet#675).
+    #: database must run (it names `<db>.<table>`) or be refused by code at exit 5 (rivet-lab/rivet#675).
     duplicate_db: str = ""
     #: Two overlapping runs of the stream (one held inside rivet, one started beside it): these changes, once.
     overlap: tuple[str, dict[str, dict[str, int]]] | None = None
@@ -1140,7 +1140,7 @@ class SourceLeg:
         """Last of all (it would stop the leg's own stream): another database of the server holds the scenario's table
         names, and init writes a CDC config over the leg's database, used as written, run once by Airflow. It must run
         (init named `<db>.<table>`; then BigQuery equals the leg's source) or be refused by code at exit 5, never retried
-        (panchenkoai/rivet#675: init writes the bare names and the run stops at exit 1)."""
+        (rivet-lab/rivet#675: init writes the bare names and the run stops at exit 1)."""
         assert self.engine.duplicate_db and self.engine.hot is not None
         eng, dup, hot = self.engine.name, self.engine.duplicate_db, self.engine.hot
         cell = f"unqualified/{eng}/cdc/same-names-in-another-db"
