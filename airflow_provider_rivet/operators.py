@@ -33,6 +33,7 @@ from .connections import (
     resolve_database,
     with_database,
 )
+from .exports import entries_of, mode_of, name_of, tables_of
 from .invocation import (
     CLOUD_ENV,
     Busy,
@@ -47,7 +48,7 @@ from .invocation import (
     worker_environment,
 )
 from .preflight import PreflightRefusal, read_config, resolve_binary
-from .result import BUSY, REFUSED, STOPPED, error_text, unstarted
+from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
 from .tasklog import TaskLog
 
 XCOM_KEY = "return_value"
@@ -464,7 +465,7 @@ def config_present(path: Path) -> bool:
 def places(doc: Mapping[str, Any]) -> set[str]:
     """Where a config writes: each export's bucket prefix (`s3://b/p/`) and its warehouse dataset or database."""
     out = set()
-    for export in doc.get("exports") or []:
+    for export in entries_of(doc):
         dest = export.get("destination") or {}
         if dest.get("bucket"):
             out.add(f"{dest.get('type')}://{dest['bucket']}/{dest.get('prefix') or ''}")
@@ -487,6 +488,19 @@ def _flag_of(arg: str) -> str:
 def _asks_for_cdc(args: Sequence[str]) -> bool:
     """Whether `args` set `--mode` to `cdc` (`--mode cdc` or `--mode=cdc`); a value that reads `cdc` is only a value."""
     return "--mode=cdc" in args or any(a == "--mode" and b == "cdc" for a, b in pairwise(args))
+
+
+def _refusal() -> ErrorObject:
+    """The error object of a refusal the init makes itself: rivet's `refusal` class, never retried."""
+    return ErrorObject(code=None, kind=None, class_="refusal", exit_code=None, retryable=False, action=None)
+
+
+class _InitFailed(AirflowFailException):
+    """A failure of the init itself: the exception's text, and the error object its XCom payload carries."""
+
+    def __init__(self, text: str, error: ErrorObject) -> None:
+        super().__init__(text)
+        self.error = error
 
 
 class RivetInitOperator(_RivetTask):
@@ -534,8 +548,15 @@ class RivetInitOperator(_RivetTask):
             return self._write_config(target, env, binary)
         except Stopped as stop:
             self._stopped(ti, stop)
+        except _InitFailed as failure:
+            self._failed(ti, failure)
         finally:
             self._proc = None
+
+    def _failed(self, ti: Any, failure: _InitFailed) -> None:
+        """Publish and log a failure of the init itself, which Airflow does not retry."""
+        payload = {"command": self.command, "decision": "fail", "error": failure.error.to_xcom(), "units": []}
+        self._fail(ti, payload, str(failure), retry=False)  # pragma: no mutate - `retry` is read as a truth value
 
     def _create_state_database(self) -> None:
         """CREATE DATABASE for a RIVET_STATE_URL entry that names a `database`, on the server its Connection points at."""
@@ -576,8 +597,15 @@ class RivetInitOperator(_RivetTask):
             self.log.info(
                 "%s", line
             )  # pragma: no mutate - info(line) is the same line: a logger formats no message given no args
+        if code < 0:
+            raise _InitFailed(
+                f"`rivet {argv[0]}` was killed by signal {-code}; its output is above, and no config was written",
+                error_from_exit(None, -code),
+            )
         if code != 0:
-            raise AirflowFailException(f"`rivet {argv[0]}` exited {code}; its output is above, and no config was written")
+            raise _InitFailed(
+                f"`rivet {argv[0]}` exited {code}; its output is above, and no config was written", error_from_exit(code, None)
+            )
 
     def _refuse_shared_places(self, doc: Mapping[str, Any], target: Path) -> None:
         """Refuse a config that writes where another config of the folder writes: one bucket prefix (their files mix) or
@@ -591,17 +619,18 @@ class RivetInitOperator(_RivetTask):
             except PreflightRefusal:
                 continue  # a config this reader cannot read is no evidence either way
             if shared:
-                raise AirflowFailException(
+                raise _InitFailed(
                     f"the config `rivet init` wrote for {target.name} writes to {', '.join(shared)}, as {other} does; give each "
-                    "source its own place in init_args (`--gcs-bucket`/`--s3-bucket`, `--bigquery-dataset {name}`, "
-                    "`--clickhouse-database {name}`); no config was written"
+                    f"source its own place in init_args (`--gcs-bucket`/`--s3-bucket`, `--bigquery-dataset {target.stem}`, "
+                    f"`--clickhouse-database {target.stem}`); no config was written",
+                    _refusal(),
                 )
 
     def _write_config(self, target: Path, env: Mapping[str, str], binary: str) -> dict[str, Any]:
         """`rivet init` into the state folder (where the tasks run the config), `rivet check` there, then `target`."""
         state_dir = Path(self.state_dir or target.parent)
-        if not state_dir.parent.is_dir():  # a state root that is not there is a volume not mounted: never made here
-            raise AirflowFailException(f"{state_dir.parent} does not exist on this worker: mount the state folder first")
+        if not state_dir.parent.is_dir():
+            raise _InitFailed(f"{state_dir.parent} does not exist on this worker: mount the state folder first", _refusal())
         state_dir.mkdir(exist_ok=True)
         work = state_dir / ".init"
         work.mkdir(exist_ok=True)
@@ -616,16 +645,15 @@ class RivetInitOperator(_RivetTask):
         staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         shutil.copyfile(draft, staged)
         try:
-            os.link(staged, target)  # refuses when another try wrote it meanwhile: a config is never replaced
+            os.link(staged, target)
         except FileExistsError:
             self.log.info("%s was written meanwhile; it is kept", target)
+            return {"config": str(target), "written": False}
         finally:
             staged.unlink()
-        exports = [{"name": e.get("name"), "mode": e.get("mode"), "tables": e.get("tables")} for e in doc.get("exports") or []]
+        exports = [{"name": name_of(e), "mode": mode_of(e), "tables": tables_of(e)} for e in entries_of(doc)]
         for e in exports:
-            self.log.info(
-                "export %s (%s)%s", e["name"], e["mode"], f": {', '.join(map(str, e['tables']))}" if e["tables"] else ""
-            )
+            self.log.info("export %s (%s)%s", e["name"], e["mode"], f": {', '.join(e['tables'])}" if e["tables"] else "")
         self.log.info("%s written; the next DAG parse replaces this task with the rivet tasks it describes", target)
         return {"config": str(target), "written": True, "exports": exports}
 

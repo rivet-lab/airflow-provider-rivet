@@ -12,6 +12,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - A Connection host that holds `@`, `/`, `?`, `#`, `\` or whitespace (outside an IPv6 literal) rewrote the URL and
   could drop its `sslmode` or send the password to another host; it is now refused `RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`,
   as a host holding `:` is, and the refusal does not show the host.
+- A failed `RivetInitOperator` (rivet's exit, a refused shared place, a state root not mounted) now publishes its XCom
+  payload and writes the task log's block, as every other failure does; before, the exception left no payload and no block.
+- A rivet process ended by a signal is named as one (`was killed by signal N`), not as `exited -N`, in the init's failure.
+- The init's refusal of a shared place names the source (`--bigquery-dataset shop`), not the literal `{name}`.
+- An init that finds its config written meanwhile returns `written: False` and no longer logs `written; the next DAG parse
+  replaces this task`; the XCom exports of the init read names, modes and tables as rivet does (`name: 2024` is `"2024"`).
 
 ## 0.4.0 (2026-10-30)
 

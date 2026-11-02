@@ -88,14 +88,24 @@ jobs:
           RIVET_SRC: rivet
 
   gate-oracles:
-    name: Gate oracles (RED on every mutant)
+    name: Gate oracles on Airflow ${{ matrix.airflow }} (RED on every mutant)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        airflow: ["2.10.5", "3.3.2"]
+    env:
+      RIVET_GATE_NO_SKIPS: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2.87.22
         with:
           tool: uv
-      - run: uv run --only-group gate python -m pytest -q gate/tests
+      - name: Gate group, then Airflow beside it (the DAG-spec oracles build the real DAG file)
+        run: |
+          uv sync --python 3.12 --only-group gate
+          uv pip install --python .venv/bin/python "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack
+      - run: .venv/bin/python -m pytest -q gate/tests
 
   build:
     name: Build sdist and wheel
