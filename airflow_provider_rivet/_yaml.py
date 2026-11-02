@@ -115,7 +115,7 @@ def substitute(text: str, value_of: Callable[[str], str | None], mask: tuple[str
     return "".join(out), unresolved
 
 
-def unmasked(value: Any, mask: tuple[str, str] = MASK) -> Any:
+def unmasked(value: Any, mask: tuple[str, str]) -> Any:
     """A parsed value with its unresolved placeholders spelled `${name}` again."""
     if isinstance(value, str):
         return value.replace(mask[0], "${").replace(mask[1], "}")
@@ -158,7 +158,7 @@ def _free_mask(taken: str) -> tuple[str, str]:
 
 def resolve_and_load(text: str, value_of: Callable[[str], str | None]) -> tuple[Any, list[str]]:
     """The document rivet would build from this text, and the placeholders nothing resolved (spelled `${name}`)."""
-    values = [value_of(name) for name in _PLACEHOLDER.findall(text) if name]
+    values = [value_of(name) for name in _PLACEHOLDER.findall(text)]
     mask = _free_mask(text + "".join(v for v in values if v))
     resolved, unresolved = substitute(text, value_of, mask)
     return unmasked(load(resolved), mask), unresolved

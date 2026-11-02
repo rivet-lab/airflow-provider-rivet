@@ -65,3 +65,9 @@ def test_a_resolved_value_holding_the_mask_marks_is_read_as_written() -> None:
     """hostile-input-4: only an unresolved placeholder is unmasked; a value's own private-use characters stay."""
     doc, unresolved = _yaml.resolve_and_load("a: ${PW}\nb: ${U}\n", lambda name: "xU" if name == "PW" else None)
     assert doc == {"a": "xU", "b": "${U}"} and unresolved == ["U"]
+
+
+def test_the_mask_avoids_private_use_marks_already_in_the_text() -> None:
+    """_free_mask: the mask skips a private-use character the config text itself holds, at either end of the range."""
+    doc, unresolved = _yaml.resolve_and_load("a: \ue000${U}\ue001\n", lambda name: None)
+    assert doc == {"a": "\ue000${U}\ue001"} and unresolved == ["U"]
