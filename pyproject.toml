@@ -61,6 +61,10 @@ extend-exclude = ["gate/stand/airflow-*.yaml"]
 select = ["E", "F", "W", "I", "B", "UP", "RUF100"]
 ignore = ["E501"]  # the formatter owns line length; long string literals stay as written
 
+[tool.basedpyright]
+typeCheckingMode = "standard"
+include = ["airflow_provider_rivet"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
