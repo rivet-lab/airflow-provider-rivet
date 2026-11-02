@@ -174,8 +174,8 @@ def mutated_line(name: str) -> tuple[str, int] | None:
     """(source path, line) a mutant changes: the first line where its function in mutmut's tree differs from the
     function's `__mutmut_orig` copy, counted from the function's `def` in the source (mutmut copies the body as written).
     `None` when the copies cannot be found."""
-    module, _, mangled = name.rpartition("__mutmut_")[0].partition(".")[2].partition(".")
-    path = f"{PACKAGE}/{module}.py"
+    *modules, mangled = name.rpartition("__mutmut_")[0].partition(".")[2].split(".")
+    path = f"{PACKAGE}/{'/'.join(modules) or '__init__'}.py"
     mutated = ROOT / "mutants" / path
     if not mutated.is_file():
         return None
