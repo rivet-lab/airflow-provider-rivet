@@ -86,7 +86,7 @@ jobs:
         # tests/test_fake_rivet.py holds the fake binary to exactly that version's flags.
         run: |
           uv venv --python ${{ matrix.python }}
-          uv pip install "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack "rivet-cli==$(python3 dev/min_rivet.py)" pytest \
+          uv pip install "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack "rivet-cli==$(python3 dev/min_rivet.py)" pytest "hypothesis==6.170.14" \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ matrix.airflow }}/constraints-${{ matrix.python }}.txt"
           uv pip install --no-deps -e .
       - run: .venv/bin/python -m pytest -q --junitxml=junit.xml
