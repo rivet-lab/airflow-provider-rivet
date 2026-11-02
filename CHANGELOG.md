@@ -7,6 +7,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Repo guards: `dev/pr_ready.py` (the PR rules, run by the `PR rules` workflow and by the pre-push hook) refuses a commit or PR with an attribution trailer, a prose comment on an added line under the package, tests, `dev/` or `gate/`, more than 50 deleted files without a `push-guard: allow-deletes N` declaration, a raised `.mutmut-ratchet` without a dated entry and a `Ratchets raised` line in the PR body, and a package change without a CHANGELOG entry. The deletion ceiling moved there from `dev/push_guard.py`, which is gone. `tests/test_mutmut_shape.py` runs the source-reading guards on a mutmut-shaped copy of the package, so a mutant run cannot red them. No product code changes.
+
 - Tests: hypothesis properties in `tests/properties/` (a dev dependency, `ci` profile at 200 examples, derandomized, about 3 s) over the stderr reader, the config reader's placeholders, connection URLs, DAG task naming, the Slack title, a secret canary sweep and a megabyte timeout per reader. No product code changes.
 - Guard: `docs/failure-surface-matrix.yaml` has a row for every refusal code the package raises (derived from the
   source) and for rivet's exit, signal, timeout, empty source and init draft. Each row names what each of the five
