@@ -61,6 +61,9 @@ extend-exclude = ["gate/stand/airflow-*.yaml"]
 select = ["E", "F", "W", "I", "B", "UP", "RUF100"]
 ignore = ["E501"]  # the formatter owns line length; long string literals stay as written
 
+[tool.ruff.lint.per-file-ignores]
+"dev/vulture_whitelist.py" = ["B018", "F821"]  # a vulture whitelist names what it cannot see used
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]

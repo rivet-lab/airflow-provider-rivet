@@ -47,7 +47,6 @@ class Preflight:
     config: dict[str, Any]
     marker: str | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
-    config_text: str = ""
     value_of: Callable[[str], str | None] = field(default=lambda _name: None, repr=False)
 
     def export_modes(self) -> dict[str, str]:
@@ -287,7 +286,7 @@ def run_preflight(
         )
     where = detect_deployment(env, deployment)
     kind = state_kind(env)
-    result = Preflight(binary, caps, kind, None, config, config_text=text, value_of=value_of)
+    result = Preflight(binary, caps, kind, None, config, value_of=value_of)
     modes = result.export_modes()
     if export is not None and modes and export not in modes:
         for name in modes:
