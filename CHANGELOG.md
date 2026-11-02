@@ -5,6 +5,12 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
+### Changed (behaviour change)
+
+- `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
+  `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
+  schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.
+
 ### Fixed
 
 - A failed step whose error line is longer than the 1 MiB read of rivet's stderr file is no longer classified as a
@@ -16,6 +22,15 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   and the alert skip it as they skip any line that is not JSON.
 - An error line printed with the contract's keys (`class`, `retryable`) and no `exit_class` is read by the step as the
   contract says, not as a generic failure.
+- `operator_kwargs` may not set `config` or `state_dir` on any builder: `build_batch_dag`, `build_cdc_dag` and
+  `build_config_dag` refuse it as `build_source_dags` already did, instead of running every task on another config or
+  state folder.
+- A config whose `load.target` or `load.layout` holds a `${...}` that may make an export compact is refused
+  `RIVET_AIRFLOW_CONFIG_UNRESOLVED`; the DAG used to silently have no compact task for it.
+- `build_config_dag` in CDC mode refuses an export whose `mode: ${...}` may resolve to `batch`, as the batch builder
+  refuses one that may resolve to `cdc`, instead of leaving it out of the DAG.
+- A stream named `watcher` beside other CDC streams is refused `RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME` at parse; it
+  used to fail the DAG file's import with a duplicate task id.
 - A task that found a state directory's `.rivet_airflow_marker` created but not yet written (another task was between the
   create and the write) returned an empty identity, which the next task compared as the directory's marker. The marker is
   now written whole under a staged name and linked into place, so a task that loses the race returns the winner's id; an
