@@ -73,6 +73,46 @@ def layout_of(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | 
     return written
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    """The value as a mapping, or an empty one."""
+    return value if isinstance(value, Mapping) else {}
+
+
+def _held(value: Any) -> bool:
+    """Whether a value is text that still holds a `${...}`."""
+    return isinstance(value, str) and "${" in value
+
+
+def shape_placeholders(config: Mapping[str, Any]) -> list[str]:
+    """The fields that decide which tasks a DAG has, by name, that still hold a `${...}` after resolution."""
+    source = _mapping(config.get("source"))
+    mongo = _mapping(source.get("mongo"))
+    fields = [
+        ("load", config.get("load")),
+        ("source.type", source.get("type")),
+        ("source.url_env", source.get("url_env")),
+        ("source.mongo.resume", mongo.get("resume")),
+        ("source.mongo.page_size", mongo.get("page_size")),
+    ]
+    for entry in entries_of(config):
+        fields += [
+            ("name", entry.get("name")),
+            ("keyset_incremental", entry.get("keyset_incremental")),
+            ("chunk_by_key", entry.get("chunk_by_key")),
+        ]
+        if mode_of(entry) == "cdc":
+            tables = entry.get("tables")
+            listed = tables if isinstance(tables, list) else []
+            cdc = _mapping(entry.get("cdc"))
+            fields += [
+                ("table", entry.get("table")),
+                ("tables", tables),
+                ("cdc.backfill", cdc.get("backfill")),
+                *(("tables", t) for t in listed),
+            ]
+    return list(dict.fromkeys(field for field, value in fields if _held(value)))
+
+
 def placeholder_decides_compaction(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | None = None) -> bool:
     """Whether a `${...}` in `load.target` or the layout written for the export (or table) may decide whether it compacts."""
     load = config.get("load")
