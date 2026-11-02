@@ -166,7 +166,7 @@ seeds:
       - gate/tests/test_known_red.py::test_every_known_cell_names_an_issue_and_the_day_it_was_accepted
   - name: seams-7
     bug: seams-7
-    fix: "#TBD"
+    fix: "#137"
     what: a task-log event name written as a literal beside the Event registry, where the seams guard fails it and no behaviour test does
     patch: patches/seams-7.patch
     cells:
