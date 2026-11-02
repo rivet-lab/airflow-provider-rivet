@@ -21,7 +21,7 @@ from airflow_provider_rivet.connections import (
     with_database,
 )
 from airflow_provider_rivet.dags import build_source_dags
-from airflow_provider_rivet.operators import XCOM_KEY, RivetInitOperator
+from airflow_provider_rivet.operators import XCOM_KEY, RivetInitOperator, _InitFailed
 from airflow_provider_rivet.preflight import PreflightRefusal
 
 ODBC = """\
@@ -275,6 +275,9 @@ def test_neither_a_connection_nor_a_data_source_is_refused_naming_both(
 # --- RivetInitOperator ---
 
 
+REFUSED_ERROR = {"code": None, "kind": None, "class": "refusal", "exit_code": None, "retryable": False, "action": None}
+
+
 class Init:
     """A fake `rivet` for init and check, the operator and what the binary saw."""
 
@@ -384,7 +387,7 @@ def test_a_refused_place_publishes_its_payload_and_writes_its_task_log(init: Ini
     ti = FakeTI(task_id="init")
     with pytest.raises(AirflowFailException, match="writes to bigquery p.shop"):
         init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
-    assert ti.store[("init", XCOM_KEY)]["decision"] == "fail"
+    assert ti.store[("init", XCOM_KEY)] == {"command": "init", "decision": "fail", "error": REFUSED_ERROR, "units": []}
     assert "rivet init → " in logged()
 
 
@@ -392,16 +395,15 @@ def test_a_missing_state_root_publishes_its_payload(init: Init) -> None:
     ti = FakeTI(task_id="init")
     with pytest.raises(AirflowFailException, match="does not exist on this worker"):
         init_operator(init.tmp, state_dir=str(init.tmp / "nope" / "shop")).execute({"ti": ti, "run_id": "r"})
-    assert ti.store[("init", XCOM_KEY)]["decision"] == "fail"
+    assert ti.store[("init", XCOM_KEY)]["error"] == REFUSED_ERROR
 
 
 def test_a_signal_that_ends_init_is_named_as_one(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("airflow_provider_rivet.operators.spawn", lambda *args, **kwargs: -9)
-    ti = FakeTI(task_id="init")
-    with pytest.raises(AirflowFailException, match="was killed by signal 9") as exc:
-        init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
-    assert "exited -9" not in str(exc.value)
-    assert ti.store[("init", XCOM_KEY)]["error"]["class"] == "crashed"
+    with pytest.raises(_InitFailed) as exc:
+        init_operator(init.tmp)._rivet("rivet", ["init"], {}, init.tmp)
+    assert str(exc.value) == "`rivet init` was killed by signal 9; its output is above, and no config was written"
+    assert exc.value.error.message == "rivet was killed by signal 9" and exc.value.error.class_ == "crashed"
 
 
 def test_init_reports_each_export_as_rivet_reads_it(init: Init, logged: Any) -> None:

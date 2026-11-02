@@ -556,7 +556,7 @@ class RivetInitOperator(_RivetTask):
     def _failed(self, ti: Any, failure: _InitFailed) -> None:
         """Publish and log a failure of the init itself, which Airflow does not retry."""
         payload = {"command": self.command, "decision": "fail", "error": failure.error.to_xcom(), "units": []}
-        self._fail(ti, payload, str(failure), retry=False)
+        self._fail(ti, payload, str(failure), retry=False)  # pragma: no mutate - `retry` is read as a truth value
 
     def _create_state_database(self) -> None:
         """CREATE DATABASE for a RIVET_STATE_URL entry that names a `database`, on the server its Connection points at."""
