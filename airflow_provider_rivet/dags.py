@@ -6,8 +6,9 @@ import hashlib
 import inspect
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from .exports import (
 )
 from .invocation import PLAN_ERRORS, plan_layout, warehouse_table
 from .operators import (
+    MODES,
     RivetApplyOperator,
     RivetBaseOperator,
     RivetCdcRunOperator,
@@ -37,6 +39,7 @@ from .operators import (
     RivetRunWatcher,
     RivetWaveBarrier,
     _RivetTask,
+    check_mode,
     config_present,
 )
 from .preflight import ConfigRefusal, PreflightRefusal, read_config
@@ -107,6 +110,34 @@ def _common(config: str, state_dir: str | None, operator_kwargs: Mapping[str, An
         **(operator_kwargs or {}),
         "trigger_rule": GATE,
     }
+
+
+def _settings(common: Mapping[str, Any]) -> dict[str, Any]:
+    """The DAG's own arguments among a builder's: everything but what its tasks take."""
+    return {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
+
+
+def _load_compact(units: Mapping[str, tuple[Any, dict[str, Any]]], compacted: Collection[str], common: Mapping[str, Any]) -> None:
+    """A `load` group with a load per unit after its upstream task, then a `compact` group with a compaction after the
+    load of each unit in `compacted`."""
+    loads = {}
+    with TaskGroup(group_id="load"):
+        for key, (upstream, task_kwargs) in units.items():
+            loads[key] = RivetLoadOperator(**task_kwargs, **common)
+            upstream >> loads[key]
+    if compacted:
+        with TaskGroup(group_id="compact"):
+            for key, (_, task_kwargs) in units.items():
+                if key in compacted:
+                    loads[key] >> RivetCompactOperator(**task_kwargs, **common)
+
+
+def _built_or_refused(dag_id: str, mode: str, config: Path, common: Mapping[str, Any], build: Callable[[], DAG]) -> DAG:
+    """The DAG `build` returns, or the refused DAG of what it raised: one config must not end the DAG file."""
+    try:
+        return build()
+    except Exception as exc:
+        return _refused_dag(dag_id, mode, config, exc, common)
 
 
 def read_plan_layout(plan_file: str) -> list[dict[str, Any]]:
@@ -211,17 +242,9 @@ def build_batch_dag(
                         RivetWaveBarrier(task_id=_barrier_id(f"wave_{wave['wave']}_done", taken), trigger_rule=ORDER_ONLY)
                     ]
                     [apply_tasks[name] for name in wave["exports"]] >> wave_done[0]
-        load_tasks: dict[str, Any] = {}
         if load:
-            with TaskGroup(group_id="load"):
-                for name in names:
-                    load_tasks[name] = RivetLoadOperator(task_id=task_name(name), export=name, **common)
-                    apply_tasks[name] >> load_tasks[name]
-        if compact_exports:
-            with TaskGroup(group_id="compact"):
-                for name in names:
-                    if name in compact_exports:
-                        load_tasks[name] >> RivetCompactOperator(task_id=task_name(name), export=name, **common)
+            units = {name: (apply_tasks[name], {"task_id": task_name(name), "export": name}) for name in names}
+            _load_compact(units, compact_exports, common)
         _watch(dag)
     return dag
 
@@ -272,18 +295,8 @@ def _cdc_stream(export: str, tables: Sequence[str], load: bool, compacted: Seque
     """One stream's tasks in the DAG or group being built: run, then load.T >> compact.T per captured table."""
     run = RivetCdcRunOperator(task_id="run", export=export, **common)
     if load:
-        loads = {}
-        with TaskGroup(group_id="load"):
-            for table in tables:
-                loads[table] = RivetLoadOperator(task_id=task_name(warehouse_table(table)), export=export, table=table, **common)
-                run >> loads[table]
-        if compacted:
-            with TaskGroup(group_id="compact"):
-                for table in tables:
-                    if table in compacted:
-                        loads[table] >> RivetCompactOperator(
-                            task_id=task_name(warehouse_table(table)), export=export, table=table, **common
-                        )
+        units = {t: (run, {"task_id": task_name(warehouse_table(t)), "export": export, "table": t}) for t in tables}
+        _load_compact(units, compacted, common)
 
 
 def build_source_dags(
@@ -320,8 +333,7 @@ def build_source_dags(
     twice = sorted({n for n in names if names.count(n) > 1})
     if bad or twice:
         raise ValueError(f"source names are distinct and of [a-z0-9_]: {bad or twice}")
-    if mode not in ("cdc", "batch"):
-        raise ValueError("`mode` is 'cdc' or 'batch'")
+    check_mode(mode)
     taken = sorted({"env_from_connections", "env_from_variables", "config", "state_dir"} & set(operator_kwargs or {}))
     if taken:
         raise ValueError(f"operator_kwargs may not set {taken}: each source's DAG sets them")
@@ -346,10 +358,8 @@ def build_source_dags(
         if not config_present(config):
             dags[dag_id] = _init_dag(dag_id, mode, [a.replace("{name}", name) for a in init_args], common)
             continue
-        try:
-            dags[dag_id] = _config_dag(dag_id, mode, config, common, kwargs, source, state)
-        except Exception as exc:  # one source's config must not take the DAG file's other sources with it
-            dags[dag_id] = _refused_dag(dag_id, mode, config, exc, common)
+        build = partial(_config_dag, dag_id, mode, config, common, kwargs, source, state)
+        dags[dag_id] = _built_or_refused(dag_id, mode, config, common, build)
     return dags
 
 
@@ -388,16 +398,18 @@ def build_config_dag(
     when there are several) with a load and, where the target merges, a compaction per table, or every batch export
     with its load. `mode` is inferred from the config when not given: 'cdc' if it has a `mode: cdc` export. Reads only
     the config at parse time; a config it cannot build is a DAG whose one task fails naming why, as in build_source_dags."""
-    if mode not in (None, "cdc", "batch"):
+    if mode is not None and mode not in MODES:
         raise ValueError("`mode` is 'cdc', 'batch' or None (read from the config)")
     _refuse_owned_kwargs(operator_kwargs)
     common = {"config": config, "state_dir": state_dir, "operator_kwargs": dict(operator_kwargs or {}), **dag_kwargs}
-    try:
+
+    def build() -> DAG:
+        """The DAG of the config read now, its mode the one given or the config's."""
         doc = read_config(config)
         as_cdc = any(mode_of(e) == "cdc" for e in entries_of(doc)) if mode is None else mode == "cdc"
         return _dag_of_config(dag_id, as_cdc, Path(config), doc, common)
-    except Exception as exc:
-        return _refused_dag(dag_id, mode or "config", Path(config), exc, common)
+
+    return _built_or_refused(dag_id, mode or "config", Path(config), common, build)
 
 
 def _unresolved_compaction(config: Path, names: list[str]) -> tuple[Code, str]:
@@ -454,8 +466,7 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
         if unresolved:
             raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
         task_common = _common(common["config"], common["state_dir"], common["operator_kwargs"])
-        dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
-        return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
+        return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, _settings(common))
     maybe = [
         name_of(e) if mode_of(e) == "cdc" else f"{name_of(e)}: `{mode_of(e)}` may be cdc"
         for e in exports
@@ -494,8 +505,7 @@ def _refused_dag(dag_id: str, mode: str, config: Path, exc: Exception, common: M
         if isinstance(exc, PreflightRefusal)
         else PreflightRefusal(Code.CONFIG_UNBUILDABLE, f"cannot build a DAG from {config}: {type(exc).__name__}: {exc}")
     )
-    settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
-    with _dag(dag_id, ("rivet", mode, "refused"), settings) as dag:
+    with _dag(dag_id, ("rivet", mode, "refused"), _settings(common)) as dag:
         # Airflow 3 stores retries=None as 0 and Airflow 2.10 keeps None: its CI job asserts 0
         RivetConfigRefused(task_id="config", refusal=str(refusal), code=refusal.code, retries=0)  # pragma: no mutate
     return dag
@@ -503,9 +513,8 @@ def _refused_dag(dag_id: str, mode: str, config: Path, exc: Exception, common: M
 
 def _init_dag(dag_id: str, mode: str, init_args: list[str], common: Mapping[str, Any]) -> DAG:
     """The DAG of a source with no config yet: its one task writes the config."""
-    settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
     task_kwargs = {k: v for k, v in common["operator_kwargs"].items() if k not in RUN_ONLY}
-    with _dag(dag_id, ("rivet", mode, "init"), settings) as dag:
+    with _dag(dag_id, ("rivet", mode, "init"), _settings(common)) as dag:
         RivetInitOperator(
             task_id="init",
             mode=mode,

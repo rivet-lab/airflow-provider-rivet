@@ -5,7 +5,7 @@
   "airflow_provider_rivet/callbacks.py::reportReturnType": 1,
   "airflow_provider_rivet/connections.py::reportArgumentType": 3,
   "airflow_provider_rivet/connections.py::reportOptionalMemberAccess": 1,
-  "airflow_provider_rivet/dags.py::reportUnusedExpression": 8,
+  "airflow_provider_rivet/dags.py::reportUnusedExpression": 6,
   "airflow_provider_rivet/invocation.py::reportArgumentType": 4,
   "airflow_provider_rivet/invocation.py::reportOptionalIterable": 1,
   "airflow_provider_rivet/operators.py::reportIncompatibleVariableOverride": 2,

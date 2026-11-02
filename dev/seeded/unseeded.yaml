@@ -23,15 +23,15 @@ unseeded:
     date: "2026-11-02"
     reason: the hostile test for error text accepted a None result; a test-only fix
     closes: the hostile test asserts the result is not None before it reads it
+  - bug: seams-5
+    date: "2026-11-02"
+    reason: architecture cleanup with no behaviour to seed; the load/compact groups, the settings filter, build-or-refuse and the mode check are one helper each in dags.py and operators.check_mode
+    closes: the dag-generation-2 and dag-generation-4 seeds, re-cut onto the shared helpers, whose cells red when they change a DAG's shape
 open:
   - bug: seams-4
     date: "2026-11-02"
     reason: nine same-named parameters in the constructors and a duplicated run/refuse loop; an architecture cleanup, no behaviour defect
     closes: a deepening PR that removes the duplicated loop with byte-identical outputs
-  - bug: seams-5
-    date: "2026-11-02"
-    reason: the DAG builders repeat their load/compact groups, settings filter, build-or-refuse and mode checks; architecture cleanup
-    closes: a deepening PR that moves the shared pieces into one builder with the DAG tests unchanged
   - bug: lifecycle-1
     date: "2026-11-02"
     reason: plausible, not confirmed; ensure_marker may return an empty marker id; no fix and no repro yet
