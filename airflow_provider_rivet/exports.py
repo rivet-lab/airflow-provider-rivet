@@ -78,10 +78,10 @@ def placeholder_decides_compaction(config: Mapping[str, Any], entry: Mapping[str
     load = config.get("load")
     if not isinstance(load, Mapping) or load_mode(config, entry) == "full":
         return False
-    target = str(_yaml.text_of(load.get("target")) or "")
+    target = str(_yaml.text_of(load.get("target")))
     if target not in COMPACTING_TARGETS and "${" not in target:
         return False
-    return "${" in target or "${" in str(layout_of(config, entry, table) or "")
+    return "${" in target or "${" in str(layout_of(config, entry, table))
 
 
 def compacts(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | None = None) -> bool:

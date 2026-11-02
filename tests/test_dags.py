@@ -560,6 +560,7 @@ def test_a_stream_named_watcher_is_refused_at_parse_and_a_single_one_builds(tmp_
         ("load: {target: clickhouse, url: 'http://c:8123', database: d, layout: ${LAYOUT}}", "incremental"),
         ("load: {target: bigquery, project: p, dataset: d, layout: ${LAYOUT}}", "full"),
         ("load: {target: bigquery, project: p, dataset: d, layout: buffer_only}", "incremental"),
+        ("load: {layout: ${LAYOUT}}", "incremental"),
     ],
 )
 def test_a_placeholder_that_cannot_decide_a_compaction_is_built_as_it_always_was(tmp_path: Path, load: str, mode: str) -> None:
@@ -570,3 +571,15 @@ def test_a_placeholder_that_cannot_decide_a_compaction_is_built_as_it_always_was
     dag = build_config_dag("c", config=str(cfg))
     assert "config" not in dag.task_ids
     assert not [t for t in dag.task_ids if t.startswith("compact")]
+
+
+def test_a_per_table_layout_placeholder_that_may_decide_a_compaction_is_refused(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n"
+        "  - {name: s, tables: [dbo.t], mode: cdc, load: {tables: {dbo.t: {layout: '${LAYOUT}'}}}}\n"
+        "load: {target: bigquery, project: p, dataset: d}\n"
+    )
+    dag = build_config_dag("c", config=str(cfg), mode="cdc")
+    assert dag.task_ids == ["config"]
+    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_UNRESOLVED] ")
