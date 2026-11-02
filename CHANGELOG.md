@@ -13,6 +13,11 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - The init's refusal of a shared place names the source (`--bigquery-dataset shop`), not the literal `{name}`.
 - An init that finds its config written meanwhile returns `written: False` and no longer logs `written; the next DAG parse
   replaces this task`; the XCom exports of the init read names, modes and tables as rivet does (`name: 2024` is `"2024"`).
+- A `-p` / `--param` value in a task's extra arguments is masked in the `rivet.start` record (its key kept), so a
+  secret passed that way is in no log record or task log line; rivet still gets the value.
+- A Connection host that holds `@`, `/`, `?`, `#`, `\` or whitespace (outside an IPv6 literal) rewrote the URL and
+  could drop its `sslmode` or send the password to another host; it is now refused `RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`,
+  as a host holding `:` is, and the refusal does not show the host.
 
 ## 0.4.0 (2026-10-30)
 

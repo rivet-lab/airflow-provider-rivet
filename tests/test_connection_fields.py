@@ -341,3 +341,18 @@ def test_a_sql_server_ipv6_host_without_a_port_gets_the_default_port_rivet_needs
     assert connection_url(url_conn(conn_type="mssql", host="::1", port=1990)) == "sqlserver://u:p@[::1]:1990/d"
     assert connection_url(url_conn(conn_type="mssql", host="db")) == "sqlserver://u:p@db/d", "a name needs none"
     assert connection_url(url_conn(host="::1")) == "postgresql://u:p@[::1]/d", "the other engines split by brackets"
+
+
+def test_a_host_that_would_rewrite_the_url_is_refused_with_a_coded_refusal_and_its_text_is_not_shown() -> None:
+    """url_host: a host outside IPv6 that holds `@ / ? # \\` or whitespace is refused, as a `:` is; the host is not echoed."""
+    message = (
+        "has a host holding `@`, `/`, `?`, `#`, `\\` or whitespace, which a URL cannot carry; "
+        "put the address alone in the host field"
+    )
+    for host in ("db.internal?sslmode=disable#", "db.internal@evil.example", "db/x", "db\\x", "db name", "db\n", "db#frag"):
+        got = refusal(connection_url, url_conn(host=host, extra_dejson={"sslmode": "require"}))
+        assert got.code == "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED"
+        assert said(got) == f"connection `c` {message}"
+    nameless = SimpleNamespace(**{k: v for k, v in vars(url_conn(host="db@x")).items() if k != "conn_id"})
+    assert said(refusal(connection_url, nameless)) == f"connection `?` {message}"
+    assert connection_url(url_conn(host="fe80::1%a/b")) == "postgresql://u:p@[fe80::1%25a%2Fb]/d", "an IPv6 zone is quoted"
