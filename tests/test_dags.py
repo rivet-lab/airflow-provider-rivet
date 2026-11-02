@@ -497,29 +497,40 @@ def test_a_placeholder_that_may_decide_a_compaction_is_refused_not_dropped(tmp_p
     )
     dag = build_config_dag("c", config=str(cfg))
     assert dag.task_ids == ["config"]
-    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_UNRESOLVED] ")
+    assert refused_text(dag) == (
+        f"[RIVET_AIRFLOW_CONFIG_UNRESOLVED] {cfg} has a `${{...}}` in `load.target` or `load.layout` that may decide whether "
+        "orders compact (a base and a buffer on BigQuery, `layout: base_buffer`): write `load.target` and `load.layout` as literals"
+    )
 
 
 def test_a_cdc_layout_placeholder_that_may_decide_a_compaction_is_refused(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
-        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [dbo.t], mode: cdc}\n"
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: a, tables: [dbo.t], mode: cdc}\n"
+        "  - {name: b, tables: [dbo.u], mode: cdc}\n"
         "load: {target: bigquery, project: p, dataset: d, layout: ${LAYOUT}}\n"
     )
     dag = build_config_dag("c", config=str(cfg), mode="cdc")
     assert dag.task_ids == ["config"]
-    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_UNRESOLVED] ")
+    assert refused_text(dag) == (
+        f"[RIVET_AIRFLOW_CONFIG_UNRESOLVED] {cfg} has a `${{...}}` in `load.target` or `load.layout` that may decide whether "
+        "a, b compact (a base and a buffer on BigQuery, `layout: base_buffer`): write `load.target` and `load.layout` as literals"
+    )
 
 
 def test_a_cdc_dag_refuses_a_mode_a_variable_may_hold_as_the_batch_dag_does(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
         "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [t], mode: cdc}\n"
-        "  - {name: u, table: t2, mode: '${MODE}'}\n"
+        "  - {name: u, table: t2, mode: '${MODE}'}\n  - {name: v, table: t3, mode: '${OTHER}'}\n"
     )
     dag = build_config_dag("c", config=str(cfg), mode="cdc")
     assert dag.task_ids == ["config"]
-    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT] ")
+    assert refused_text(dag) == (
+        f"[RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT] {cfg} has exports whose `mode` a `${{...}}` may hold as batch or cdc "
+        "(u: `${MODE}`, v: `${OTHER}`): a CDC DAG over it would leave out the ones that resolve to batch; write their `mode` "
+        "literally, or build them from a config of their own"
+    )
 
 
 def test_build_cdc_dag_names_its_load_and_compact_tasks_as_build_config_dag_does() -> None:
@@ -534,7 +545,10 @@ def test_a_stream_named_watcher_is_refused_at_parse_and_a_single_one_builds(tmp_
         "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: watcher, tables: [t], mode: cdc}\n"
         "  - {name: users, tables: [u], mode: cdc}\n"
     )
-    assert refused_text(build_config_dag("c", config=str(several))).startswith("[RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME] ")
+    assert refused_text(build_config_dag("c", config=str(several))) == (
+        f"[RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME] {several} has an export named `watcher` beside other CDC streams: its group "
+        "would take the id of the DAG's watcher task; rename the export"
+    )
     one = tmp_path / "one.yaml"
     one.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: watcher, tables: [t], mode: cdc}\n")
     assert sorted(build_config_dag("c", config=str(one)).task_ids) == ["run", "watcher"]

@@ -403,14 +403,15 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
     """The CDC (`as_cdc`) or batch DAG of a config read as `doc`; a config with no export for the mode is refused, coded."""
     exports = entries_of(doc)
     cdc = [e for e in exports if mode_of(e) == "cdc"]
-    uncertain = [f"{name_of(e)}: `{mode_of(e)}` may be cdc" for e in exports if mode_of(e) != "cdc" and may_be_cdc(mode_of(e))]
+    uncertain = [f"{name_of(e)}: `{mode_of(e)}`" for e in exports if mode_of(e) != "cdc" and may_be_cdc(mode_of(e))]
     if as_cdc:
         # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
         if uncertain:
             raise ConfigRefusal(
                 "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
-                f"{config} has exports whose `mode` a `${{...}}` may hold as batch ({', '.join(uncertain)}): a CDC DAG over "
-                "it would leave them out; write their `mode` literally, or build them from a config of their own",
+                f"{config} has exports whose `mode` a `${{...}}` may hold as batch or cdc ({', '.join(uncertain)}): a CDC DAG "
+                "over it would leave out the ones that resolve to batch; write their `mode` literally, or build them from a "
+                "config of their own",
             )
         if not cdc:
             raise ConfigRefusal(
