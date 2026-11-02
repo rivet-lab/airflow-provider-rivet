@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -46,6 +47,8 @@ PKG = gate.PACKAGE
 
 def _history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]) -> str:
     """A repository at `tmp_path` with `base` committed, then `head` on top; returns the base commit."""
+    for name in [k for k in os.environ if k.startswith("GIT_")]:  # a git hook exports GIT_DIR of the real repository
+        monkeypatch.delenv(name)
 
     def git(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
