@@ -13,7 +13,7 @@ from airflow.exceptions import AirflowException
 from conftest import FakeTI, Rig
 from rivet_shapes import load_row, run_entry
 
-from airflow_provider_rivet import invocation, result
+from airflow_provider_rivet import invocation, result, stderr
 from airflow_provider_rivet.invocation import crashed_retry_allowed
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetLoadOperator, RivetRunOperator
 
@@ -215,7 +215,7 @@ def test_a_replay_rivet_answers_already_applied_names_the_export_run_and_artifac
 
 def test_the_stderr_readers() -> None:
     """(_lines 4, _error_line 12 13, _has_broken_object 6)"""
-    assert invocation._lines("a\nb") == ["a", "b"]
+    assert stderr.lines_of("a\nb") == ["a", "b"]
     line = {"exit_class": 2, "error": "x"}
     assert invocation._error_line([json.dumps(line), "{cut"]) == line
     assert invocation._error_line([json.dumps(line), '{"other": 1}']) == line
