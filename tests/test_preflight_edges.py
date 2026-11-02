@@ -265,4 +265,7 @@ def test_an_empty_marker_is_refused_coded_and_never_read_as_an_identity(tmp_path
     (tmp_path / ".rivet_airflow_marker").write_text(content)
     with pytest.raises(PreflightRefusal) as refused:
         ensure_marker(tmp_path)
-    assert refused.value.code == "RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY"
+    assert str(refused.value) == (
+        f"[RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY] state directory marker {tmp_path / '.rivet_airflow_marker'} is empty; "
+        f"no run may use this directory until a person deletes it; see {SETUP_GUIDE}"
+    )
