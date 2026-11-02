@@ -1,0 +1,50 @@
+unseeded:
+  - bug: harness-1 (+vacuous-green-1)
+    date: "2026-11-02"
+    reason: the gate-oracles CI job skipped the DAG-spec tests without airflow; the fix is a CI setting, outside product code
+    closes: dev/skip_census.py holds the job's skip ceiling, so a skipped DAG-spec test fails the census
+  - bug: harness-3
+    date: "2026-11-02"
+    reason: the PyPI publish did not wait for the live gate; the fix is the release workflow's needs, outside product code
+    closes: tests/test_workflows.py pins the publish needs on the gate job through its dated ledger
+  - bug: harness-4
+    date: "2026-11-02"
+    reason: the mutation ratchet arbiter and the PR-gate logic had no tests and were outside the mutation scope
+    closes: the arbiter's own tests, which run in the default suite
+  - bug: harness-5
+    date: "2026-11-02"
+    reason: mutated_line returned None for functions of a package __init__, so the PR gate failed them; the fix is in dev/ tooling
+    closes: a test that mutates a package __init__ function and expects a line back
+  - bug: harness-7
+    date: "2026-11-02"
+    reason: the gate's seed-5000 cells held literal seeds per engine and SEED_ORDERS was read by none; a harness fix
+    closes: a gate test that every seed-bearing cell reads its seed from SEED_ORDERS
+  - bug: vacuous-green-3
+    date: "2026-11-02"
+    reason: the hostile test for error text accepted a None result; a test-only fix
+    closes: the hostile test asserts the result is not None before it reads it
+open:
+  - bug: seams-2
+    date: "2026-11-02"
+    reason: format_failure is dead in production and only tests call it; open, no fix merged
+    closes: format_failure is wired into the task path with a test that calls it from there, or deleted
+  - bug: seams-4
+    date: "2026-11-02"
+    reason: nine same-named parameters in the constructors and a duplicated run/refuse loop; an architecture cleanup, no behaviour defect
+    closes: a deepening PR that removes the duplicated loop with byte-identical outputs
+  - bug: seams-5
+    date: "2026-11-02"
+    reason: the DAG builders repeat their load/compact groups, settings filter, build-or-refuse and mode checks; architecture cleanup
+    closes: a deepening PR that moves the shared pieces into one builder with the DAG tests unchanged
+  - bug: seams-7
+    date: "2026-11-02"
+    reason: event and command names are literals scattered across modules; architecture cleanup
+    closes: the names become constants read from one module, guarded by a test that greps for literal uses
+  - bug: lifecycle-1
+    date: "2026-11-02"
+    reason: plausible, not confirmed; ensure_marker may return an empty marker id; no fix and no repro yet
+    closes: a repro that shows an empty marker id, then a test that ensure_marker never returns one
+  - bug: lifecycle-2
+    date: "2026-11-02"
+    reason: plausible, not confirmed; _prune_stale removes a directory without rechecking its mtime; no fix yet
+    closes: a race cell that touches the directory between the check and the rmdir and fails every time

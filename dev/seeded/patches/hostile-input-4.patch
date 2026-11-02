@@ -1,0 +1,12 @@
+diff --git a/airflow_provider_rivet/_yaml.py b/airflow_provider_rivet/_yaml.py
+index 0eb7743..c438f1d 100644
+--- a/airflow_provider_rivet/_yaml.py
++++ b/airflow_provider_rivet/_yaml.py
+@@ -180,6 +180,6 @@ def _free_mask(*taken: str) -> tuple[str, str]:
+ def resolve_and_load(text: str, value_of: Callable[[str], str | None]) -> tuple[Any, list[str]]:
+     """The document rivet would build from this text, and the placeholders nothing resolved (spelled `${name}`)."""
+     values = [value_of(name) for name in _PLACEHOLDER.findall(text)]
+-    mask = _free_mask(text, *(v for v in values if v))
++    mask = MASK
+     resolved, unresolved = substitute(text, value_of, mask)
+     return unmasked(load(resolved), mask), unresolved

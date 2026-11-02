@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -112,6 +113,59 @@ jobs:
       - run: .venv/bin/python -m pytest -q gate/tests --junitxml=junit.xml
       - name: Every skip of the gate oracles is in its ledger (dev/skip_census.py)
         run: python3 dev/skip_census.py junit.xml --job gate-oracles
+
+  plan-seeded:
+    name: What this pull request seeds
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.paths.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: paths
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(airflow_provider_rivet/|tests/|gate/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  seeded:
+    name: Seeded-defect recall (shard ${{ matrix.shard }} of 4)
+    needs: plan-seeded
+    if: needs.plan-seeded.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RIVET_SRC: rivet
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: rivet-lab/rivet
+          path: rivet
+          sparse-checkout: |
+            tests/fixtures/scheduler
+            src/config
+            src/cli
+      - name: Pin rivet to RIVET_CONTRACT_REF
+        run: git -C rivet fetch --depth 1 origin "$(cat RIVET_CONTRACT_REF)" && git -C rivet checkout --quiet FETCH_HEAD
+      - uses: taiki-e/install-action@v2.87.22
+        with:
+          tool: uv
+      - name: Gate group, then Airflow beside it (the cells build the DAG files)
+        run: |
+          uv sync --python 3.12 --locked --group gate
+          uv pip install --python .venv/bin/python "apache-airflow==3.3.2" apache-airflow-providers-slack
+      - name: Every seed is caught by a cell it names (dev/seeded/seeds.yaml)
+        run: .venv/bin/python -m dev.seeded --shard ${{ matrix.shard }}/4
 
   build:
     name: Build sdist and wheel

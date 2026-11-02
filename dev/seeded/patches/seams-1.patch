@@ -1,0 +1,13 @@
+diff --git a/airflow_provider_rivet/callbacks.py b/airflow_provider_rivet/callbacks.py
+index 3579786..22d8138 100644
+--- a/airflow_provider_rivet/callbacks.py
++++ b/airflow_provider_rivet/callbacks.py
+@@ -102,7 +102,7 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
+     if not path:
+         return []
+     try:
+-        lines, _truncated = tail_lines(Path(path))
++        lines = Path(path).read_bytes()[-65_536:].decode(errors="replace").split("\n")
+     except OSError:
+         return []
+     found: list[tuple[str | None, str]] = []

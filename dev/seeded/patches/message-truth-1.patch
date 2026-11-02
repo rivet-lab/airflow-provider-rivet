@@ -1,0 +1,13 @@
+diff --git a/airflow_provider_rivet/callbacks.py b/airflow_provider_rivet/callbacks.py
+index 3579786..5104b1b 100644
+--- a/airflow_provider_rivet/callbacks.py
++++ b/airflow_provider_rivet/callbacks.py
+@@ -85,7 +85,7 @@ def format_title(
+     elif failed := _failed_units(payload):
+         error = payload.get("error") or failed[0]["error"]  # the error that decided the task, else the first failed unit's
+         name = error.get("code") or error.get("class") or "rivet failed"
+-        retry = airflow_retries(payload, try_number, max_tries)
++        retry = error.get("retryable")
+         kind = f"{name} ({'retryable' if retry else 'final'})"
+         if len(failed) > 1:
+             kind += f" +{len(failed) - 1} more"

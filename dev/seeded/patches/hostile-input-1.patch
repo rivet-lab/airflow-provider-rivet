@@ -1,0 +1,17 @@
+diff --git a/airflow_provider_rivet/connections.py b/airflow_provider_rivet/connections.py
+index e1b07a0..136d77d 100644
+--- a/airflow_provider_rivet/connections.py
++++ b/airflow_provider_rivet/connections.py
+@@ -119,12 +119,6 @@ def url_host(conn: Any) -> str:
+                 f"connection `{getattr(conn, 'conn_id', '?')}` has host `{host}`, which holds a `:` but is no IPv6 address, "
+                 "and a port as well; put the port in the port field only",
+             ) from None
+-        if _HOST_CHARS.search(host):
+-            raise PreflightRefusal(
+-                UNSUPPORTED,
+-                f"connection `{getattr(conn, 'conn_id', '?')}` has a host holding `@`, `/`, `?`, `#`, `\\` or whitespace, "
+-                "which a URL cannot carry; put the address alone in the host field",
+-            ) from None
+         return host
+     if percent:
+         zone = _quote(unquote(zone[2:] if bracketed and zone.startswith("25") else zone))

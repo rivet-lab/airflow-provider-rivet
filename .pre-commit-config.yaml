@@ -10,7 +10,9 @@ repos:
         exclude: ^gate/stand/airflow-.*\.yaml$
       - id: check-toml
       - id: end-of-file-fixer
+        exclude: ^dev/seeded/patches/
       - id: trailing-whitespace
+        exclude: ^dev/seeded/patches/
       - id: check-merge-conflict
       - id: check-added-large-files
   - repo: https://github.com/astral-sh/ruff-pre-commit

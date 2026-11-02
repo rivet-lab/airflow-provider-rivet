@@ -1,0 +1,13 @@
+diff --git a/gate/__main__.py b/gate/__main__.py
+index ae283ba..a56e57f 100644
+--- a/gate/__main__.py
++++ b/gate/__main__.py
+@@ -37,7 +37,7 @@ from .warehouse import (
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser(prog="python -m gate", description=__doc__.splitlines()[0])
+     ap.add_argument("--rivet-bin", required=True, type=Path, help="a rivet Linux binary for the docker host's architecture")
+-    ap.add_argument("--airflow", default="2.10.5,3.3.2", help="comma-separated Airflow versions")
++    ap.add_argument("--airflow", default=",".join(FLAVORS), help="comma-separated Airflow versions")
+     ap.add_argument("--work", type=Path, help="working directory (default: a fresh temporary one)")
+     ap.add_argument("--verdicts", type=Path, help="write one JSON line per graded cell")
+     ap.add_argument("--keep", action="store_true", help="leave the stacks up and the working directory in place")

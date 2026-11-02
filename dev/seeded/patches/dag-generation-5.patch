@@ -1,0 +1,17 @@
+diff --git a/airflow_provider_rivet/dags.py b/airflow_provider_rivet/dags.py
+index 2db71e2..0ea9d72 100644
+--- a/airflow_provider_rivet/dags.py
++++ b/airflow_provider_rivet/dags.py
+@@ -443,12 +443,6 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
+             )
+             for e in cdc
+         ]
+-        if len(streams) > 1 and any(task_name(name) == WATCHER_ID for name, _, _ in streams):
+-            raise ConfigRefusal(
+-                "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME",
+-                f"{config} has an export named `{WATCHER_ID}` beside other CDC streams: its group would take the id of the "
+-                "DAG's watcher task; rename the export",
+-            )
+         unresolved = [name_of(e) for e in cdc if any(placeholder_decides_compaction(doc, e, t) for t in tables_of(e))]
+         if unresolved:
+             raise ConfigRefusal(*_unresolved_compaction(config, unresolved))

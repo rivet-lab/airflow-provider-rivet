@@ -1,0 +1,24 @@
+diff --git a/airflow_provider_rivet/dags.py b/airflow_provider_rivet/dags.py
+index 2db71e2..fb18864 100644
+--- a/airflow_provider_rivet/dags.py
++++ b/airflow_provider_rivet/dags.py
+@@ -449,9 +449,6 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
+                 f"{config} has an export named `{WATCHER_ID}` beside other CDC streams: its group would take the id of the "
+                 "DAG's watcher task; rename the export",
+             )
+-        unresolved = [name_of(e) for e in cdc if any(placeholder_decides_compaction(doc, e, t) for t in tables_of(e))]
+-        if unresolved:
+-            raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
+         task_common = _common(common["config"], common["state_dir"], common["operator_kwargs"])
+         dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
+         return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
+@@ -468,9 +465,6 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
+             "CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG "
+             "from its own",
+         )
+-    unresolved = [name_of(e) for e in exports if placeholder_decides_compaction(doc, e)]
+-    if unresolved:
+-        raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
+     if not exports:
+         raise ConfigRefusal(
+             "RIVET_AIRFLOW_CONFIG_NO_EXPORT",
