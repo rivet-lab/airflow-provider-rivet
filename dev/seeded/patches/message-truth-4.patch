@@ -1,0 +1,12 @@
+diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
+index 7f68c1b..d505766 100644
+--- a/airflow_provider_rivet/operators.py
++++ b/airflow_provider_rivet/operators.py
+@@ -648,7 +648,6 @@ class RivetInitOperator(_RivetTask):
+             os.link(staged, target)
+         except FileExistsError:
+             self.log.info("%s was written meanwhile; it is kept", target)
+-            return {"config": str(target), "written": False}
+         finally:
+             staged.unlink()
+         exports = [{"name": name_of(e), "mode": mode_of(e), "tables": tables_of(e)} for e in entries_of(doc)]

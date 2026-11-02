@@ -1,0 +1,157 @@
+seeds:
+  - name: seams-1
+    bug: seams-1 (+contract-2)
+    fix: "#119"
+    what: the 64 KiB stderr window the Slack alert reads, beside the invocation's 1 MiB one
+    patch: patches/seams-1.patch
+    cells:
+      - tests/test_stderr_reader.py::test_an_error_line_of_100_kib_is_read_by_the_alert_and_by_the_classifier
+  - name: seams-3
+    bug: seams-3
+    fix: "#115"
+    what: an init failure outside the refusal and stop handlers is raised without an XCom payload or a task log block
+    patch: patches/seams-3.patch
+    cells:
+      - tests/test_source_dags.py::test_a_failed_init_publishes_its_payload_and_writes_its_task_log
+      - tests/test_source_dags.py::test_a_refused_place_publishes_its_payload_and_writes_its_task_log
+      - tests/test_source_dags.py::test_a_missing_state_root_publishes_its_payload
+  - name: seams-6
+    bug: seams-6
+    fix: "#115"
+    what: the init XCom exports and places() read raw keys instead of the one reader of an export
+    patch: patches/seams-6.patch
+    cells:
+      - tests/test_source_dags.py::test_init_reports_each_export_as_rivet_reads_it
+      - tests/test_source_dags.py::test_places_reads_the_exports_as_rivet_reads_them
+  - name: message-truth-1
+    bug: message-truth-1
+    fix: "#120"
+    what: the Slack title says retryable from the rivet error alone, not from Airflow's try budget
+    patch: patches/message-truth-1.patch
+    cells:
+      - tests/test_slack_alerts.py::test_the_title_of_a_last_try_crash_is_final_not_retryable
+      - tests/test_slack_alert_text.py::test_the_title_says_retryable_only_when_airflow_runs_another_try
+  - name: message-truth-2
+    bug: message-truth-2
+    fix: "#115"
+    what: the shared-place refusal prints the literal {name} placeholder as its advice
+    patch: patches/message-truth-2.patch
+    cells:
+      - tests/test_source_dags.py::test_the_refusal_names_the_remedy_for_the_source_it_is_about
+  - name: message-truth-3
+    bug: message-truth-3
+    fix: "#115"
+    what: a signal that ends rivet init is reported as exit -9 instead of a signal
+    patch: patches/message-truth-3.patch
+    cells:
+      - tests/test_source_dags.py::test_a_signal_that_ends_init_is_named_as_one
+  - name: message-truth-4
+    bug: message-truth-4
+    fix: "#115"
+    what: an init that lost the link race reports written and returns written=True
+    patch: patches/message-truth-4.patch
+    cells:
+      - tests/test_source_dags.py::test_a_config_written_meanwhile_is_kept
+  - name: hostile-input-1
+    bug: hostile-input-1
+    fix: "#118"
+    what: a Connection host holding URL delimiters rewrites the URL instead of being refused
+    patch: patches/hostile-input-1.patch
+    cells:
+      - tests/test_connection_fields.py::test_a_host_that_would_rewrite_the_url_is_refused_with_a_coded_refusal_and_its_text_is_not_shown
+  - name: hostile-input-2
+    bug: hostile-input-2
+    fix: "#118"
+    what: the -p values reach the rivet.start record and the task log unmasked
+    patch: patches/hostile-input-2.patch
+    cells:
+      - tests/test_secret_argv.py::test_a_param_value_reaches_rivet_but_no_log_record_or_task_log_line
+  - name: hostile-input-3
+    bug: hostile-input-3
+    fix: "#119"
+    what: a stderr line nested past the JSON parser's depth raises RecursionError in a reader
+    patch: patches/hostile-input-3.patch
+    cells:
+      - tests/test_stderr_reader.py::test_a_value_too_deep_for_the_parser_is_not_json_for_any_reader
+      - tests/test_stderr_reader.py::test_a_deep_stderr_line_never_raises_from_a_reader
+  - name: hostile-input-4
+    bug: hostile-input-4
+    fix: "#120"
+    what: a resolved value holding the mask marks is unmasked to ${ and }
+    patch: patches/hostile-input-4.patch
+    cells:
+      - tests/test_yaml_text.py::test_a_resolved_value_holding_the_mask_marks_is_read_as_written
+      - tests/test_yaml_text.py::test_the_mask_avoids_private_use_marks_already_in_the_text
+  - name: contract-1
+    bug: contract-1
+    fix: "#119"
+    what: a stderr line cut by the tail window is dropped without a degradation record
+    patch: patches/contract-1.patch
+    cells:
+      - tests/test_stderr_reader.py::test_a_last_line_longer_than_the_tail_is_recorded_malformed_not_silently_generic
+  - name: contract-3
+    bug: contract-3
+    fix: "#119"
+    what: an error line shaped as the contract (class, retryable) without exit_class is not read
+    patch: patches/contract-3.patch
+    cells:
+      - tests/test_stderr_reader.py::test_a_contract_shaped_error_line_without_exit_class_is_read_as_the_contract_says
+      - tests/test_stderr_reader.py::test_each_key_that_marks_an_error_object_is_enough_to_find_it
+  - name: dag-generation-1
+    bug: dag-generation-1
+    fix: "#116"
+    what: operator_kwargs may set config and state_dir on the batch, CDC and config builders
+    patch: patches/dag-generation-1.patch
+    cells:
+      - tests/test_operator_kwargs.py::test_the_config_and_state_folder_in_operator_kwargs_are_refused_on_every_builder
+  - name: dag-generation-2
+    bug: dag-generation-2
+    fix: "#116"
+    what: a ${...} in load.target or load.layout that may decide a compaction is dropped instead of refused
+    patch: patches/dag-generation-2.patch
+    cells:
+      - tests/test_dags.py::test_a_placeholder_that_may_decide_a_compaction_is_refused_not_dropped
+      - tests/test_dags.py::test_a_cdc_layout_placeholder_that_may_decide_a_compaction_is_refused
+      - tests/test_dags.py::test_a_per_table_layout_placeholder_that_may_decide_a_compaction_is_refused
+  - name: dag-generation-3
+    bug: dag-generation-3
+    fix: "#116"
+    what: the CDC DAG skips an export whose mode a ${...} may make cdc, where the batch DAG refuses
+    patch: patches/dag-generation-3.patch
+    cells:
+      - tests/test_dags.py::test_a_cdc_dag_refuses_a_mode_a_variable_may_hold_as_the_batch_dag_does
+  - name: dag-generation-4
+    bug: dag-generation-4
+    fix: "#116"
+    what: build_cdc_dag names a table's load and compact tasks by the raw table, not the warehouse name
+    patch: patches/dag-generation-4.patch
+    cells:
+      - tests/test_dags.py::test_build_cdc_dag_names_its_load_and_compact_tasks_as_build_config_dag_does
+  - name: dag-generation-5
+    bug: dag-generation-5
+    fix: "#116"
+    what: a CDC export named watcher collides with the DAG's watcher task at parse time
+    patch: patches/dag-generation-5.patch
+    cells:
+      - tests/test_dags.py::test_a_stream_named_watcher_is_refused_at_parse_and_a_single_one_builds
+  - name: vacuous-green-2
+    bug: vacuous-green-2
+    fix: "#117"
+    what: the SQLite pause window is measured before the work it bounds ends
+    patch: patches/vacuous-green-2.patch
+    cells:
+      - gate/tests/test_pause_window.py::test_work_that_outlasts_the_pause_fails_the_window
+  - name: harness-2
+    bug: harness-2
+    fix: "#117"
+    what: the live gate's --airflow default is every stack in FLAVORS, not the two its job names
+    patch: patches/harness-2.patch
+    cells:
+      - gate/tests/test_cli_defaults.py::test_the_airflow_default_is_the_two_stacks_the_workflow_and_docs_name
+  - name: harness-6
+    bug: harness-6
+    fix: "#121"
+    what: KNOWN entries carry no date of acceptance
+    patch: patches/harness-6.patch
+    cells:
+      - gate/tests/test_known_red.py::test_every_known_cell_names_an_issue_and_the_day_it_was_accepted

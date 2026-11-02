@@ -1,0 +1,18 @@
+diff --git a/airflow_provider_rivet/dags.py b/airflow_provider_rivet/dags.py
+index 2db71e2..1d58a22 100644
+--- a/airflow_provider_rivet/dags.py
++++ b/airflow_provider_rivet/dags.py
+@@ -422,13 +422,6 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
+     uncertain = [f"{name_of(e)}: `{mode_of(e)}`" for e in exports if mode_of(e) != "cdc" and may_be_cdc(mode_of(e))]
+     if as_cdc:
+         # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
+-        if uncertain:
+-            raise ConfigRefusal(
+-                "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+-                f"{config} has exports whose `mode` a `${{...}}` may hold as batch or cdc ({', '.join(uncertain)}): a CDC DAG "
+-                "over it would leave out the ones that resolve to batch; write their `mode` literally, or build them from a "
+-                "config of their own",
+-            )
+         if not cdc:
+             raise ConfigRefusal(
+                 "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT",

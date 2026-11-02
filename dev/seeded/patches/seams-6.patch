@@ -1,0 +1,22 @@
+diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
+index 7f68c1b..b7d018b 100644
+--- a/airflow_provider_rivet/operators.py
++++ b/airflow_provider_rivet/operators.py
+@@ -465,7 +465,7 @@ def config_present(path: Path) -> bool:
+ def places(doc: Mapping[str, Any]) -> set[str]:
+     """Where a config writes: each export's bucket prefix (`s3://b/p/`) and its warehouse dataset or database."""
+     out = set()
+-    for export in entries_of(doc):
++    for export in doc.get("exports") or []:
+         dest = export.get("destination") or {}
+         if dest.get("bucket"):
+             out.add(f"{dest.get('type')}://{dest['bucket']}/{dest.get('prefix') or ''}")
+@@ -651,7 +651,7 @@ class RivetInitOperator(_RivetTask):
+             return {"config": str(target), "written": False}
+         finally:
+             staged.unlink()
+-        exports = [{"name": name_of(e), "mode": mode_of(e), "tables": tables_of(e)} for e in entries_of(doc)]
++        exports = [{"name": e.get("name"), "mode": e.get("mode"), "tables": e.get("tables")} for e in doc.get("exports") or []]
+         for e in exports:
+             self.log.info("export %s (%s)%s", e["name"], e["mode"], f": {', '.join(e['tables'])}" if e["tables"] else "")
+         self.log.info("%s written; the next DAG parse replaces this task with the rivet tasks it describes", target)

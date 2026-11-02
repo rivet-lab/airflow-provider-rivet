@@ -1,0 +1,19 @@
+diff --git a/airflow_provider_rivet/dags.py b/airflow_provider_rivet/dags.py
+index 2db71e2..a341f6e 100644
+--- a/airflow_provider_rivet/dags.py
++++ b/airflow_provider_rivet/dags.py
+@@ -274,14 +274,14 @@ def _cdc_stream(export: str, tables: Sequence[str], load: bool, compacted: Seque
+         loads = {}
+         with TaskGroup(group_id="load"):
+             for table in tables:
+-                loads[table] = RivetLoadOperator(task_id=task_name(warehouse_table(table)), export=export, table=table, **common)
++                loads[table] = RivetLoadOperator(task_id=task_name(table), export=export, table=table, **common)
+                 run >> loads[table]
+         if compacted:
+             with TaskGroup(group_id="compact"):
+                 for table in tables:
+                     if table in compacted:
+                         loads[table] >> RivetCompactOperator(
+-                            task_id=task_name(warehouse_table(table)), export=export, table=table, **common
++                            task_id=task_name(table), export=export, table=table, **common
+                         )

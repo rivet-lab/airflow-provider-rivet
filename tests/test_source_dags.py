@@ -363,8 +363,17 @@ def test_a_config_written_meanwhile_is_kept(init: Init, monkeypatch: pytest.Monk
             init.config.write_text("# another try's\n")
 
     monkeypatch.setattr(RivetInitOperator, "_rivet", racing)
-    init.run()
+    assert init.run() == {"config": str(init.config), "written": False}
     assert init.config.read_text() == "# another try's\n"
+
+
+def test_the_refusal_names_the_remedy_for_the_source_it_is_about(init: Init) -> None:
+    init.spec(yaml=CDC_CONFIG.format(env="RIVET_SOURCE_URL") + "    destination: {type: gcs, bucket: b, prefix: shop/cdc/}\n")
+    init.config.parent.mkdir()
+    (init.config.parent / "billing.yaml").write_text(CDC_CONFIG.format(env="X"))
+    out = init.run()
+    assert isinstance(out, AirflowFailException)
+    assert "`--bigquery-dataset shop`" in str(out) and "{name}" not in str(out)
 
 
 def test_a_failed_init_publishes_its_payload_and_writes_its_task_log(init: Init, logged: Any) -> None:

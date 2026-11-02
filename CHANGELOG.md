@@ -7,6 +7,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Guard: seeded-defect recall. `dev/seeded/seeds.yaml` holds one seed per confirmed bug whose fix is merged (the fix's product diff inverted, its tests left out); `python -m dev.seeded` reports each seed CAUGHT, MISSED or STALE, and the `seeded` CI job runs it on pull requests that touch `airflow_provider_rivet/`, `tests/` or `gate/`. Bugs with no seed are in `dev/seeded/unseeded.yaml`. Two tests were strengthened or added for seeds the first run missed (the refusal's remedy names its source; a config written meanwhile is reported as not written). No product code changes.
 - Tests: hypothesis properties in `tests/properties/` (a dev dependency, `ci` profile at 200 examples, derandomized, about 3 s) over the stderr reader, the config reader's placeholders, connection URLs, DAG task naming, the Slack title, a secret canary sweep and a megabyte timeout per reader. No product code changes.
 - Guard: `docs/failure-surface-matrix.yaml` has a row for every refusal code the package raises (derived from the
   source) and for rivet's exit, signal, timeout, empty source and init draft. Each row names what each of the five

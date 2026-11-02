@@ -1,0 +1,12 @@
+diff --git a/airflow_provider_rivet/invocation.py b/airflow_provider_rivet/invocation.py
+index 4a8f437..50e4bd5 100644
+--- a/airflow_provider_rivet/invocation.py
++++ b/airflow_provider_rivet/invocation.py
+@@ -777,7 +777,7 @@ def _error_line(stderr: str | list[str]) -> dict[str, Any] | None:
+         if not raw.startswith("{"):
+             continue
+         obj = _json_of(raw)
+-        if isinstance(obj, dict) and ("exit_class" in obj or "class" in obj or "retryable" in obj):
++        if isinstance(obj, dict) and "exit_class" in obj:
+             return obj
+     return None

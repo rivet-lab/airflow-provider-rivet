@@ -1,0 +1,16 @@
+diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
+index 7f68c1b..287b8ca 100644
+--- a/airflow_provider_rivet/operators.py
++++ b/airflow_provider_rivet/operators.py
+@@ -597,11 +597,6 @@ class RivetInitOperator(_RivetTask):
+             self.log.info(
+                 "%s", line
+             )  # pragma: no mutate - info(line) is the same line: a logger formats no message given no args
+-        if code < 0:
+-            raise _InitFailed(
+-                f"`rivet {argv[0]}` was killed by signal {-code}; its output is above, and no config was written",
+-                error_from_exit(None, -code),
+-            )
+         if code != 0:
+             raise _InitFailed(
+                 f"`rivet {argv[0]}` exited {code}; its output is above, and no config was written", error_from_exit(code, None)

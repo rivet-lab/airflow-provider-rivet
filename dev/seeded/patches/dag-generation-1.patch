@@ -1,0 +1,13 @@
+diff --git a/airflow_provider_rivet/dags.py b/airflow_provider_rivet/dags.py
+index 2db71e2..f7c470d 100644
+--- a/airflow_provider_rivet/dags.py
++++ b/airflow_provider_rivet/dags.py
+@@ -80,8 +80,6 @@ OWNED_BY_BUILDERS = {
+         "every rivet task runs only after its upstream succeeded "
+         "(load after its extract, compact after its load); the watcher fails the run on any failure"
+     ),
+-    "config": "every rivet task reads the config its builder was given",
+-    "state_dir": "every rivet task keeps its state in the folder its builder was given",
+     "max_active_tis_per_dag": (
+         "it is 1 on every rivet task, so a task never runs beside another try of itself (docs/limits.md, Overlap)"
+     ),

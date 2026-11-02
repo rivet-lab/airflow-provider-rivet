@@ -1,0 +1,13 @@
+diff --git a/gate/scenario.py b/gate/scenario.py
+index 27e8e58..c562c3f 100644
+--- a/gate/scenario.py
++++ b/gate/scenario.py
+@@ -230,8 +230,9 @@ def trigger_cycle(stand: Stand, v: Verdicts, name: str, run_id: str, dags: list[
+             stand.trigger(dag, run_id)
+     cdc = [dag for dag in dags if dag == "gate_cdc_sqlite"]
+     work = [dag for dag in dags if dag != "gate_cdc_sqlite"]
++    problems = sources.window_problems(opened, time.monotonic(), PAUSE_MS)
+     states = wait_runs(stand, work, run_id)
+-    v.grade(f"{name}/sqlite-pause-window-opened", sources.window_problems(opened, time.monotonic(), PAUSE_MS))
++    v.grade(f"{name}/sqlite-pause-window-opened", problems)
+     return states | wait_runs(stand, cdc, run_id)

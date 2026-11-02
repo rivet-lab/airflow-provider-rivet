@@ -1,0 +1,12 @@
+diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
+index 7f68c1b..41fa84f 100644
+--- a/airflow_provider_rivet/operators.py
++++ b/airflow_provider_rivet/operators.py
+@@ -548,8 +548,6 @@ class RivetInitOperator(_RivetTask):
+             return self._write_config(target, env, binary)
+         except Stopped as stop:
+             self._stopped(ti, stop)
+-        except _InitFailed as failure:
+-            self._failed(ti, failure)
+         finally:
+             self._proc = None
