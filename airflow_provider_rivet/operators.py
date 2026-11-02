@@ -546,6 +546,8 @@ class RivetInitOperator(_RivetTask):
             self._refuse(ti, refusal)
         try:
             return self._write_config(target, env, binary)
+        except PreflightRefusal as refusal:
+            self._refuse(ti, refusal)
         except Stopped as stop:
             self._stopped(ti, stop)
         except _InitFailed as failure:
