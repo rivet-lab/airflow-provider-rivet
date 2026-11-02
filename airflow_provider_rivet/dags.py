@@ -400,7 +400,7 @@ def build_config_dag(
         return _refused_dag(dag_id, mode or "config", Path(config), exc, common)
 
 
-def _unresolved_compaction(config: Path, names: list[str]) -> tuple[str, str]:
+def _unresolved_compaction(config: Path, names: list[str]) -> tuple[Code, str]:
     """The code and text of a config whose `${...}` may decide whether its exports compact: no DAG can say which tasks."""
     return (
         Code.CONFIG_UNRESOLVED,
