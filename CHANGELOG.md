@@ -7,6 +7,10 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Repo guards for the harness: every CI job's skips are graded against a dated ledger (`dev/skip_census.py`), the gate
+  job name and the matrix follow the `--airflow` default, the release publish `needs` is pinned by a dated ledger,
+  weak asserts are ratcheted (`dev/test_checks.py`), dated ledgers are linted, and every `dev/` module is tested or
+  has `--self-test`. No product code changes.
 - Tests: one table over the four public DAG builders (`build_batch_dag`, `build_cdc_dag`, `build_config_dag`,
   `build_source_dags`) checks that each refuses every owned key by name, gives its tasks its own config, state folder,
   slot and gate, and refuses a broken config as a DAG; a `${VAR}` scalar builds the DAG of its resolved value or a coded
