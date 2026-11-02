@@ -152,7 +152,8 @@ def resolver(env: Mapping[str, str], params: Mapping[str, str]) -> Callable[[str
 
 def _free_mask(taken: str) -> tuple[str, str]:
     """Two private-use characters that occur in neither the text nor any resolved value."""
-    free = (char for char in map(chr, range(0xE000, 0xF900)) if char not in taken)
+    marks = map(chr, range(0xE000, 0xF900))  # pragma: no mutate -- the bounds only pick which free marks come first
+    free = (char for char in marks if char not in taken)
     return next(free), next(free)
 
 
