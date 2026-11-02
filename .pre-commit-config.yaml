@@ -32,3 +32,10 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+      - id: push-guard
+        name: push guard (files deleted since origin/main)
+        entry: uv run --locked python dev/push_guard.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
