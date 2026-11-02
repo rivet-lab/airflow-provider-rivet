@@ -145,6 +145,26 @@ def params_of(args: Sequence[str]) -> dict[str, str]:
     return params
 
 
+def redacted_argv(args: Sequence[str]) -> list[str]:
+    """The argv with every `-p` / `--param` value masked and its key kept: what a log record may show of it."""
+    out = list(args)
+
+    def mask(item: str) -> str:
+        key, eq, _ = item.partition("=")
+        return f"{key}=***" if eq else "***"
+
+    for i, arg in enumerate(args):
+        if arg in ("-p", "--param"):
+            if i + 1 < len(args) and args[i + 1]:
+                out[i + 1] = mask(args[i + 1])
+        elif arg.startswith("--param="):
+            out[i] = "--param=" + mask(arg[len("--param=") :])
+        elif arg.startswith("-p"):
+            eq = "=" if arg.startswith("-p=") else ""
+            out[i] = "-p" + eq + mask(arg[2:].removeprefix("="))
+    return out
+
+
 def resolver(env: Mapping[str, str], params: Mapping[str, str]) -> Callable[[str], str | None]:
     """A placeholder's value as rivet takes it: a `-p` param wins over the environment."""
     return lambda name: params[name] if name in params else env.get(name)

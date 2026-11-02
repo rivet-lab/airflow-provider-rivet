@@ -21,7 +21,7 @@ from airflow_provider_rivet.connections import (
     with_database,
 )
 from airflow_provider_rivet.dags import build_source_dags
-from airflow_provider_rivet.operators import RivetInitOperator
+from airflow_provider_rivet.operators import XCOM_KEY, RivetInitOperator, _InitFailed
 from airflow_provider_rivet.preflight import PreflightRefusal
 
 ODBC = """\
@@ -275,6 +275,9 @@ def test_neither_a_connection_nor_a_data_source_is_refused_naming_both(
 # --- RivetInitOperator ---
 
 
+REFUSED_ERROR = {"code": None, "kind": None, "class": "refusal", "exit_code": None, "retryable": False, "action": None}
+
+
 class Init:
     """A fake `rivet` for init and check, the operator and what the binary saw."""
 
@@ -362,6 +365,63 @@ def test_a_config_written_meanwhile_is_kept(init: Init, monkeypatch: pytest.Monk
     monkeypatch.setattr(RivetInitOperator, "_rivet", racing)
     init.run()
     assert init.config.read_text() == "# another try's\n"
+
+
+def test_a_failed_init_publishes_its_payload_and_writes_its_task_log(init: Init, logged: Any) -> None:
+    init.spec(init_exit=5)
+    ti = FakeTI(task_id="init")
+    with pytest.raises(AirflowFailException, match="exited 5"):
+        init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
+    assert ti.store[("init", XCOM_KEY)] == {
+        "command": "init",
+        "decision": "fail",
+        "error": {"code": None, "kind": None, "class": "refusal", "exit_code": 5, "retryable": False, "action": None},
+        "units": [],
+    }
+    assert "rivet init → REFUSED" in logged()
+
+
+def test_a_refused_place_publishes_its_payload_and_writes_its_task_log(init: Init, logged: Any) -> None:
+    init.config.parent.mkdir()
+    (init.config.parent / "billing.yaml").write_text(CDC_CONFIG.format(env="X"))
+    ti = FakeTI(task_id="init")
+    with pytest.raises(AirflowFailException, match="writes to bigquery p.shop"):
+        init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
+    assert ti.store[("init", XCOM_KEY)] == {"command": "init", "decision": "fail", "error": REFUSED_ERROR, "units": []}
+    assert "rivet init → " in logged()
+
+
+def test_a_missing_state_root_publishes_its_payload(init: Init) -> None:
+    ti = FakeTI(task_id="init")
+    with pytest.raises(AirflowFailException, match="does not exist on this worker"):
+        init_operator(init.tmp, state_dir=str(init.tmp / "nope" / "shop")).execute({"ti": ti, "run_id": "r"})
+    assert ti.store[("init", XCOM_KEY)]["error"] == REFUSED_ERROR
+
+
+def test_a_signal_that_ends_init_is_named_as_one(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("airflow_provider_rivet.operators.spawn", lambda *args, **kwargs: -9)
+    with pytest.raises(_InitFailed) as exc:
+        init_operator(init.tmp)._rivet("rivet", ["init"], {}, init.tmp)
+    assert str(exc.value) == "`rivet init` was killed by signal 9; its output is above, and no config was written"
+    assert exc.value.error.message == "rivet was killed by signal 9" and exc.value.error.class_ == "crashed"
+
+
+def test_init_reports_each_export_as_rivet_reads_it(init: Init, logged: Any) -> None:
+    yaml = CDC_CONFIG.format(env="RIVET_SOURCE_URL").replace("- name: shop_orders", "- name: 2024")
+    init.spec(yaml=yaml.replace("    tables: [orders, customers]\n", ""))
+    out = init.run()
+    assert out["exports"] == [
+        {"name": "2024", "mode": "full", "tables": ["orders"]},
+        {"name": "shop_cdc", "mode": "cdc", "tables": []},
+    ]
+    text = logged()
+    assert said(text, "export 2024 (full): orders") and said(text, "export shop_cdc (cdc)")
+
+
+def test_places_reads_the_exports_as_rivet_reads_them() -> None:
+    from airflow_provider_rivet.operators import places
+
+    assert places({"exports": ["not an export", {"destination": {"type": "gcs", "bucket": "b"}}]}) == {"gcs://b/"}
 
 
 def test_a_source_with_neither_connection_nor_data_source_fails_before_rivet(init: Init) -> None:
@@ -892,7 +952,7 @@ def test_batch_init_asks_rivet_for_no_mode_and_runs_where_it_writes(init: Init) 
         "config": str(init.config),
         "written": True,
         "exports": [
-            {"name": "shop_orders", "mode": "full", "tables": None},
+            {"name": "shop_orders", "mode": "full", "tables": ["orders"]},
             {"name": "shop_cdc", "mode": "cdc", "tables": ["orders", "customers"]},
         ],
     }
@@ -903,7 +963,7 @@ def test_init_logs_rivet_s_lines_and_what_it_wrote_word_for_word(init: Init, log
     text = logged()
     assert said(text, "wrote config, 100% %s of it")  # a line is logged as text, never as a format
     lines = [line.split(" [airflow.task")[0].rstrip() for line in text.splitlines()]  # Airflow 3 appends the logger
-    assert any(line.endswith("export shop_orders (full)") for line in lines)
+    assert any(line.endswith("export shop_orders (full): orders") for line in lines)
     assert any(line.endswith("export shop_cdc (cdc): orders, customers") for line in lines)
     assert said(text, f"{init.config} written; the next DAG parse replaces this task with the rivet tasks it describes")
 
@@ -942,8 +1002,10 @@ def test_a_config_written_meanwhile_is_logged_and_its_places_are_not_another_sou
             init.config.write_text(CDC_CONFIG.format(env="RIVET_SOURCE_URL"))  # the same places: the same source
 
     monkeypatch.setattr(RivetInitOperator, "_rivet", racing)
-    assert init.run()["written"] is True
-    assert said(logged(), f"{init.config} was written meanwhile; it is kept")
+    assert init.run() == {"config": str(init.config), "written": False}
+    text = logged()
+    assert said(text, f"{init.config} was written meanwhile; it is kept")
+    assert not said(text, f"{init.config} written; the next DAG parse replaces this task with the rivet tasks it describes")
 
 
 def test_an_unreadable_neighbour_is_skipped_and_the_next_one_still_checked(init: Init) -> None:
@@ -953,8 +1015,8 @@ def test_an_unreadable_neighbour_is_skipped_and_the_next_one_still_checked(init:
     out = init.run()
     assert str(out) == (
         f"the config `rivet init` wrote for shop.yaml writes to bigquery p.shop, as {init.config.parent / 'billing.yaml'} "
-        "does; give each source its own place in init_args (`--gcs-bucket`/`--s3-bucket`, `--bigquery-dataset {name}`, "
-        "`--clickhouse-database {name}`); no config was written"
+        "does; give each source its own place in init_args (`--gcs-bucket`/`--s3-bucket`, `--bigquery-dataset shop`, "
+        "`--clickhouse-database shop`); no config was written"
     )
 
 
@@ -1120,7 +1182,7 @@ def test_a_stop_reaches_the_running_rivet(init: Init) -> None:
     op = init_operator(init.tmp)
     threading.Timer(1.0, op.on_kill).start()
     started = time.monotonic()
-    with pytest.raises(AirflowFailException, match="`rivet init` exited -15"):
+    with pytest.raises(AirflowFailException, match="`rivet init` was killed by signal 15"):
         op.execute({"ti": FakeTI(task_id="init"), "run_id": "r"})
     assert time.monotonic() - started < 20 and not init.config.exists()
 
