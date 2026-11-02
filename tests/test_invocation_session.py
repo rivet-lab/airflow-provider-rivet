@@ -26,7 +26,7 @@ def session(tmp_path: Path, state: bool = True, stderr_dir: str | None = None, *
     state_dir = tmp_path / "state" if state else None
     if state_dir:
         state_dir.mkdir(exist_ok=True)
-    fields = {"state_dir": state_dir, "state_kind": "postgres", "config": {"exports": []}, "value_of": lambda n: None}
+    fields = {"state_dir": state_dir, "state_kind": "postgres", "config": {"exports": []}}
     req = Request("load", str(config), {}, stderr_dir=stderr_dir, label=LABEL, log_keep=None)
     return invocation._Session(req, SimpleNamespace(**{**fields, **pf}), lambda e: None, None)  # type: ignore[arg-type]
 
