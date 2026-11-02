@@ -170,16 +170,16 @@ def resolver(env: Mapping[str, str], params: Mapping[str, str]) -> Callable[[str
     return lambda name: params[name] if name in params else env.get(name)
 
 
-def _free_mask(taken: str) -> tuple[str, str]:
+def _free_mask(*taken: str) -> tuple[str, str]:
     """Two private-use characters that occur in neither the text nor any resolved value."""
     marks = map(chr, range(0xE000, 0xF900))  # pragma: no mutate -- the bounds only pick which free marks come first
-    free = (char for char in marks if char not in taken)
+    free = (char for char in marks if not any(char in t for t in taken))
     return next(free), next(free)
 
 
 def resolve_and_load(text: str, value_of: Callable[[str], str | None]) -> tuple[Any, list[str]]:
     """The document rivet would build from this text, and the placeholders nothing resolved (spelled `${name}`)."""
     values = [value_of(name) for name in _PLACEHOLDER.findall(text)]
-    mask = _free_mask(text + "".join(v for v in values if v))
+    mask = _free_mask(text, *(v for v in values if v))
     resolved, unresolved = substitute(text, value_of, mask)
     return unmasked(load(resolved), mask), unresolved
