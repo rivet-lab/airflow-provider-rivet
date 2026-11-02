@@ -8,11 +8,11 @@ index 2db71e2..1d58a22 100644
          # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
 -        if uncertain:
 -            raise ConfigRefusal(
--                "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+-                Code.CONFIG_HAS_CDC_EXPORT,
 -                f"{config} has exports whose `mode` a `${{...}}` may hold as batch or cdc ({', '.join(uncertain)}): a CDC DAG "
 -                "over it would leave out the ones that resolve to batch; write their `mode` literally, or build them from a "
 -                "config of their own",
 -            )
          if not cdc:
              raise ConfigRefusal(
-                 "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT",
+                 Code.CONFIG_NO_CDC_EXPORT,

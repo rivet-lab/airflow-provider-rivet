@@ -21,4 +21,4 @@ index 2db71e2..fb18864 100644
 -        raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
      if not exports:
          raise ConfigRefusal(
-             "RIVET_AIRFLOW_CONFIG_NO_EXPORT",
+             Code.CONFIG_NO_EXPORT,

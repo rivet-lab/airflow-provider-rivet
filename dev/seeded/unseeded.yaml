@@ -32,10 +32,6 @@ open:
     date: "2026-11-02"
     reason: the DAG builders repeat their load/compact groups, settings filter, build-or-refuse and mode checks; architecture cleanup
     closes: a deepening PR that moves the shared pieces into one builder with the DAG tests unchanged
-  - bug: seams-7
-    date: "2026-11-02"
-    reason: event and command names are literals scattered across modules; architecture cleanup
-    closes: the names become constants read from one module, guarded by a test that greps for literal uses
   - bug: lifecycle-1
     date: "2026-11-02"
     reason: plausible, not confirmed; ensure_marker may return an empty marker id; no fix and no repro yet

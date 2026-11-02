@@ -24,6 +24,7 @@ from ._compat import (
     mask_secret,
 )
 from ._yaml import params_of
+from .codes import Code
 from .connections import (
     EnvSpec,
     build_environment,
@@ -33,6 +34,7 @@ from .connections import (
     resolve_database,
     with_database,
 )
+from .events import Event
 from .exports import entries_of, mode_of, name_of, tables_of
 from .invocation import (
     CLOUD_ENV,
@@ -195,13 +197,13 @@ class _RivetTask(BaseOperator):
 
     def _refuse(self, ti: Any, refusal: PreflightRefusal) -> NoReturn:
         """Log and publish a refusal made before rivet started, then fail without retry."""
-        self._emit({"event": "rivet.refused", "code": refusal.code, "text": str(refusal)})
+        self._emit({"event": Event.REFUSED, "code": refusal.code, "text": str(refusal)})
         payload = unstarted(self.command, REFUSED, refusal.code)
         self._fail(ti, payload, str(refusal), retry=False)  # pragma: no mutate - `retry` is read as a truth value
 
     def _stopped(self, ti: Any, stop: Stopped) -> NoReturn:
         """Log and publish a stop Airflow asked for before a rivet step started, then fail for a retry (D40)."""
-        self._emit({"event": "rivet.stopped", "step": stop.step, "text": str(stop)})
+        self._emit({"event": Event.STOPPED, "step": stop.step, "text": str(stop)})
         self._fail(ti, unstarted(self.command, STOPPED, stop.step), str(stop), retry=True)
 
     def execute(self, context: Any) -> dict[str, Any]:
@@ -345,7 +347,7 @@ class RivetBaseOperator(_RivetTask):
         except Stopped as stop:
             self._stopped(ti, stop)
         except Busy as busy:
-            self._emit({"event": "rivet.busy", "code": busy.code, "text": str(busy)})
+            self._emit({"event": Event.BUSY, "code": busy.code, "text": str(busy)})
             self._fail(ti, unstarted(self.command, BUSY, busy.code), str(busy), retry=True)
         finally:
             self._proc = None
@@ -364,7 +366,7 @@ class RivetBaseOperator(_RivetTask):
                 )
             stops = [u.export for u in outcome.units if u.stop_reason == "max_events"]
             if stops:
-                self._emit({"event": "rivet.cdc.max_events", "exports": stops, "text": "stopped on max_events; backlog remains"})
+                self._emit({"event": Event.CDC_MAX_EVENTS, "exports": stops, "text": "stopped on max_events; backlog remains"})
             self._finish(ti, payload)
             return payload
         assert outcome.error is not None
@@ -372,7 +374,7 @@ class RivetBaseOperator(_RivetTask):
         text = outcome.error.describe(failed[0] if len(failed) == 1 else self.export)
         self._emit(  # rivet's reason, safe to print (`error_text`): the task log's failure lines read it from here
             {
-                "event": "rivet.error",
+                "event": Event.ERROR,
                 "text": error_text(outcome.error.message),
                 "units": [
                     {"export": u.export, "table": u.table, "text": error_text(u.error.message)}
@@ -395,7 +397,7 @@ class RivetBaseOperator(_RivetTask):
                 payload["degraded"] = sorted({*payload["degraded"], "crashed_ledger"})
             self._emit(
                 {
-                    "event": "rivet.crashed",
+                    "event": Event.CRASHED,
                     "retry": allowed,
                     "budget": self.crashed_retries,
                     "try_number": ti.try_number,
@@ -572,7 +574,7 @@ class RivetInitOperator(_RivetTask):
             import psycopg2
         except ImportError:
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_STATE_DATABASE", f"creating state database `{name}` needs psycopg2 on the worker"
+                Code.STATE_DATABASE, f"creating state database `{name}` needs psycopg2 on the worker"
             ) from None
         conn = psycopg2.connect(connection_url(with_database(server, server.schema or "postgres")))
         try:

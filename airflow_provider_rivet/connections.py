@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
+from .codes import Code
 from .invocation import CLOUD_ENV, undeclared_state_variables, worker_environment
 from .preflight import PreflightRefusal
 
@@ -28,8 +29,8 @@ CLICKHOUSE_PASSWORD = "RIVET_CLICKHOUSE_PASSWORD"
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SNOWFLAKE_KEY = "RIVET_SNOWFLAKE_KEY"
 SNOWFLAKE_PASSPHRASE = "PRIVATE_KEY_PASSPHRASE"  # what `snow` reads to decrypt an encrypted key
-INCOMPLETE = "RIVET_AIRFLOW_CONNECTION_INCOMPLETE"
-UNSUPPORTED = "RIVET_AIRFLOW_CONNECTION_UNSUPPORTED"
+INCOMPLETE = Code.CONNECTION_INCOMPLETE
+UNSUPPORTED = Code.CONNECTION_UNSUPPORTED
 # The variables by which a Connection of a kind names WHO rivet is; when it sets one, the worker's variables of that
 # kind (`CLOUD_ENV`) are dropped, never merged with it.
 CREDENTIALS = {
@@ -281,7 +282,7 @@ def kind_of(conn: Any) -> str:
     kind = _extra(conn, "rivet_kind", "rivet") or CONN_TYPES.get(conn.conn_type)
     if kind not in KINDS:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_CONNECTION_KIND",
+            Code.CONNECTION_KIND,
             f"connection `{conn.conn_id}` has conn_type `{conn.conn_type}`, which names no storage or warehouse rivet reads; "
             f"set its extra `rivet_kind` to one of {sorted(KINDS)}",
         )
@@ -302,7 +303,7 @@ def _cloud(conns: Sequence[Any], folder: Path, config: Mapping[str, Any]) -> tup
         kind = kind_of(conn)
         if kind in seen:
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_CONNECTION_KIND_TWICE",
+                Code.CONNECTION_KIND_TWICE,
                 f"connections `{seen[kind]}` and `{conn.conn_id}` are both {kind}: one task reads one {kind} credential",
             )
         seen[kind] = conn.conn_id
@@ -379,7 +380,7 @@ def connection_url(conn: Any, scheme: str | None = None) -> str:
     scheme = scheme or extra.get("rivet_scheme") or _SCHEMES.get(conn.conn_type, conn.conn_type)
     if scheme not in RIVET_SCHEMES:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_CONNECTION_SCHEME",
+            Code.CONNECTION_SCHEME,
             f"connection `{conn_id}` has conn_type `{conn.conn_type}`, which names no rivet URL "
             f"scheme; pass the scheme as (conn_id, scheme) or set the connection extra `rivet_scheme` to one of {RIVET_SCHEMES}",
         )
@@ -599,7 +600,7 @@ def missing_connection(
     """The refusal of a Connection no backend defines (and, with `odbc_ini`, no data source `dsn` of that file, or the
     file itself `unreadable` for the reason given): final, since a retry cannot create it."""
     return PreflightRefusal(
-        "RIVET_AIRFLOW_CONNECTION_MISSING",
+        Code.CONNECTION_MISSING,
         f"connection `{conn_id}` is not defined in the metadata database or any secrets backend this worker reads"
         + (f", and {odbc_ini} {unreadable or f'has no data source [{dsn}]'}" if odbc_ini else "")
         + ("; create it, put a readable odbc.ini there," if unreadable else "; create it,")
@@ -611,7 +612,7 @@ def missing_variable(key: str, env_name: str) -> PreflightRefusal:
     """The refusal of an Airflow Variable no backend defines: the one that names a source's secret. Final, since a retry
     cannot create it; the remedy names the Variable and what it fills."""
     return PreflightRefusal(
-        "RIVET_AIRFLOW_VARIABLE_MISSING",
+        Code.VARIABLE_MISSING,
         f"airflow variable `{key}` is not defined in the metadata database or any secrets backend this worker reads; it "
         f"fills `{env_name}`, which the config reads as `${{{env_name}}}`: set it with `airflow variables set {key} "
         f"projects/<project>/secrets/<secret>`, or AIRFLOW_VAR_{key} in the worker's environment; a retry cannot create it",
@@ -676,7 +677,7 @@ def build_environment(
         env[name] = connection_url(conn, scheme)
     for name in undeclared_state_variables(env, worker_env):
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_STATE_ENV_NOT_PASSED",
+            Code.STATE_ENV_NOT_PASSED,
             f"the worker's environment sets {name} to a state rivet would use (a PostgreSQL URL or a `sqlite:` file) and this task "
             f"would not pass it to rivet, which would then run on an empty SQLite state in state_dir and treat every export as a first run. Either inherit the worker's "
             f'value with env_passthrough=["{name}"], or give the task its own with '

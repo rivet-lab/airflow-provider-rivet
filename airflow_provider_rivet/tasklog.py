@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .events import Event
 from .preflight import SETUP_GUIDE
 from .result import BUSY, BUSY_CODES, REFUSED, STOPPED, SUBCOMMAND
 
@@ -139,19 +140,19 @@ class TaskLog:
         self.write(logging.DEBUG, json.dumps(record, sort_keys=True, default=str))
         self.events.append(record)
         event = record.get("event")
-        if event == "rivet.start":
+        if event == Event.START:
             self.steps.append({"step": record.get("step"), "start": clock()})
-        elif event == "rivet.step" and self.steps:
+        elif event == Event.STEP and self.steps:
             self.steps[-1].update(end=clock(), exit_status=record.get("exit_status"), signal=record.get("signal"))
-        elif event == "rivet.lock.wait":
+        elif event == Event.LOCK_WAIT:
             self.write(
                 logging.INFO,
                 f"waiting up to {record.get('lock_wait')} s for the lock of {record.get('unit')}: another try of this "
                 "task, or a rivet process it left running, holds it",
             )
-        elif event == "rivet.lock.acquired":
+        elif event == Event.LOCK_ACQUIRED:
             self.write(logging.INFO, f"took the lock of {record.get('unit')} after {_secs(record.get('waited') or 0.0)}")
-        elif event == "rivet.stderr":
+        elif event == Event.STDERR:
             self.write(logging.INFO, f"rivet {record.get('step')} stderr: {record.get('line')}")
 
     def finish(self, payload: dict[str, Any], try_number: int, max_tries: int, stop_requested: bool) -> None:
@@ -168,11 +169,11 @@ class TaskLog:
     def _reasons(self) -> dict[str, Any]:
         """The `rivet.error` record of a failed task: rivet's reason for the task and for each failed unit, already safe
         to print (`result.error_text`)."""
-        return self._first("rivet.error") or {}
+        return self._first(Event.ERROR) or {}
 
     def _unit_records(self) -> dict[tuple[Any, Any], dict[str, Any]]:
         """The `rivet.unit` record of each unit, by export and table: what XCom does not carry (names, digest)."""
-        return {(e.get("export"), e.get("table")): e for e in self.events if e.get("event") == "rivet.unit"}
+        return {(e.get("export"), e.get("table")): e for e in self.events if e.get("event") == Event.UNIT}
 
     def render(self, payload: dict[str, Any], try_number: int, max_tries: int, stop_requested: bool) -> list[tuple[int, str]]:
         """The readable block: `[(level, line)]`, headline first."""
@@ -181,7 +182,7 @@ class TaskLog:
             p for p in (SUBCOMMAND.get(self.command, self.command), self.export, self.table and f"table {self.table}") if p
         )
         head = f"rivet {subject} →"
-        targets = [_target(e) for e in self.events if e.get("event") == "rivet.unit"]
+        targets = [_target(e) for e in self.events if e.get("event") == Event.UNIT]
         if len(targets) == 1 and targets[0]:
             head += f" {targets[0]}:"
         tries = f"try {try_number} of {max_tries + 1}"
@@ -193,14 +194,14 @@ class TaskLog:
         error = payload.get("error") or {}
         lines: list[tuple[int, str]] = []
         if REFUSED in payload:
-            refused = self._first("rivet.refused") or {}
+            refused = self._first(Event.REFUSED) or {}
             lines.append((logging.ERROR, f"{head} REFUSED [{payload[REFUSED]}] before rivet started, final"))
             lines.append((logging.ERROR, f"  why      {refused.get('text')}"))
         elif STOPPED in payload:
             step = payload[STOPPED]
             lines.append((logging.WARNING, f"{head} STOPPED by Airflow before rivet {step} started; rivet {step} was not run"))
         elif BUSY in payload:
-            wait = (self._all("rivet.lock.wait") or [{}])[-1]  # the lock that timed out is the last one waited for
+            wait = (self._all(Event.LOCK_WAIT) or [{}])[-1]
             lines.append(
                 (
                     retry_level,
@@ -230,12 +231,12 @@ class TaskLog:
         if len(units) > 1:
             counts.insert(0, _plural(len(units), UNIT_WORD.get(self.command, "export")))
         took = _secs(seconds)
-        acquired = self._all("rivet.lock.acquired")
+        acquired = self._all(Event.LOCK_ACQUIRED)
         if acquired:  # the task's own wait for its locks, apart from the work
             waited = sum(a.get("waited") or 0.0 for a in acquired)
             what = f"the lock of {acquired[0].get('unit')}" if len(acquired) == 1 else _locks(acquired)
             took = f"{_secs(seconds - waited)}, after {_secs(waited)} waiting for {what}"
-        done = self._first("rivet.apply.already_applied")
+        done = self._first(Event.APPLY_ALREADY_APPLIED)
         if done is not None:
             what = ", ".join(counts)
             return (
@@ -287,7 +288,7 @@ class TaskLog:
         lines = []
         names = [s["step"] for s in self.steps]
         replayed = self.command == "apply" and "plan" not in names and "apply" in names
-        sealed = self._first("rivet.plan.sealed") or {}
+        sealed = self._first(Event.PLAN_SEALED) or {}
         for step in self.steps:
             name = step["step"]
             if replayed and name == "apply":
@@ -339,7 +340,7 @@ class TaskLog:
     def _notes(self, payload: dict[str, Any]) -> list[tuple[int, str]]:
         """What the operator should know: single-host state, workarounds; WARNING when they must act."""
         degraded = [d for d in payload.get("degraded") or [] if isinstance(d, str)]
-        warnings = [e for e in self.events if e.get("event") == "rivet.warning"]
+        warnings = [e for e in self.events if e.get("event") == Event.WARNING]
         notes: list[tuple[int, str]] = []
         if any(w.get("warning") == "sqlite_single_host" for w in warnings):
             notes.append((logging.INFO, f"SQLite state is single-host — see {SETUP_GUIDE}"))
@@ -348,11 +349,11 @@ class TaskLog:
         for warning in warnings:
             if warning.get("warning") != "sqlite_single_host":
                 notes.append((logging.WARNING, str(warning.get("text"))))
-        stops = self._first("rivet.cdc.max_events")
+        stops = self._first(Event.CDC_MAX_EVENTS)
         if stops is not None:
             names = ", ".join(str(n) for n in stops.get("exports") or [])
             notes.append((logging.INFO, f"stopped at max_events ({names}): a backlog remains; the next run goes on from here"))
-        crashed = self._first("rivet.crashed") or {}
+        crashed = self._first(Event.CRASHED) or {}
         if crashed.get("ledger_problem"):
             notes.append((logging.WARNING, str(crashed["ledger_problem"])))
         return [(level, f"  {'note':<8} {text}") for level, text in notes]

@@ -8,7 +8,7 @@ index 2db71e2..0ea9d72 100644
          ]
 -        if len(streams) > 1 and any(task_name(name) == WATCHER_ID for name, _, _ in streams):
 -            raise ConfigRefusal(
--                "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME",
+-                Code.CONFIG_RESERVED_EXPORT_NAME,
 -                f"{config} has an export named `{WATCHER_ID}` beside other CDC streams: its group would take the id of the "
 -                "DAG's watcher task; rename the export",
 -            )

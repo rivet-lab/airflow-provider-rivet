@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from . import _yaml
+from .codes import Code
+from .events import Event
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
@@ -52,7 +54,7 @@ _PLAIN = re.compile(r"[a-z0-9_][a-z0-9_.-]{0,79}")
 _HASHED = re.compile(r".*-[0-9a-f]{12}")
 _LOG_FILE = re.compile(r"^(?P<attempt>.+)\.[a-z]+\.(?:stderr|stdout)\.log$")
 LOCK_POLL = 0.2  # seconds between two tries of a held export lock
-BUSY_CODE = "RIVET_AIRFLOW_EXPORT_BUSY"
+BUSY_CODE = Code.EXPORT_BUSY
 PR_SET_PDEATHSIG = 1  # <linux/prctl.h>
 # The layout of the package's own files in a state directory (docs/state.md): `<state_dir>/airflow/<dag>/` holds a
 # DAG's sealed plans (`plans/<run>/`) and crashed ledgers (`crashed/`), which `_prune_stale` walks; `airflow/locks/`
@@ -265,7 +267,7 @@ class _Session:
             self._make_dirs(dag, task)
         except OSError as exc:
             self._drop_tmp()
-            raise PreflightRefusal("RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"cannot create a task folder: {exc}") from exc
+            raise PreflightRefusal(Code.STATE_DIR_NOT_WRITABLE, f"cannot create a task folder: {exc}") from exc
         except BaseException:
             self._drop_tmp()
             raise
@@ -337,13 +339,13 @@ class _Session:
             raise Stopped(name)
         stderr_path = self.logs / f"{self.log_name}.{name}.stderr.log"
         stdout_path = stdout_to or self.logs / f"{self.log_name}.{name}.stdout.log"
-        self.emit({"event": "rivet.start", "step": name, "argv": _yaml.redacted_argv(argv), "stderr_path": str(stderr_path)})
+        self.emit({"event": Event.START, "step": name, "argv": _yaml.redacted_argv(argv), "stderr_path": str(stderr_path)})
         cwd = self.req.cwd or str(Path(self.req.config).resolve().parent)
         with _open_private(stdout_path) as out, _open_private(stderr_path) as err:
             code = spawn(argv, out, err, self.req.env, cwd, self.on_process, self.lock_fds)
         self.emit(
             {
-                "event": "rivet.step",
+                "event": Event.STEP,
                 "step": name,
                 "exit_status": None if code < 0 else code,
                 "signal": -code if code < 0 else None,
@@ -353,7 +355,7 @@ class _Session:
         lines, truncated = tail_lines(stderr_path)
         if self.req.stream_stderr:
             for raw in lines:
-                self.emit({"event": "rivet.stderr", "step": name, "line": raw})
+                self.emit({"event": Event.STDERR, "step": name, "line": raw})
         signal = -code if code < 0 else None
         return _Step(None if signal else code, signal, _error_line(lines), truncated or _has_broken_object(lines))
 
@@ -394,10 +396,10 @@ class _Session:
                 "target_from": unit.target_from,
                 "digest": unit.digest,
             }
-            self.emit({"event": "rivet.unit", **record, **extra})
+            self.emit({"event": Event.UNIT, **record, **extra})
         self.emit(
             {
-                "event": "rivet.result",
+                "event": Event.RESULT,
                 "command": out.command,
                 "decision": out.decision,
                 "degraded": out.degraded,
@@ -446,14 +448,12 @@ def _private_dir(base: Path, *parts: str) -> Path:
         except FileExistsError:
             pass
         except OSError as exc:
-            raise PreflightRefusal("RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"cannot create {path}: {type(exc).__name__}") from exc
+            raise PreflightRefusal(Code.STATE_DIR_NOT_WRITABLE, f"cannot create {path}: {type(exc).__name__}") from exc
         try:
             if stat.S_IMODE(os.stat(path).st_mode) != 0o700:
                 os.chmod(path, 0o700)
         except OSError as exc:
-            raise PreflightRefusal(
-                "RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"cannot make {path} private: {type(exc).__name__}"
-            ) from exc
+            raise PreflightRefusal(Code.STATE_DIR_NOT_WRITABLE, f"cannot make {path} private: {type(exc).__name__}") from exc
     return path
 
 
@@ -572,7 +572,7 @@ def _copy_query_files(config: Mapping[str, Any], source: Path, given: Path, fold
         name, ref, origin = _yaml.text_of(entry.get("name")), str(ref), source.parent / str(ref)
 
         def refuse(why: str, name: str = name, ref: str = ref) -> None:
-            raise PreflightRefusal("RIVET_AIRFLOW_QUERY_FILE", f"export `{name}` of {source}: query_file `{ref}` {why}")
+            raise PreflightRefusal(Code.QUERY_FILE, f"export `{name}` of {source}: query_file `{ref}` {why}")
 
         if os.path.isabs(ref) or ".." in Path(ref).parts:
             refuse("must be a relative path with no `..`: rivet reads it only inside the config's directory")
@@ -693,13 +693,13 @@ def _wait_for_lock(s: _Session, fd: int, path: Path, unit: str) -> None:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if attempt:  # the wait is recorded once more, when it ends, with how long it took
-                s.emit({"event": "rivet.lock.acquired", "lock": str(path), "unit": unit, "waited": time.monotonic() - started})
+                s.emit({"event": Event.LOCK_ACQUIRED, "lock": str(path), "unit": unit, "waited": time.monotonic() - started})
             return
         except BlockingIOError:
             if s.stopped is not None and s.stopped():
                 raise Stopped(SUBCOMMAND.get(s.req.command, s.req.command)) from None
             if attempt == 0:  # the wait is recorded once, when it starts
-                s.emit({"event": "rivet.lock.wait", "lock": str(path), "unit": unit, "lock_wait": s.req.lock_wait})
+                s.emit({"event": Event.LOCK_WAIT, "lock": str(path), "unit": unit, "lock_wait": s.req.lock_wait})
             if time.monotonic() >= deadline:
                 raise Busy(path, unit, s.req.lock_wait) from None
             time.sleep(LOCK_POLL)
@@ -845,7 +845,7 @@ def _refuse_foreign_artifact(artifact: Path, export: str, config: str) -> None:
     same_config = isinstance(planned, str) and _same_file(planned, config)  # "" names no file: not the same
     if named != export or not same_config:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_PLAN_ARTIFACT_FOREIGN",
+            Code.PLAN_ARTIFACT_FOREIGN,
             f"the sealed plan artifact {artifact} records export `{named}` of config `{planned}`, and this task "
             f"applies export `{export}` of config `{config}`: applying it would extract something else under this "
             "task's name. It is neither applied nor replaced; delete the file once you know what wrote it",
@@ -888,7 +888,7 @@ def _apply(s: _Session) -> Outcome:
         sealed = _read_json(artifact)
         s.emit(
             {
-                "event": "rivet.plan.sealed",
+                "event": Event.PLAN_SEALED,
                 "export": export,
                 "strategy": sealed.get("strategy") if isinstance(sealed, dict) else None,
             }
@@ -907,7 +907,7 @@ def _apply(s: _Session) -> Outcome:
 
 def _emit_already_applied(s: _Session, export: str, unit: UnitResult, artifact: Path) -> None:
     """The record that an earlier try applied the sealed plan, as rivet answered the replay."""
-    s.emit({"event": "rivet.apply.already_applied", "export": export, "run_id": unit.run_id, "artifact": str(artifact)})
+    s.emit({"event": Event.APPLY_ALREADY_APPLIED, "export": export, "run_id": unit.run_id, "artifact": str(artifact)})
 
 
 def _plan(s: _Session) -> Outcome:
@@ -967,7 +967,7 @@ def refuse_param(command: str, extra_args: Sequence[str]) -> None:
     for arg in extra_args:
         if arg == "--param" or arg.startswith(("--param=", "-p")):
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_PARAM_NOT_ACCEPTED",
+                Code.PARAM_NOT_ACCEPTED,
                 f"`{arg}` in extra_args: rivet {command} has no -p / --param (`unexpected argument '-p' found`); only rivet run, "
                 "plan and check take it, so RivetRunOperator, RivetCdcRunOperator and RivetPlanOperator do. A `${name}` in "
                 f"the config of a {command} task is read from the task's environment: set it in env=",
@@ -990,7 +990,7 @@ def _invoke(request: Request, emit: Emit, on_process: Callable | None, stopped: 
         extra_args=tuple(request.extra_args),
     )
     for key, text in pf.warnings:
-        emit({"event": "rivet.warning", "warning": key, "text": text})
+        emit({"event": Event.WARNING, "warning": key, "text": text})
     session = _Session(request, pf, emit, on_process, stopped)
     try:
         with _export_lock(session):

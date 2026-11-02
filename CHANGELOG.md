@@ -35,6 +35,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- Refusal codes and task-log event names are the members of `airflow_provider_rivet.codes.Code` and
+  `airflow_provider_rivet.events.Event` (a `StrEnum`, so their text and JSON are unchanged). No output changes.
+
 - A release publishes to PyPI only after the live gate passes on its tag: `release.yml` calls `gate.yml`, and `publish` needs both the build and the gate.
 - `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
   `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a

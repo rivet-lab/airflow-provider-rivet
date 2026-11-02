@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ._compat import DAG, TaskGroup
+from .codes import Code
 from .exports import (
     compacts,
     entries_of,
@@ -312,7 +313,7 @@ def build_source_dags(
     `env_from_variables` maps an environment variable to the Airflow Variable that holds its value (`{name}` replaced
     in the key), e.g. `{"RIVET_SOURCE_URL_SECRET": "rivet_{name}_url_secret"}` for a config with
     `url_secret: ${RIVET_SOURCE_URL_SECRET}`. Every task of the source reads its Variables when it runs, never at parse;
-    a missing one fails that source's tasks with `RIVET_AIRFLOW_VARIABLE_MISSING` and no other source.
+    a missing one fails that source's tasks with the variable-missing refusal (`Code.VARIABLE_MISSING`) and no other source.
     """
     names = _names("sources", sources)
     bad = [n for n in names if not SOURCE_NAME.fullmatch(n)]
@@ -399,10 +400,10 @@ def build_config_dag(
         return _refused_dag(dag_id, mode or "config", Path(config), exc, common)
 
 
-def _unresolved_compaction(config: Path, names: list[str]) -> tuple[str, str]:
+def _unresolved_compaction(config: Path, names: list[str]) -> tuple[Code, str]:
     """The code and text of a config whose `${...}` may decide whether its exports compact: no DAG can say which tasks."""
     return (
-        "RIVET_AIRFLOW_CONFIG_UNRESOLVED",
+        Code.CONFIG_UNRESOLVED,
         f"{config} has a `${{...}}` in `load.target` or `load.layout` that may decide whether {', '.join(names)} compact "
         "(a base and a buffer on BigQuery, `layout: base_buffer`): write `load.target` and `load.layout` as literals",
     )
@@ -414,7 +415,7 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
     held = shape_placeholders(doc)
     if held:
         raise ConfigRefusal(
-            "RIVET_AIRFLOW_CONFIG_UNRESOLVED",
+            Code.CONFIG_UNRESOLVED,
             f"{config} has a `${{...}}` in {', '.join(f'`{field}`' for field in held)}, which decides which tasks the DAG has "
             f"and cannot be resolved when the DAG is parsed: write {'it' if len(held) == 1 else 'them'} as a literal",
         )
@@ -424,14 +425,14 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
         # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
         if uncertain:
             raise ConfigRefusal(
-                "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+                Code.CONFIG_HAS_CDC_EXPORT,
                 f"{config} has exports whose `mode` a `${{...}}` may hold as batch or cdc ({', '.join(uncertain)}): a CDC DAG "
                 "over it would leave out the ones that resolve to batch; write their `mode` literally, or build them from a "
                 "config of their own",
             )
         if not cdc:
             raise ConfigRefusal(
-                "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT",
+                Code.CONFIG_NO_CDC_EXPORT,
                 f"{config} has no export with `mode: cdc`, so there is no stream for a CDC DAG; build this source with "
                 f"mode='batch', or delete the file to have `init` write it again with the CDC mode",
             )
@@ -445,7 +446,7 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
         ]
         if len(streams) > 1 and any(task_name(name) == WATCHER_ID for name, _, _ in streams):
             raise ConfigRefusal(
-                "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME",
+                Code.CONFIG_RESERVED_EXPORT_NAME,
                 f"{config} has an export named `{WATCHER_ID}` beside other CDC streams: its group would take the id of the "
                 "DAG's watcher task; rename the export",
             )
@@ -462,7 +463,7 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
     ]
     if maybe:
         raise ConfigRefusal(
-            "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+            Code.CONFIG_HAS_CDC_EXPORT,
             f"{config} has `mode: cdc` exports ({', '.join(maybe)}): a batch DAG over it would run on the config and the "
             "state database of the CDC DAG, and load the same tables beside it. A source in both a "
             "CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG "
@@ -473,7 +474,7 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
         raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
     if not exports:
         raise ConfigRefusal(
-            "RIVET_AIRFLOW_CONFIG_NO_EXPORT",
+            Code.CONFIG_NO_EXPORT,
             f"{config} has no export; delete the file to have `init` write it again, or add the exports",
         )
     return build_batch_dag(
@@ -491,9 +492,7 @@ def _refused_dag(dag_id: str, mode: str, config: Path, exc: Exception, common: M
     refusal = (
         exc
         if isinstance(exc, PreflightRefusal)
-        else PreflightRefusal(
-            "RIVET_AIRFLOW_CONFIG_UNBUILDABLE", f"cannot build a DAG from {config}: {type(exc).__name__}: {exc}"
-        )
+        else PreflightRefusal(Code.CONFIG_UNBUILDABLE, f"cannot build a DAG from {config}: {type(exc).__name__}: {exc}")
     )
     settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
     with _dag(dag_id, ("rivet", mode, "refused"), settings) as dag:
