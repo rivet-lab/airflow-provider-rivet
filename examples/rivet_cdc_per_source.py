@@ -1,0 +1,68 @@
+"""Example: one MySQL CDC stream per source database, every DAG built from that source's own rivet config.
+
+The layout of docs/cron-to-airflow-cdc.md: for a source `<src>`, the config `<configs>/<src>.yaml` (one export with
+`mode: cdc`), the state directory `<state root>/<src>`, the state database behind the Connection `rivet_state_<src>`,
+the MySQL Connection `rivet_<src>`, and the DAG `rivet_<src>_cdc`. The export name and its tables are read from the
+config, so the DAG captures what the config captures.
+
+Set before the scheduler parses this file (the defaults are the recipe's paths in the official docker-compose image):
+  RIVET_EXAMPLE_SOURCES      comma-separated source names, e.g. `shop,billing`
+  RIVET_EXAMPLE_CONFIG_DIR   where `<src>.yaml` live (default /opt/airflow/dags/rivet)
+  RIVET_EXAMPLE_STATE_ROOT   the parent of every state directory (default /opt/airflow/rivet-state)
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+from airflow_provider_rivet.dags import build_cdc_dag
+from airflow_provider_rivet.exports import entries_of, mode_of, name_of, tables_of
+
+SOURCES = [s.strip() for s in os.environ.get("RIVET_EXAMPLE_SOURCES", "").split(",") if s.strip()]
+CONFIG_DIR = Path(os.environ.get("RIVET_EXAMPLE_CONFIG_DIR", "/opt/airflow/dags/rivet"))
+STATE_ROOT = Path(os.environ.get("RIVET_EXAMPLE_STATE_ROOT", "/opt/airflow/rivet-state"))
+
+
+def checked_sources(sources: list[str], config_dir: Path) -> list[str]:
+    """The listed sources, refused when one is listed twice or has no `<src>.yaml` yet."""
+    twice = sorted({s for s in sources if sources.count(s) > 1})
+    if twice:
+        raise ValueError(f"sources listed twice: {', '.join(twice)}; list each source once")
+    missing = [s for s in sources if not (config_dir / f"{s}.yaml").is_file()]
+    if missing:
+        raise ValueError(
+            f"no config for {', '.join(missing)} in {config_dir}: list only sources that have `<src>.yaml` "
+            "(a source cron never ran gets one from `rivet init` first)"
+        )
+    return sources
+
+
+def cdc_export(config: Path) -> dict:
+    """The one `mode: cdc` export of a rivet config; its name and tables are read with `name_of` and `tables_of`."""
+    exports = [e for e in entries_of(yaml.safe_load(config.read_text())) if mode_of(e) == "cdc"]
+    if len(exports) != 1:
+        raise ValueError(f"{config}: expected one export with `mode: cdc`, found {len(exports)}")
+    return exports[0]
+
+
+for src in checked_sources(SOURCES, CONFIG_DIR):
+    config = CONFIG_DIR / f"{src}.yaml"
+    export = cdc_export(config)
+    globals()[f"rivet_{src}_cdc"] = build_cdc_dag(
+        f"rivet_{src}_cdc",
+        config=str(config),
+        export=name_of(export),
+        tables=tables_of(export),  # `tables:`, or the `table:` init writes for a stream of one table
+        state_dir=str(STATE_ROOT / src),
+        schedule="0 */2 * * *",
+        start_date=datetime(2026, 10, 1),  # in the past: a future start_date gives runs with no tasks
+        catchup=False,
+        operator_kwargs={
+            "env_from_connections": {"RIVET_STATE_URL": f"rivet_state_{src}", "RIVET_MYSQL_URL": f"rivet_{src}"},
+            "cloud_credentials": ["gcp"],
+        },
+    )

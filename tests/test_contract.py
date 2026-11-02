@@ -1,0 +1,156 @@
+"""The package's result model against the fixtures the Rust contract test pins (ADR-0039)."""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+
+import pytest
+from conftest import DOCS, FIXTURES, PACKAGE_ROOT, fixture
+
+from airflow_provider_rivet.capabilities import DEGRADATIONS
+from airflow_provider_rivet.result import (
+    CLASSES,
+    DIGEST_COUNTS,
+    DIGEST_KEYS,
+    STATUSES,
+    ErrorObject,
+    UnitResult,
+    error_from_exit,
+    error_from_line,
+    error_text,
+)
+
+
+def full(error: ErrorObject) -> dict:
+    """The error object with every contract key, `message` included."""
+    return {**error.to_xcom(), "message": error.message}
+
+
+def test_the_fixture_directory_is_the_repo_contract() -> None:
+    assert (FIXTURES / "xcom_unit.json").is_file(), (
+        f"contract fixtures not found at {FIXTURES}: set RIVET_SRC to a rivet checkout"
+    )
+
+
+def test_every_status_word_of_rivets_run_entries_is_known() -> None:
+    """A word outside STATUSES reads as `failed`: `already_applied` (rivet #623) would have failed a task whose
+    plan rivet had applied. Each `run_entry_*.json` of the pinned contract must carry a word the provider knows."""
+    words = {fixture(p.name)["status"] for p in FIXTURES.glob("run_entry*.json")}
+    assert "already_applied" in words and words <= STATUSES, words - STATUSES
+    answered = fixture("run_entry_already_applied.json")
+    assert answered["answered_by_run"] == answered["run_id"]
+
+
+def test_a_failed_run_entry_becomes_the_pinned_xcom_unit() -> None:
+    entry = fixture("run_entry_failed.json")
+    unit = UnitResult(
+        export=entry["export_name"],
+        status=entry["status"],
+        run_id=entry["run_id"],
+        rows=entry["rows"],
+        files=entry["files"],
+        stop_reason=entry["stop_reason"],
+        error=ErrorObject.from_contract(entry["error"]),
+    )
+    assert unit.to_xcom() == fixture("xcom_unit.json")
+    assert "message" not in unit.to_xcom()["error"]
+
+
+def test_a_loaded_table_becomes_the_pinned_xcom_load_unit() -> None:
+    doc = fixture("load_result.json")
+    row = doc["per_table"][0]
+    unit = UnitResult(export=row["export"], table=row["table"], status=row["status"], run_id=doc["run_id"], rows=row["rows"])
+    unit.target, unit.buffer, unit.target_from = row["target"], row["buffer"], "rivet"
+    assert unit.to_xcom() == fixture("xcom_unit_load.json")
+
+
+def test_xcom_carries_rivets_warehouse_names_and_never_the_configs_guess() -> None:
+    """A name the config's `load:` block gave (a binary whose result lacks it) stays in the task log: XCom's `target` and
+    `buffer` are what rivet returned, null otherwise (ADR-0039 D3: a value nobody returned is null)."""
+    unit = UnitResult("cdc", "orders", target="p.d.orders", buffer="p.d.orders__changes", target_from="rivet")
+    assert (unit.to_xcom()["target"], unit.to_xcom()["buffer"]) == ("p.d.orders", "p.d.orders__changes")
+    unit.target_from = "config"
+    assert (unit.to_xcom()["target"], unit.to_xcom()["buffer"]) == (None, None)
+
+
+def test_the_digest_keys_are_the_d3_entrys_beyond_the_unit() -> None:
+    """Every key of a pinned load / compact entry is a unit key, a digest key or the entry's own error object."""
+    unit_keys = {"export", "table", "target", "buffer", "status", "skip_reason", "rows", "error"}
+    for name in ("load_result.json", "compact_result.json", "compact_result_log_only.json"):
+        for row in fixture(name)["per_table"]:
+            assert set(row) == unit_keys | set(DIGEST_KEYS), (name, set(row) ^ (unit_keys | set(DIGEST_KEYS)))
+    assert set(DIGEST_KEYS) - set(DIGEST_COUNTS) == {"warehouse_job_ids"}
+
+
+def test_the_unit_shape_has_exactly_the_contract_keys() -> None:
+    for name in ("xcom_unit.json", "xcom_unit_load.json"):
+        assert set(UnitResult("x").to_xcom()) == set(fixture(name))
+    error_keys = set(fixture("xcom_unit.json")["error"])
+    assert set(ErrorObject(None, None, "generic", 1, False, None).to_xcom()) == error_keys
+    assert {f.name.rstrip("_") for f in dataclasses.fields(ErrorObject)} == error_keys | {"message"}
+
+
+@pytest.mark.parametrize("row", fixture("exit_without_object.json"), ids=lambda r: f"exit{r['exit_status']}-sig{r['signal']}")
+def test_an_exit_with_no_object_is_built_by_the_contract_table(row: dict) -> None:
+    built = error_from_exit(row["exit_status"], row["signal"])
+    assert full(built) == row["object"]
+    assert built.class_ in CLASSES
+
+
+def test_a_kill_seen_directly_is_the_pinned_crashed_object() -> None:
+    assert full(error_from_exit(None, 9)) == fixture("error_object_crashed.json")
+
+
+def test_no_built_object_is_retryable_unless_it_is_crashed() -> None:
+    for status in range(1, 256):
+        built = error_from_exit(status, None)
+        assert built.retryable == (built.class_ == "crashed"), status
+        assert (built.class_ == "crashed") == (129 <= status <= 255), status
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "json_errors.json",
+        "json_errors_uncoded.json",
+        "json_errors_crashed.json",
+        "json_errors_mixed.json",
+        "json_errors_load.json",
+    ],
+)
+def test_a_contract_line_is_read_and_nothing_is_derived(name: str) -> None:
+    line = fixture(name)
+    error = error_from_line(line)
+    assert (error.class_, error.retryable, error.exit_code) == (line["class"], line["retryable"], line["exit_code"])
+    assert error.code == line.get("code")
+    assert error.message == line["error"]
+
+
+def test_todays_line_is_read_by_its_integer_exit_class() -> None:
+    """rivet 0.32.2's own shape is the normal path (see #100): read by its exit class, with its text, and no degradation."""
+    error = error_from_line({"error": "connection reset", "exit_class": 2})
+    assert error.retryable and error.class_ == "retryable" and error.code is None and error.message == "connection reset"
+    error = error_from_line({"error": "x", "exit_class": 5, "code": "RIVET_SOURCE_CDC_LOG_GAP"})
+    assert not error.retryable and error.class_ == "refusal" and error.code == "RIVET_SOURCE_CDC_LOG_GAP"
+
+
+def test_the_exception_text_has_code_class_action_unit_and_the_bounded_text() -> None:
+    error = ErrorObject.from_contract(fixture("error_object.json"))
+    text = error.describe("orders_cdc")
+    assert text.startswith("[RIVET_SOURCE_CDC_LOG_GAP] refusal: restore the missing log")
+    assert f"(orders_cdc): {error_text(error.message)}" in text
+    assert text.endswith(error_text(error.message))
+
+
+def test_every_degradation_is_documented_in_the_readme_and_every_recorded_key_is_a_degradation() -> None:
+    package = PACKAGE_ROOT
+    readme = DOCS
+    for key in DEGRADATIONS:
+        assert f"| `{key}` |" in readme, f"README has no row for degradation `{key}`"
+    source = "".join(p.read_text() for p in (package / "airflow_provider_rivet").glob("*.py"))
+    recorded = set(re.findall(r'degraded\.add\("([a-z_]+)"\)', source)) | set(
+        re.findall(r'\*payload\["degraded"\], "([a-z_]+)"', source)
+    )
+    # 8 -> 7 on 2026-10-28 (see #100): `error_object` is gone, rivet 0.32.2's own line is the normal path, not a degradation.
+    assert len(recorded) >= 7 and recorded == set(DEGRADATIONS), recorded ^ set(DEGRADATIONS)

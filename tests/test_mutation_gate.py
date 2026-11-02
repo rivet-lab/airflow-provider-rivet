@@ -47,7 +47,7 @@ PKG = gate.PACKAGE
 
 def _history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]) -> str:
     """A repository at `tmp_path` with `base` committed, then `head` on top; returns the base commit."""
-    for name in [k for k in os.environ if k.startswith("GIT_")]:  # a git hook exports GIT_DIR of the real repository
+    for name in [k for k in os.environ if k.startswith("GIT_")]:
         monkeypatch.delenv(name)
 
     def git(*args: str) -> str:
