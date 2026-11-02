@@ -73,6 +73,17 @@ def layout_of(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | 
     return written
 
 
+def placeholder_decides_compaction(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | None = None) -> bool:
+    """Whether a `${...}` in `load.target` or the layout written for the export (or table) may decide whether it compacts."""
+    load = config.get("load")
+    if not isinstance(load, Mapping) or load_mode(config, entry) == "full":
+        return False
+    target = str(_yaml.text_of(load.get("target")) or "")
+    if target not in COMPACTING_TARGETS and "${" not in target:
+        return False
+    return "${" in target or "${" in str(layout_of(config, entry, table) or "")
+
+
 def compacts(config: Mapping[str, Any], entry: Mapping[str, Any], table: str | None = None) -> bool:
     """Whether rivet resolves the export (and captured `table`, as written) to a base and a buffer that `rivet compact`
     merges: a compacting warehouse, a load that accumulates, and `layout: base_buffer` written or, for a stream, `backfill:`."""

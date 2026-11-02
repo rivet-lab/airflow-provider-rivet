@@ -414,7 +414,7 @@ def test_d29_an_export_or_table_name_that_is_no_task_id_gets_a_sanitised_id_and_
     cdc = build_cdc_dag("c", config="c", export="e", tables=["sales orders", "public.users"])
     tables = {t.task_id: t.table for t in rivet_tasks(cdc) if t.task_id != "run"}
     assert set(tables.values()) == {"sales orders", "public.users"} and all(TASK_ID.match(t) for t in tables)
-    assert "load.public.users" in tables, "a dotted table name is still a valid task id"
+    assert "load.public_users" in tables, "a dotted table name is loaded under the warehouse name, as build_config_dag names it"
 
 
 def test_d27_the_compat_layer_imports_no_deprecated_airflow_name() -> None:
@@ -480,3 +480,79 @@ def test_each_refused_argument_says_what_to_write_instead(plan_file: str) -> Non
     )
     with pytest.raises(RuntimeError, match=exactly(message)):
         read_plan_layout(absent)
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        "load: {target: bigquery, project: p, dataset: d, layout: ${LAYOUT}}",
+        "load: {target: ${TARGET}, project: p, dataset: d, layout: base_buffer}",
+    ],
+)
+def test_a_placeholder_that_may_decide_a_compaction_is_refused_not_dropped(tmp_path: Path, load: str) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: orders, table: orders, mode: incremental}\n"
+        f"{load}\n"
+    )
+    dag = build_config_dag("c", config=str(cfg))
+    assert dag.task_ids == ["config"]
+    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_UNRESOLVED] ")
+
+
+def test_a_cdc_layout_placeholder_that_may_decide_a_compaction_is_refused(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [dbo.t], mode: cdc}\n"
+        "load: {target: bigquery, project: p, dataset: d, layout: ${LAYOUT}}\n"
+    )
+    dag = build_config_dag("c", config=str(cfg), mode="cdc")
+    assert dag.task_ids == ["config"]
+    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_UNRESOLVED] ")
+
+
+def test_a_cdc_dag_refuses_a_mode_a_variable_may_hold_as_the_batch_dag_does(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: s, tables: [t], mode: cdc}\n"
+        "  - {name: u, table: t2, mode: '${MODE}'}\n"
+    )
+    dag = build_config_dag("c", config=str(cfg), mode="cdc")
+    assert dag.task_ids == ["config"]
+    assert refused_text(dag).startswith("[RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT] ")
+
+
+def test_build_cdc_dag_names_its_load_and_compact_tasks_as_build_config_dag_does() -> None:
+    dag = build_cdc_dag("c", config="c", export="e", tables=["dbo.orders"], state_dir="/s")
+    assert sorted(dag.task_ids) == ["compact.dbo_orders", "load.dbo_orders", "run", "watcher"]
+    assert dag.get_task("load.dbo_orders").table == "dbo.orders", "rivet is still given the captured name"
+
+
+def test_a_stream_named_watcher_is_refused_at_parse_and_a_single_one_builds(tmp_path: Path) -> None:
+    several = tmp_path / "several.yaml"
+    several.write_text(
+        "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: watcher, tables: [t], mode: cdc}\n"
+        "  - {name: users, tables: [u], mode: cdc}\n"
+    )
+    assert refused_text(build_config_dag("c", config=str(several))).startswith("[RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME] ")
+    one = tmp_path / "one.yaml"
+    one.write_text("source: {type: mysql, url_env: RIVET_SOURCE_URL}\nexports:\n  - {name: watcher, tables: [t], mode: cdc}\n")
+    assert sorted(build_config_dag("c", config=str(one)).task_ids) == ["run", "watcher"]
+
+
+@pytest.mark.parametrize(
+    "load, mode",
+    [
+        ("load: {target: clickhouse, url: 'http://c:8123', database: d, layout: ${LAYOUT}}", "incremental"),
+        ("load: {target: bigquery, project: p, dataset: d, layout: ${LAYOUT}}", "full"),
+        ("load: {target: bigquery, project: p, dataset: d, layout: buffer_only}", "incremental"),
+    ],
+)
+def test_a_placeholder_that_cannot_decide_a_compaction_is_built_as_it_always_was(tmp_path: Path, load: str, mode: str) -> None:
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        f"source: {{type: mysql, url_env: RIVET_SOURCE_URL}}\nexports:\n  - {{name: orders, table: orders, mode: {mode}}}\n{load}\n"
+    )
+    dag = build_config_dag("c", config=str(cfg))
+    assert "config" not in dag.task_ids
+    assert not [t for t in dag.task_ids if t.startswith("compact")]

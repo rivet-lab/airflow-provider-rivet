@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ._compat import DAG, TaskGroup
-from .exports import compacts, entries_of, may_be_cdc, mode_of, name_of, tables_of
+from .exports import compacts, entries_of, may_be_cdc, mode_of, name_of, placeholder_decides_compaction, tables_of
 from .invocation import PLAN_ERRORS, plan_layout, warehouse_table
 from .operators import (
     RivetApplyOperator,
@@ -71,6 +71,8 @@ OWNED_BY_BUILDERS = {
         "every rivet task runs only after its upstream succeeded "
         "(load after its extract, compact after its load); the watcher fails the run on any failure"
     ),
+    "config": "every rivet task reads the config its builder was given",
+    "state_dir": "every rivet task keeps its state in the folder its builder was given",
     "max_active_tis_per_dag": (
         "it is 1 on every rivet task, so a task never runs beside another try of itself (docs/limits.md, Overlap)"
     ),
@@ -263,13 +265,15 @@ def _cdc_stream(export: str, tables: Sequence[str], load: bool, compacted: Seque
         loads = {}
         with TaskGroup(group_id="load"):
             for table in tables:
-                loads[table] = RivetLoadOperator(task_id=task_name(table), export=export, table=table, **common)
+                loads[table] = RivetLoadOperator(task_id=task_name(warehouse_table(table)), export=export, table=table, **common)
                 run >> loads[table]
         if compacted:
             with TaskGroup(group_id="compact"):
                 for table in tables:
                     if table in compacted:
-                        loads[table] >> RivetCompactOperator(task_id=task_name(table), export=export, table=table, **common)
+                        loads[table] >> RivetCompactOperator(
+                            task_id=task_name(warehouse_table(table)), export=export, table=table, **common
+                        )
 
 
 def build_source_dags(
@@ -386,12 +390,28 @@ def build_config_dag(
         return _refused_dag(dag_id, mode or "config", Path(config), exc, common)
 
 
+def _unresolved_compaction(config: Path, names: list[str]) -> tuple[str, str]:
+    """The code and text of a config whose `${...}` may decide whether its exports compact: no DAG can say which tasks."""
+    return (
+        "RIVET_AIRFLOW_CONFIG_UNRESOLVED",
+        f"{config} has a `${{...}}` in `load.target` or `load.layout` that may decide whether {', '.join(names)} compact "
+        "(a base and a buffer on BigQuery, `layout: base_buffer`): write `load.target` and `load.layout` as literals",
+    )
+
+
 def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
     """The CDC (`as_cdc`) or batch DAG of a config read as `doc`; a config with no export for the mode is refused, coded."""
     exports = entries_of(doc)
     cdc = [e for e in exports if mode_of(e) == "cdc"]
+    uncertain = [f"{name_of(e)}: `{mode_of(e)}` may be cdc" for e in exports if mode_of(e) != "cdc" and may_be_cdc(mode_of(e))]
     if as_cdc:
         # init: one `tables:` stream on MySQL and `public` PostgreSQL, one stream per table elsewhere (`table:`)
+        if uncertain:
+            raise ConfigRefusal(
+                "RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT",
+                f"{config} has exports whose `mode` a `${{...}}` may hold as batch ({', '.join(uncertain)}): a CDC DAG over "
+                "it would leave them out; write their `mode` literally, or build them from a config of their own",
+            )
         if not cdc:
             raise ConfigRefusal(
                 "RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT",
@@ -406,6 +426,15 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
             )
             for e in cdc
         ]
+        if len(streams) > 1 and any(task_name(name) == WATCHER_ID for name, _, _ in streams):
+            raise ConfigRefusal(
+                "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME",
+                f"{config} has an export named `{WATCHER_ID}` beside other CDC streams: its group would take the id of the "
+                "DAG's watcher task; rename the export",
+            )
+        unresolved = [name_of(e) for e in cdc if any(placeholder_decides_compaction(doc, e, t) for t in tables_of(e))]
+        if unresolved:
+            raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
         task_common = _common(common["config"], common["state_dir"], common["operator_kwargs"])
         dag_settings = {k: v for k, v in common.items() if k not in ("config", "state_dir", "operator_kwargs")}
         return _cdc_dag(dag_id, streams, bool(doc.get("load")), task_common, dag_settings)
@@ -422,6 +451,9 @@ def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, An
             "CDC and a batch DAG needs two names, or a `config_dir` and a `state_root` per mode: build the batch DAG "
             "from its own",
         )
+    unresolved = [name_of(e) for e in exports if placeholder_decides_compaction(doc, e)]
+    if unresolved:
+        raise ConfigRefusal(*_unresolved_compaction(config, unresolved))
     if not exports:
         raise ConfigRefusal(
             "RIVET_AIRFLOW_CONFIG_NO_EXPORT",

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_source_dags
+from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_config_dag, build_source_dags
 
 SLOT_TEXT = (
     "operator_kwargs may not set `max_active_tis_per_dag`: it is 1 on every rivet task, so a task never runs beside "
@@ -19,11 +19,19 @@ GATE_TEXT = (
 )
 
 
+OWNED_TEXT = {
+    "config": "operator_kwargs may not set `config`: every rivet task reads the config its builder was given",
+    "state_dir": "operator_kwargs may not set `state_dir`: every rivet task keeps its state in the folder its builder was given",
+}
+
+
 def build(kind: str, tmp_path: Path, operator_kwargs: dict[str, Any]) -> Any:
     if kind == "batch":
         return build_batch_dag("d", config="c", exports=["a"], operator_kwargs=operator_kwargs)
     if kind == "cdc":
         return build_cdc_dag("d", config="c", export="e", tables=["t"], operator_kwargs=operator_kwargs)
+    if kind == "config":
+        return build_config_dag("d", config="c", operator_kwargs=operator_kwargs)
     return build_source_dags(
         ["shop"], mode="cdc", config_dir=str(tmp_path), state_root="/s", state_connection="st", operator_kwargs=operator_kwargs
     )
@@ -46,3 +54,11 @@ def test_the_trigger_rule_refusal_and_the_other_kwargs_are_what_they_were(tmp_pa
         dag = build(kind, tmp_path, {"retries": 3, "pool": "p"})
         assert {t.max_active_tis_per_dag for t in dag.tasks if t.task_id != "watcher"} == {1}
         assert {t.pool for t in dag.tasks if t.task_id != "watcher"} == {"p"}
+
+
+@pytest.mark.parametrize("kind", ["batch", "cdc", "config"])
+@pytest.mark.parametrize("key", ["config", "state_dir"])
+def test_the_config_and_state_folder_in_operator_kwargs_are_refused_on_every_builder(tmp_path: Path, kind: str, key: str) -> None:
+    with pytest.raises(ValueError) as exc:
+        build(kind, tmp_path, {key: "/other"})
+    assert str(exc.value) == OWNED_TEXT[key]
