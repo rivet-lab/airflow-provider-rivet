@@ -29,33 +29,30 @@ def test_each_jobs_ceiling_is_the_length_of_its_ledger() -> None:
 
 def test_a_skip_the_ledger_does_not_allow_fails_its_job(tmp_path: Path) -> None:
     junit = _junit(tmp_path / "j.xml", ("tests.test_x", "test_y", "no airflow here"))
-    problems = census.grade(census.skipped(junit), "airflow")
-    assert problems == ["unallowed skip tests.test_x::test_y: no airflow here", "1 skips over the airflow ceiling of 0"]
+    problems = census.grade(census.skipped(junit), "gate-oracles")
+    assert problems == ["unallowed skip tests.test_x::test_y: no airflow here", "1 skips over the gate-oracles ceiling of 0"]
 
 
-def test_the_allowed_slack_skip_of_the_locked_job_passes_and_its_absence_is_a_stale_entry(tmp_path: Path) -> None:
-    junit = _junit(
-        tmp_path / "j.xml",
-        ("tests.test_slack_alerts", "test_the_fake_slack_hooks_have_the_shape_of_the_slack_providers_hooks", "no module"),
-    )
-    assert census.grade(census.skipped(junit), "locked") == []
-    empty = _junit(tmp_path / "e.xml")
-    assert census.grade(census.skipped(empty), "locked") == [
+def test_the_locked_ledger_passes_when_every_entry_is_skipped_and_names_a_stale_one(tmp_path: Path) -> None:
+    everything = [tuple(test.split("::", 1)) + ("a",) for test in census.SKIP_ALLOWED["locked"]]
+    assert census.grade(census.skipped(_junit(tmp_path / "j.xml", *everything)), "locked") == []
+    without_slack = [case for case in everything if f"{case[0]}::{case[1]}" != SLACK]
+    assert census.grade(census.skipped(_junit(tmp_path / "s.xml", *without_slack)), "locked") == [
         f"stale ledger entry {SLACK}: no run of locked skips it any more, remove it"
     ]
 
 
-def test_a_second_skip_over_the_ceiling_fails_even_when_it_is_allowed_by_name(tmp_path: Path) -> None:
-    junit = _junit(
-        tmp_path / "j.xml",
-        ("tests.test_slack_alerts", "test_the_fake_slack_hooks_have_the_shape_of_the_slack_providers_hooks", "a"),
-        ("tests.z", "test_q", "b"),
-    )
+def test_a_skip_over_the_ceiling_fails_even_when_every_other_skip_is_allowed(tmp_path: Path) -> None:
+    allowed = [tuple(test.split("::", 1)) + ("a",) for test in census.SKIP_ALLOWED["locked"]]
+    junit = _junit(tmp_path / "j.xml", *allowed, ("tests.z", "test_q", "b"))
     problems = census.grade(census.skipped(junit), "locked")
-    assert problems == ["unallowed skip tests.z::test_q: b", "2 skips over the locked ceiling of 1"]
+    assert problems == [
+        "unallowed skip tests.z::test_q: b",
+        f"{len(allowed) + 1} skips over the locked ceiling of {census.SKIP_CEILING['locked']}",
+    ]
 
 
 def test_main_exits_one_on_a_problem_and_zero_on_a_clean_job(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    assert census.main([str(_junit(tmp_path / "a.xml")), "--job", "airflow"]) == 0
-    assert census.main([str(_junit(tmp_path / "b.xml", ("tests.q", "test_r", "x"))), "--job", "airflow"]) == 1
+    assert census.main([str(_junit(tmp_path / "a.xml")), "--job", "gate-oracles"]) == 0
+    assert census.main([str(_junit(tmp_path / "b.xml", ("tests.q", "test_r", "x"))), "--job", "gate-oracles"]) == 1
     assert "unallowed skip tests.q::test_r: x" in capsys.readouterr().out
