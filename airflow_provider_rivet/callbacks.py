@@ -11,17 +11,17 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .operators import XCOM_KEY
 from .result import REFUSED, airflow_retries, error_text, redact
+from .stderr import JSON_ERRORS, tail_lines
 
 MAX_UNITS = 10
 # the thread's code block; a webhook message carries title and link too, and stays under Slack's 4000
 THREAD_TEXT_LIMIT = 3500
 WEBHOOK_TEXT_LIMIT = 3000
-# how much of the end of rivet's stderr file is read for its error lines
-STDERR_TAIL = 65_536
 # a child of Airflow's task logger: the line lands in the task log on Airflow 2 and 3 alike
 log = logging.getLogger("airflow.task.rivet_slack")
 
@@ -97,18 +97,12 @@ def format_title(
 
 
 def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
-    """rivet's error lines in the failed step's stderr file as (code, text): its `--json-errors` objects, else `Error:`
-    lines (no code).
-
-    Only the end of the file is read: the error is the last thing rivet writes. Lines end at `\\n` alone (D01).
-    """
+    """rivet's error lines in the failed step's stderr file as (code, text): its `--json-errors` objects, else `Error:` lines."""
     path = payload.get("stderr_path")
     if not path:
         return []
     try:
-        with open(path, "rb") as f:
-            f.seek(max(f.seek(0, 2) - STDERR_TAIL, 0))
-            lines = f.read().decode(errors="replace").split("\n")  # UTF-8, the default
+        lines, _truncated = tail_lines(Path(path))
     except OSError:
         return []
     found: list[tuple[str | None, str]] = []
@@ -116,7 +110,7 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
     for line in lines:
         try:
             obj = json.loads(line)
-        except ValueError:  # no JSON value starts with `e`, so an `Error:` line is never one
+        except JSON_ERRORS:
             if line.lstrip().lower().startswith("error:"):
                 plain.append((None, line.strip()))
             continue

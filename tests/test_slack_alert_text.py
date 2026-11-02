@@ -15,6 +15,7 @@ import pytest
 
 from airflow_provider_rivet import callbacks
 from airflow_provider_rivet.callbacks import format_error_text, format_failure, format_title, slack_failure_callback
+from airflow_provider_rivet.stderr import STDERR_TAIL
 
 
 def err(code: str | None = "RIVET_X", cls: str = "refusal", retryable: bool = False, action: str | None = None) -> dict:
@@ -167,10 +168,9 @@ def test_without_an_object_the_error_lines_are_taken_whatever_their_case_and_ind
 
 
 def test_only_the_end_of_a_long_stderr_file_is_read_and_bad_bytes_do_not_stop_it(tmp_path: Path) -> None:
-    """STDERR_TAIL: an error line before the last 64 KiB is not read; a line cut by the seek and invalid UTF-8 are
-    replaced, not raised."""
+    """An error line before the last STDERR_TAIL bytes is not read; invalid UTF-8 is replaced, not raised."""
     early = "Error: written before the tail"
-    filler = ["x" * 1000] * 70
+    filler = ["x" * 1000] * (STDERR_TAIL // 1000 + 1)
     payload = stderr(tmp_path, early, *filler, b"Error: bad byte \xff here")
     assert format_error_text(payload, limit=3500) == "Error: bad byte � here"
     short = stderr(tmp_path, early, "Error: last")
@@ -375,12 +375,12 @@ def test_a_webhook_answer_without_a_body_is_logged_by_its_status(
 
 
 def test_the_tail_starts_exactly_stderr_tail_bytes_before_the_end(tmp_path: Path) -> None:
-    """_rivet_errors 22/23: the read starts at size - STDERR_TAIL, not a byte later (the line there would lose its
-    `E`) and not at the start of the file (the earlier error line would come back)."""
+    """The window starts exactly STDERR_TAIL bytes before the end: the line there is whole, and the earlier error line
+    is not read."""
     head = b"Error: before the tail\n" + b"x" * 76 + b"\n"
     line = b"Error: first line of the tail\n"
-    body = line + b"y" * (callbacks.STDERR_TAIL - len(line) - 1) + b"\n"
+    body = line + b"y" * (STDERR_TAIL - len(line) - 1) + b"\n"
     path = tmp_path / "exact.stderr.log"
     path.write_bytes(head + body)
-    assert len(body) == callbacks.STDERR_TAIL
+    assert len(body) == STDERR_TAIL
     assert format_error_text({"stderr_path": str(path)}, limit=3500) == "Error: first line of the tail"

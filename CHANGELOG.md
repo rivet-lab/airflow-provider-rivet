@@ -5,6 +5,13 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
+### Added
+
+- Tests: one table over the four public DAG builders (`build_batch_dag`, `build_cdc_dag`, `build_config_dag`,
+  `build_source_dags`) checks that each refuses every owned key by name, gives its tasks its own config, state folder,
+  slot and gate, and refuses a broken config as a DAG; a `${VAR}` scalar builds the DAG of its resolved value or a coded
+  refusal. The `${VAR}` name and top-level `load` cases are strict xfails until they are fixed.
+
 ### Changed (behaviour change)
 
 - `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
@@ -16,6 +23,15 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - The Slack alert title says `retryable` only when Airflow runs another try (the same rule as the task log): a failure on
   the last try, or a crash past its budget, is titled `final`.
 - A resolved config value that holds U+E000 or U+E001 is read as written; only an unresolved `${name}` is spelled back.
+- A failed step whose error line is longer than the 1 MiB read of rivet's stderr file is no longer classified as a
+  generic failure without a trace: the step records `result_malformed`, as for a cut line. The window's end is read
+  line by line; a line cut by the window is never read in part.
+- The failure alert reads rivet's stderr with the same window as the step (1 MiB, was 64 KiB): an error line of up to
+  1 MiB is quoted in the Slack thread, and the classifier and the alert no longer disagree on which line is the error.
+- A stderr line nested past the JSON parser's depth is not an unclassified `RecursionError`: the step, the summary file
+  and the alert skip it as they skip any line that is not JSON.
+- An error line printed with the contract's keys (`class`, `retryable`) and no `exit_class` is read by the step as the
+  contract says, not as a generic failure.
 - `operator_kwargs` may not set `config` or `state_dir` on any builder: `build_batch_dag`, `build_cdc_dag` and
   `build_config_dag` refuse it as `build_source_dags` already did, instead of running every task on another config or
   state folder.

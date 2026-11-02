@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from ._compat import (
     AirflowException,
@@ -186,20 +186,20 @@ class _RivetTask(BaseOperator):
         if self._proc is not None:
             self._proc.request_stop()
 
-    def _fail(self, ti: Any, payload: dict[str, Any], text: str, retry: bool) -> None:
+    def _fail(self, ti: Any, payload: dict[str, Any], text: str, retry: bool) -> NoReturn:
         """Publish the payload and write the task's readable block, then raise the exception Airflow retries or the one
         it does not."""
         ti.xcom_push(key=XCOM_KEY, value=payload)
         self._finish(ti, payload)
         raise (AirflowException if retry else AirflowFailException)(text)
 
-    def _refuse(self, ti: Any, refusal: PreflightRefusal) -> None:
+    def _refuse(self, ti: Any, refusal: PreflightRefusal) -> NoReturn:
         """Log and publish a refusal made before rivet started, then fail without retry."""
         self._emit({"event": "rivet.refused", "code": refusal.code, "text": str(refusal)})
         payload = unstarted(self.command, REFUSED, refusal.code)
         self._fail(ti, payload, str(refusal), retry=False)  # pragma: no mutate - `retry` is read as a truth value
 
-    def _stopped(self, ti: Any, stop: Stopped) -> None:
+    def _stopped(self, ti: Any, stop: Stopped) -> NoReturn:
         """Log and publish a stop Airflow asked for before a rivet step started, then fail for a retry (D40)."""
         self._emit({"event": "rivet.stopped", "step": stop.step, "text": str(stop)})
         self._fail(ti, unstarted(self.command, STOPPED, stop.step), str(stop), retry=True)
@@ -553,7 +553,7 @@ class RivetInitOperator(_RivetTask):
         finally:
             self._proc = None
 
-    def _failed(self, ti: Any, failure: _InitFailed) -> None:
+    def _failed(self, ti: Any, failure: _InitFailed) -> NoReturn:
         """Publish and log a failure of the init itself, which Airflow does not retry."""
         payload = {"command": self.command, "decision": "fail", "error": failure.error.to_xcom(), "units": []}
         self._fail(ti, payload, str(failure), retry=False)  # pragma: no mutate - `retry` is read as a truth value

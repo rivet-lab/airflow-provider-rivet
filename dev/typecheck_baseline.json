@@ -1,0 +1,18 @@
+{
+  "airflow_provider_rivet/_compat.py::reportAttributeAccessIssue": 1,
+  "airflow_provider_rivet/_compat.py::reportMissingImports": 3,
+  "airflow_provider_rivet/_compat.py::reportPrivateImportUsage": 2,
+  "airflow_provider_rivet/callbacks.py::reportReturnType": 1,
+  "airflow_provider_rivet/connections.py::reportArgumentType": 3,
+  "airflow_provider_rivet/connections.py::reportOptionalMemberAccess": 1,
+  "airflow_provider_rivet/dags.py::reportUnusedExpression": 8,
+  "airflow_provider_rivet/invocation.py::reportArgumentType": 4,
+  "airflow_provider_rivet/invocation.py::reportOptionalIterable": 1,
+  "airflow_provider_rivet/operators.py::reportIncompatibleVariableOverride": 2,
+  "airflow_provider_rivet/preflight.py::reportMissingImports": 1,
+  "airflow_provider_rivet/reading.py::reportArgumentType": 1,
+  "airflow_provider_rivet/result.py::reportMissingImports": 1,
+  "airflow_provider_rivet/tasklog.py::reportArgumentType": 1,
+  "airflow_provider_rivet/tasklog.py::reportCallIssue": 1,
+  "airflow_provider_rivet/tasklog.py::reportPossiblyUnboundVariable": 2
+}
