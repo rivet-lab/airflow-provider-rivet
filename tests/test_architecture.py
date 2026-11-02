@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SEAMS = ROOT / "docs" / "seams.yaml"
 MODULE = "<module>"
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-MUTANT_DEF = re.compile(r"__mutmut_\d+$")
+MUTANT_DEF = re.compile(r"__mutmut_(\d+|orig)$")
 BRACE = re.compile(r"(?<![{$])\{[A-Za-z_]\w*\}(?!\})")
 
 
@@ -50,7 +50,7 @@ def _qualified(node: ast.AST, scope: str) -> str:
 
 
 def _scoped(tree: ast.AST) -> list[tuple[ast.AST, str]]:
-    """Every node with the qualname of the def or class it sits in; a mutmut copy (`name__mutmut_N`) is not read."""
+    """Every node with the qualname of the def or class it sits in; a mutmut copy (`name__mutmut_N`, `name__mutmut_orig`) is not read."""
     found: list[tuple[ast.AST, str]] = []
     stack: list[tuple[ast.AST, str]] = [(tree, MODULE)]
     while stack:
@@ -276,3 +276,9 @@ def test_a_module_constant_is_defined_in_one_module() -> None:
                 owners[name].add(file.relative_to(ROOT).as_posix())
     shared = {name: sorted(paths) for name, paths in owners.items() if len(paths) > 1}
     assert not shared, f"a constant is defined in more than one module: {shared}"
+
+
+def test_mutmut_copies_are_not_read() -> None:
+    """mutmut's numbered mutants and its `__mutmut_orig` copy add no site; the original def is read."""
+    tree = ast.parse("def f():\n    pass\ndef x_f__mutmut_orig():\n    pass\ndef x_f__mutmut_3():\n    pass\n")
+    assert [node.name for node, _ in _scoped(tree) if isinstance(node, DEFS)] == ["f"]
