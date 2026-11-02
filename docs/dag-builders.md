@@ -120,7 +120,9 @@ dag = build_config_dag(
 - `mode` is `"cdc"` or `"batch"`; left out, it is `"cdc"` when the config has a `mode: cdc` export. A CDC DAG of a
   config with no `mode: cdc` export, a batch DAG of one with any (or with a `mode: ${VAR}` that may resolve to `cdc`),
   and a config with no export are refused, coded (`RIVET_AIRFLOW_CONFIG_NO_CDC_EXPORT`,
-  `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_NO_EXPORT`). As in `build_source_dags`, a refused or
+  `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, `RIVET_AIRFLOW_CONFIG_NO_EXPORT`), as is a `${...}` in `load.target` or
+  `load.layout` that may decide whether an export compacts (`RIVET_AIRFLOW_CONFIG_UNRESOLVED`), and a stream named
+  `watcher` beside other streams (`RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME`). As in `build_source_dags`, a refused or
   unreadable config is a DAG of one task, `config`, that fails naming the refusal; it never ends the DAG file, so a
   loop over several configs (the quickstart's) still builds the others. A `mode` other than these is a `ValueError`.
 - Load tasks are built when the config has a `load:` section; a compact task follows a table's load only where rivet
@@ -130,6 +132,8 @@ dag = build_config_dag(
   (`rivet init` writes one per table on SQL Server, Oracle, MongoDB and PostgreSQL outside `public`) are a `TaskGroup`
   each, named after the export (`dbo_orders.run`, `dbo_orders.load.dbo_orders`); they have no edges between them and
   run side by side, each under its own export's lock, and the one `watcher` ends the DAG.
+- `build_cdc_dag` names a table's tasks as `build_config_dag` does: `dbo.orders` is `load.dbo_orders` (until this release it was
+  `load.dbo.orders`); rivet is still given the captured name.
 - **Adding a second stream renames the first stream's task ids** (`run` becomes `<export>.run`): Airflow keeps the old
   ids' history under the old names, and the new ids start with none.
 

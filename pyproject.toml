@@ -64,6 +64,10 @@ ignore = ["E501"]  # the formatter owns line length; long string literals stay a
 [tool.ruff.lint.per-file-ignores]
 "dev/vulture_whitelist.py" = ["B018", "F821"]  # a vulture whitelist names what it cannot see used
 
+[tool.basedpyright]
+typeCheckingMode = "standard"
+include = ["airflow_provider_rivet"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]

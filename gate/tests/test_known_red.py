@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from datetime import date
+
 from gate.__main__ import summary
 from gate.scenario import KNOWN, Verdicts
 
@@ -31,8 +34,11 @@ def test_an_unknown_red_cell_fails_and_an_empty_run_does_not_pass() -> None:
     assert summary([], 1)[1] is False
 
 
-def test_every_known_cell_names_an_issue() -> None:
-    assert all("#" in issue for issue in KNOWN.values())
+def test_every_known_cell_names_an_issue_and_the_day_it_was_accepted() -> None:
+    for cell, reason in KNOWN.items():
+        accepted = re.search(r"accepted (\d{4}-\d{2}-\d{2})\)$", reason)
+        assert "#" in reason and accepted, cell
+        date.fromisoformat(accepted[1])
 
 
 def test_the_staged_parts_reds_of_every_engine_that_leaves_the_cdc_baseline_are_known() -> None:
