@@ -47,8 +47,6 @@ class Preflight:
     config: dict[str, Any]
     marker: str | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
-    config_text: str = ""
-    value_of: Callable[[str], str | None] = field(default=lambda _name: None, repr=False)
 
     def export_modes(self) -> dict[str, str]:
         """Mode by export name, as rivet reads the config (after `${...}`, names as their written text)."""
@@ -276,7 +274,7 @@ def run_preflight(
             "RIVET_AIRFLOW_BINARY_TOO_OLD",
             f"rivet {caps.version_text} at {binary} is older than {floor}, the minimum this package runs",
         )
-    config, text, value_of = read_config_source(config_path, env, _yaml.params_of(extra_args))
+    config = read_config(config_path, env, _yaml.params_of(extra_args))
     secret = secret_sources(config)
     if secret and not caps.at_least(GCP_SECRET_MIN_RIVET_VERSION):
         need = ".".join(str(n) for n in GCP_SECRET_MIN_RIVET_VERSION)
@@ -287,7 +285,7 @@ def run_preflight(
         )
     where = detect_deployment(env, deployment)
     kind = state_kind(env)
-    result = Preflight(binary, caps, kind, None, config, config_text=text, value_of=value_of)
+    result = Preflight(binary, caps, kind, None, config)
     modes = result.export_modes()
     if export is not None and modes and export not in modes:
         for name in modes:

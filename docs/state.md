@@ -9,6 +9,8 @@ Where rivet's state lives under Airflow, and how to set up a worker for it.
 | Ephemeral pod (`KUBERNETES_SERVICE_HOST` in the environment, or `deployment="pod"`) | PostgreSQL, required | refuses SQLite (`RIVET_AIRFLOW_STATE_SQLITE_ON_POD`); refuses every CDC export (`RIVET_AIRFLOW_CDC_ON_POD`: the checkpoint is a file and would live on the pod's disk) until rivet stores it in the state database; runs the config in place; keeps rivet's stderr in a private file on the pod's disk (`stderr_temp`), never in the task log |
 | Local or long-lived worker (`deployment="local"` overrides the detection for a long-lived Kubernetes worker with a persistent volume) | SQLite in a declared directory, or PostgreSQL | requires `state_dir` for SQLite state and for CDC; checks it; refuses state or a checkpoint left beside the original config; refuses SQLite state when Airflow's executor may run tasks on several hosts (Celery, Kubernetes, Edge, ...: `RIVET_AIRFLOW_STATE_SQLITE_MULTI_HOST`) unless the task says `single_host=True`; warns once per task that SQLite is single-host |
 
+A `state_dir` that is not given where the state needs one is refused with `RIVET_AIRFLOW_STATE_DIR_REQUIRED`; one that cannot be created or written is refused with `RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE`. Creating a PostgreSQL state database needs `psycopg2` on the worker, and a worker without it is refused with `RIVET_AIRFLOW_STATE_DATABASE`.
+
 `state_dir` is an operator parameter, not an Airflow Variable. The builders pass one value to
 every task they create, so "the same path for every task" holds by construction, it is visible
 in the rendered fields, and reading it needs no metadata-database access on the worker.
