@@ -129,6 +129,20 @@ def test_a_last_line_longer_than_the_window_is_reported_as_truncated(tmp_path: P
     assert stderr.tail_lines(path) == ([], True)
 
 
+def test_a_cut_last_line_with_no_newline_in_the_window_is_dropped_not_kept(tmp_path: Path) -> None:
+    """A window cut from a line with no newline after the cut holds no whole line: none is read, and it is truncated."""
+    path = tmp_path / "e.log"
+    path.write_bytes(b"z" * (stderr.STDERR_TAIL + 10))
+    assert stderr.tail_lines(path) == ([], True)
+
+
+def test_a_window_that_starts_after_a_newline_is_not_cut_even_when_the_byte_before_is_not_one(tmp_path: Path) -> None:
+    """A window that begins right after a newline is whole, so it is not reported as truncated."""
+    path = tmp_path / "e.log"
+    path.write_bytes(b"a\n" + b" " * stderr.STDERR_TAIL)
+    assert stderr.tail_lines(path) == ([" " * stderr.STDERR_TAIL], False)
+
+
 def test_an_undecodable_byte_in_the_tail_is_replaced_not_raised(tmp_path: Path) -> None:
     """Invalid UTF-8 is replaced, not raised."""
     path = tmp_path / "e.log"
