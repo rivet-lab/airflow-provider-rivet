@@ -13,6 +13,7 @@ import pytest
 from conftest import FakeTI
 
 from airflow_provider_rivet._compat import AirflowFailException, AirflowNotFoundException
+from airflow_provider_rivet.callbacks import format_failure
 from airflow_provider_rivet.connections import (
     OdbcFileUnavailable,
     connection_url,
@@ -398,6 +399,22 @@ def test_a_refused_place_publishes_its_payload_and_writes_its_task_log(init: Ini
         init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
     assert ti.store[("init", XCOM_KEY)] == {"command": "init", "decision": "fail", "error": REFUSED_ERROR, "units": []}
     assert "rivet init → " in logged()
+
+
+def test_a_draft_this_reader_cannot_read_is_published_on_every_surface(init: Init, logged: Any) -> None:
+    """A draft that `rivet init` and `check` accept but the reader refuses: a failure, its coded payload, log and Slack text."""
+    init.spec(yaml="source:\n  type: mysql\n  url_env: RIVET_SOURCE_URL\nexports: not-a-list\n")
+    ti = FakeTI(task_id="init")
+    with pytest.raises(AirflowFailException, match="RIVET_AIRFLOW_CONFIG_UNREADABLE") as exc:
+        init_operator(init.tmp).execute({"ti": ti, "run_id": "r"})
+    draft = init.tmp / "state" / "shop" / ".init" / "shop.yaml"
+    assert str(exc.value) == f"[RIVET_AIRFLOW_CONFIG_UNREADABLE] config {draft}: `exports` is not a list"
+    payload = {"command": "init", "decision": "fail", "preflight_refusal": "RIVET_AIRFLOW_CONFIG_UNREADABLE", "units": []}
+    assert ti.store[("init", XCOM_KEY)] == payload
+    assert "REFUSED [RIVET_AIRFLOW_CONFIG_UNREADABLE]" in logged()
+    text = format_failure(payload, dag_id="dag", task_id="init", run_id="r")
+    assert "refused before rivet started: `RIVET_AIRFLOW_CONFIG_UNREADABLE`" in text
+    assert not init.config.exists()
 
 
 def test_a_missing_state_root_publishes_its_payload(init: Init) -> None:

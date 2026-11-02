@@ -1,5 +1,5 @@
 diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
-index 7f68c1b..b7d018b 100644
+index 902e6d6..102978c 100644
 --- a/airflow_provider_rivet/operators.py
 +++ b/airflow_provider_rivet/operators.py
 @@ -465,7 +465,7 @@ def config_present(path: Path) -> bool:
@@ -11,7 +11,7 @@ index 7f68c1b..b7d018b 100644
          dest = export.get("destination") or {}
          if dest.get("bucket"):
              out.add(f"{dest.get('type')}://{dest['bucket']}/{dest.get('prefix') or ''}")
-@@ -651,7 +651,7 @@ class RivetInitOperator(_RivetTask):
+@@ -653,7 +653,7 @@ class RivetInitOperator(_RivetTask):
              return {"config": str(target), "written": False}
          finally:
              staged.unlink()

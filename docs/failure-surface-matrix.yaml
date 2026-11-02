@@ -234,33 +234,8 @@ empty-source:
   xcom: 'test: tests/test_failure_surfaces.py::test_an_empty_source_is_a_success_on_every_surface'
   retry: 'test: tests/test_failure_surfaces.py::test_an_empty_source_is_a_success_on_every_surface'
 init-draft-unreadable:
-  exception:
-    gap:
-      date: 2026-11-02
-      reason: 'rivet init wrote a draft this reader cannot read: `read_config(draft)` in RivetInitOperator._write_config sits
-        outside the try that publishes _InitFailed, so the PreflightRefusal escapes unpublished'
-      closes: read the draft inside the try that publishes the failure (operators.py _write_config)
-  task_log:
-    gap:
-      date: 2026-11-02
-      reason: 'rivet init wrote a draft this reader cannot read: `read_config(draft)` in RivetInitOperator._write_config sits
-        outside the try that publishes _InitFailed, so the PreflightRefusal escapes unpublished'
-      closes: read the draft inside the try that publishes the failure (operators.py _write_config)
-  slack:
-    gap:
-      date: 2026-11-02
-      reason: 'rivet init wrote a draft this reader cannot read: `read_config(draft)` in RivetInitOperator._write_config sits
-        outside the try that publishes _InitFailed, so the PreflightRefusal escapes unpublished'
-      closes: read the draft inside the try that publishes the failure (operators.py _write_config)
-  xcom:
-    gap:
-      date: 2026-11-02
-      reason: 'rivet init wrote a draft this reader cannot read: `read_config(draft)` in RivetInitOperator._write_config sits
-        outside the try that publishes _InitFailed, so the PreflightRefusal escapes unpublished'
-      closes: read the draft inside the try that publishes the failure (operators.py _write_config)
-  retry:
-    gap:
-      date: 2026-11-02
-      reason: 'rivet init wrote a draft this reader cannot read: `read_config(draft)` in RivetInitOperator._write_config sits
-        outside the try that publishes _InitFailed, so the PreflightRefusal escapes unpublished'
-      closes: read the draft inside the try that publishes the failure (operators.py _write_config)
+  exception: 'test: tests/test_source_dags.py::test_a_draft_this_reader_cannot_read_is_published_on_every_surface'
+  task_log: 'test: tests/test_source_dags.py::test_a_draft_this_reader_cannot_read_is_published_on_every_surface'
+  slack: 'test: tests/test_source_dags.py::test_a_draft_this_reader_cannot_read_is_published_on_every_surface'
+  xcom: 'test: tests/test_source_dags.py::test_a_draft_this_reader_cannot_read_is_published_on_every_surface'
+  retry: 'test: tests/test_source_dags.py::test_a_draft_this_reader_cannot_read_is_published_on_every_surface'

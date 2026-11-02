@@ -40,9 +40,9 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
-      - id: push-guard
-        name: push guard (files deleted since origin/main)
-        entry: uv run --locked python dev/push_guard.py
+      - id: pr-ready
+        name: pr_ready text (trailers, comments, deletion ceiling, ratchet, CHANGELOG, against origin/main)
+        entry: python3 dev/pr_ready.py text
         language: system
         pass_filenames: false
         always_run: true

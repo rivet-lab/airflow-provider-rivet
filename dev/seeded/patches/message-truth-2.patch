@@ -1,8 +1,8 @@
 diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
-index 7f68c1b..a6d882e 100644
+index 902e6d6..4ec9184 100644
 --- a/airflow_provider_rivet/operators.py
 +++ b/airflow_provider_rivet/operators.py
-@@ -621,8 +621,8 @@ class RivetInitOperator(_RivetTask):
+@@ -623,8 +623,8 @@ class RivetInitOperator(_RivetTask):
              if shared:
                  raise _InitFailed(
                      f"the config `rivet init` wrote for {target.name} writes to {', '.join(shared)}, as {other} does; give each "
