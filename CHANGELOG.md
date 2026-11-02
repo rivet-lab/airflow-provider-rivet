@@ -7,6 +7,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Tests: hypothesis properties in `tests/properties/` (a dev dependency, `ci` profile at 200 examples, derandomized, about 3 s) over the stderr reader, the config reader's placeholders, connection URLs, DAG task naming, the Slack title, a secret canary sweep and a megabyte timeout per reader. No product code changes.
 - Repo guards for the harness: every CI job's skips are graded against a dated ledger (`dev/skip_census.py`), the gate
   job name and the matrix follow the `--airflow` default, the release publish `needs` is pinned by a dated ledger,
   weak asserts are ratcheted (`dev/test_checks.py`), dated ledgers are linted, and every `dev/` module is tested or
