@@ -1,0 +1,28 @@
+name: Typecheck
+
+# basedpyright (standard mode) over airflow_provider_rivet/, against dev/typecheck_baseline.json: a new diagnostic fails,
+# and the baseline may only shrink (dev/typecheck_baseline.py).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  basedpyright:
+    name: basedpyright (standard) against the baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2.87.22
+        with:
+          tool: uv
+      - name: Install Airflow 3.3.2 under its constraints, then the package
+        run: |
+          uv venv --python 3.12 .tc
+          uv pip install --python .tc/bin/python "apache-airflow==3.3.2" apache-airflow-providers-slack psycopg2-binary \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt"
+          uv pip install --python .tc/bin/python --no-deps -e .
+      - run: python3 dev/typecheck_baseline.py --python .tc/bin/python
