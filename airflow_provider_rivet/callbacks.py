@@ -15,7 +15,7 @@ from typing import Any
 
 from .operators import XCOM_KEY
 from .reading import _json_of
-from .result import REFUSED, error_text, redact
+from .result import REFUSED, airflow_retries, error_text, redact
 from .stderr import tail_lines
 
 MAX_UNITS = 10
@@ -75,7 +75,9 @@ def format_failure(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: s
     return "\n".join(lines)
 
 
-def format_title(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, exception: Any = None) -> str:
+def format_title(
+    payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, try_number: int, max_tries: int, exception: Any = None
+) -> str:
     """`dag.task — <error type>`: the rivet code and final / retryable, else the exception's class; no error text."""
     payload = payload or {}
     if payload.get(REFUSED):
@@ -83,7 +85,8 @@ def format_title(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str
     elif failed := _failed_units(payload):
         error = payload.get("error") or failed[0]["error"]  # the error that decided the task, else the first failed unit's
         name = error.get("code") or error.get("class") or "rivet failed"
-        kind = f"{name} ({'retryable' if error.get('retryable') else 'final'})"
+        retry = airflow_retries(payload, try_number, max_tries)
+        kind = f"{name} ({'retryable' if retry else 'final'})"
         if len(failed) > 1:
             kind += f" +{len(failed) - 1} more"
     elif isinstance(exception, BaseException):
@@ -158,10 +161,21 @@ class _Alert:
     log_url: str
     payload: Mapping[str, Any] | None
     exception: Any
+    try_number: int
+    max_tries: int
 
     @property
     def title(self) -> str:
-        return redact(format_title(self.payload, dag_id=self.dag_id, task_id=self.task, exception=self.exception))
+        return redact(
+            format_title(
+                self.payload,
+                dag_id=self.dag_id,
+                task_id=self.task,
+                try_number=self.try_number,
+                max_tries=self.max_tries,
+                exception=self.exception,
+            )
+        )
 
     @property
     def context_line(self) -> str:
@@ -199,6 +213,8 @@ def slack_failure_callback(
             log_url=log_url,
             payload=payload if isinstance(payload, dict) else None,
             exception=context.get("exception"),
+            try_number=ti.try_number,
+            max_tries=ti.max_tries,
         )
         if channel:
             _post_threaded(alert, conn_id, channel, hook_kwargs)

@@ -25,6 +25,12 @@ repos:
       - id: gitleaks
   - repo: local
     hooks:
+      - id: vulture
+        name: vulture (dead code in the package; whitelist in dev/vulture_whitelist.py)
+        entry: uvx --from vulture==2.16 vulture airflow_provider_rivet dev/vulture_whitelist.py --min-confidence 60
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: pytest
         name: pytest (uv.lock environment)
         entry: uv run --locked pytest -q

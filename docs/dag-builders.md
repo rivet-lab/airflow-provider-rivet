@@ -104,7 +104,7 @@ dag = build_cdc_dag(
 ### From a config: `build_config_dag`
 
 `build_config_dag` builds the DAG of one rivet config the way `build_source_dags` builds a source's DAG from its
-config, with no Connection or `init` step of its own; the quickstart builds each pipeline through it.
+config, with no Connection or `init` step of its own; the quickstart builds each pipeline through it. A config that cannot be built into a DAG at all is refused with `RIVET_AIRFLOW_CONFIG_UNBUILDABLE`, naming the exception.
 
 ```python
 from airflow_provider_rivet.dags import build_config_dag

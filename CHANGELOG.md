@@ -28,6 +28,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- The Slack alert title says `retryable` only when Airflow runs another try (the same rule as the task log): a failure on
+  the last try, or a crash past its budget, is titled `final`.
+- A resolved config value that holds U+E000 or U+E001 is read as written; only an unresolved `${name}` is spelled back.
 - A failed step whose error line is longer than the 1 MiB read of rivet's stderr file is no longer classified as a
   generic failure without a trace: the step records `result_malformed`, as for a cut line. The window's end is read
   line by line; a line cut by the window is never read in part.

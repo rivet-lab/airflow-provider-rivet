@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -208,3 +209,10 @@ def unstarted(command: str, why: str, value: str) -> dict[str, Any]:
     """The XCom payload of a task that ended before rivet started: refused (`REFUSED`, final), or stopped by Airflow
     (`STOPPED`) or kept off a held lock (`BUSY`), both retried; `value` is the code or the step."""
     return {"command": command, "decision": "fail" if why == REFUSED else "retry", why: value, "units": []}
+
+
+def airflow_retries(payload: Mapping[str, Any], try_number: int, max_tries: int) -> bool:
+    """Whether Airflow runs another try after this failure: a retry while one is left, a crash only under its budget."""
+    if payload.get("decision") == "retry_crashed":
+        return bool(payload.get("crashed_retry")) and try_number <= max_tries
+    return payload.get("decision") == "retry" and try_number <= max_tries
