@@ -7,10 +7,10 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TypeVar
 
 from ._compat import (
     AirflowException,
@@ -53,6 +53,7 @@ from .preflight import PreflightRefusal, read_config, resolve_binary
 from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
 from .tasklog import TaskLog
 
+T = TypeVar("T")
 MODES = ("cdc", "batch")
 
 XCOM_KEY = "return_value"
@@ -208,6 +209,17 @@ class _RivetTask(BaseOperator):
         self._emit({"event": Event.STOPPED, "step": stop.step, "text": str(stop)})
         self._fail(ti, unstarted(self.command, STOPPED, stop.step), str(stop), retry=True)
 
+    def _guarded(self, ti: Any, work: Callable[[], T]) -> T:
+        """Run one stretch of the task's work, reporting a refusal or a stop it raises, with no process held after it."""
+        try:
+            return work()
+        except PreflightRefusal as refusal:
+            self._refuse(ti, refusal)
+        except Stopped as stop:
+            self._stopped(ti, stop)
+        finally:
+            self._proc = None
+
     def execute(self, context: Any) -> dict[str, Any]:
         """Run the command; return the XCom payload or raise by the contract's retry table."""
         ti = context["ti"]
@@ -316,10 +328,7 @@ class RivetBaseOperator(_RivetTask):
 
     def _run_with_secrets(self, ti: Any, run_id: str, task_part: str, secrets: Path) -> dict[str, Any]:
         """`execute` with a private folder for the key files of this try."""
-        try:
-            env = self._environment(secrets)
-        except PreflightRefusal as refusal:
-            self._refuse(ti, refusal)
+        env = self._guarded(ti, lambda: self._environment(secrets))
         request = Request(
             command=self.command,
             config=self.config,
@@ -342,18 +351,16 @@ class RivetBaseOperator(_RivetTask):
             series=ti.max_tries,
             upstream_markers=self._upstream_markers(ti),
         )
+        outcome = self._guarded(ti, lambda: self._invoke(ti, request))
+        return self._settle(ti, run_id, task_part, outcome)
+
+    def _invoke(self, ti: Any, request: Request) -> Outcome:
+        """Run the request; a lock another run holds fails the task for a retry."""
         try:
-            outcome = invoke(request, self._emit, self._hold, lambda: self._stop_requested)
-        except PreflightRefusal as refusal:
-            self._refuse(ti, refusal)
-        except Stopped as stop:
-            self._stopped(ti, stop)
+            return invoke(request, self._emit, self._hold, lambda: self._stop_requested)
         except Busy as busy:
             self._emit({"event": Event.BUSY, "code": busy.code, "text": str(busy)})
             self._fail(ti, unstarted(self.command, BUSY, busy.code), str(busy), retry=True)
-        finally:
-            self._proc = None
-        return self._settle(ti, run_id, task_part, outcome)
 
     def _settle(self, ti: Any, run_id: str, task_part: str, outcome: Outcome) -> dict[str, Any]:
         """Map the outcome's decision onto success, skip, retry or fail."""
@@ -547,22 +554,22 @@ class RivetInitOperator(_RivetTask):
                 target,
             )
             return {"config": str(target), "written": False}
-        try:
-            env = self._environment(secrets)
-            binary = resolve_binary(self.rivet_bin, env)
-            self._create_state_database()
-        except PreflightRefusal as refusal:
-            self._refuse(ti, refusal)
+        env, binary = self._guarded(ti, lambda: self._prepared(secrets))
+        return self._guarded(ti, lambda: self._written(ti, target, env, binary))
+
+    def _prepared(self, secrets: Path) -> tuple[dict[str, str], str]:
+        """The environment and the rivet binary `init` runs with, the state database created first."""
+        env = self._environment(secrets)
+        binary = resolve_binary(self.rivet_bin, env)
+        self._create_state_database()
+        return env, binary
+
+    def _written(self, ti: Any, target: Path, env: Mapping[str, str], binary: str) -> dict[str, Any]:
+        """Write the config; a failure of the init itself fails the task without a retry."""
         try:
             return self._write_config(target, env, binary)
-        except PreflightRefusal as refusal:
-            self._refuse(ti, refusal)
-        except Stopped as stop:
-            self._stopped(ti, stop)
         except _InitFailed as failure:
             self._failed(ti, failure)
-        finally:
-            self._proc = None
 
     def _failed(self, ti: Any, failure: _InitFailed) -> NoReturn:
         """Publish and log a failure of the init itself, which Airflow does not retry."""
