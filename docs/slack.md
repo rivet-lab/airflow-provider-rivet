@@ -208,7 +208,7 @@ Airflow calls `on_failure_callback` only when a task has failed for good: its la
 or it failed in a way Airflow does not retry. A try that Airflow will retry sends nothing. So
 every message is about a task that is failed now; the title says what kind of failure it is.
 
-The error type is the rivet code with `final` or `retryable`; with several failed exports, the
+The error type is the rivet code with `final` or `retryable` (`retryable` only when Airflow runs another try); with several failed exports, the
 code of the error that decided the task (the one the exception carries) and `+N more`; when the task died without a rivet result, the exception's class
 (`AirflowTaskTimeout`, ...).
 
@@ -253,8 +253,8 @@ also inside words. The text is cut at 3,500 characters (3,000 through a webhook)
 
 `examples/rivet_slack_alerts.py` defines two DAGs with no schedule that read no database and
 write no file: `rivet_slack_test_refused` (an export the config does not have: final) and
-`rivet_slack_test_transient` (a source on a port nobody listens on: retryable). Both have
-`retries=0`, so the alert comes on the first try.
+`rivet_slack_test_transient` (a source on a port nobody listens on: a retryable code, final here). Both have
+`retries=0`, so the alert comes on the first try and says `final`.
 
 1. Copy `examples/rivet_slack_alerts.py` and `examples/configs/` into the DAGs folder (the DAG
    reads `configs/postgres_batch.yaml` next to itself).
@@ -270,7 +270,7 @@ airflow dags unpause rivet_slack_test_transient && airflow dags trigger rivet_sl
 
 Within seconds each run fails, and the channel gets two titles,
 `rivet_slack_test_refused.apply.no_such_export — RIVET_AIRFLOW_EXPORT_UNKNOWN (final)` and
-`rivet_slack_test_transient.apply.users — RIVET_PLAN_SOURCE_UNREADABLE (retryable)`, each with a
+`rivet_slack_test_transient.apply.users — RIVET_PLAN_SOURCE_UNREADABLE (final)`, each with a
 thread reply holding its error text (section 5). The failed task's log says what was sent, after the failure:
 
 ```text

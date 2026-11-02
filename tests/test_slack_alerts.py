@@ -32,7 +32,7 @@ PREFLIGHT = {"command": "apply", "decision": "fail", "preflight_refusal": "RIVET
 RETRYABLE = {"decision": "retry", "units": [unit("RIVET_PLAN_SOURCE_UNREADABLE", "retryable", True)]}
 REFUSAL = {"decision": "fail", "units": [unit("RIVET_SOURCE_CDC_LOG_GAP", "refusal", False, action="re-baseline")]}
 TWO = {"units": [unit("RIVET_SOURCE_CDC_LOG_GAP", "refusal", False, "a"), unit("RIVET_X", "refusal", False, "b")]}
-CRASHED = {"units": [unit(None, "crashed", True)]}
+CRASHED = {"decision": "retry_crashed", "crashed_retry": True, "units": [unit(None, "crashed", True)]}
 
 
 @pytest.mark.parametrize(
@@ -48,7 +48,7 @@ CRASHED = {"units": [unit(None, "crashed", True)]}
     ],
 )
 def test_the_title_is_dag_task_and_the_error_type_per_outcome_class(payload: Any, exception: Any, title: str) -> None:
-    assert format_title(payload, dag_id="d", task_id="apply.users", exception=exception) == title
+    assert format_title(payload, dag_id="d", task_id="apply.users", try_number=1, max_tries=1, exception=exception) == title
 
 
 def test_a_retryable_class_is_not_said_twice() -> None:
@@ -230,7 +230,7 @@ def test_the_guide_shows_the_title_and_thread_text_the_callback_writes(tmp_path:
         (PREFLIGHT, "apply.no_such_export", raised(REFUSED_EXCEPTION)),
         (retryable, "apply.users", raised("[RIVET_PLAN_SOURCE_UNREADABLE] retryable (users)")),
     ):
-        title = format_title(payload, dag_id="rivet_slack_test", task_id=task)
+        title = format_title(payload, dag_id="rivet_slack_test", task_id=task, try_number=1, max_tries=1)
         assert f"> :x: **{title}**\n" in guide, title
         assert f"```text\n{format_error_text(payload, exception=exception, limit=3500)}\n```" in guide
 
@@ -273,7 +273,7 @@ dag = runpy.run_path({example!r})[{name!r}]
     ("name", "task", "title"),
     [
         ("rivet_slack_test_refused", "apply.no_such_export", "RIVET_AIRFLOW_EXPORT_UNKNOWN (final)"),
-        ("rivet_slack_test_transient", "apply.users", "RIVET_PLAN_SOURCE_UNREADABLE (retryable)"),
+        ("rivet_slack_test_transient", "apply.users", "RIVET_PLAN_SOURCE_UNREADABLE (final)"),
     ],
 )
 def test_each_example_dag_fails_on_its_first_try_and_sends_one_alert_through_the_named_connection(
@@ -309,3 +309,19 @@ def test_the_fake_slack_hooks_have_the_shape_of_the_slack_providers_hooks() -> N
     assert {"channel", "text", "blocks", "thread_ts"} <= set(inspect.signature(WebClient.chat_postMessage).parameters)
     assert "slack_webhook_conn_id" in inspect.signature(webhook.SlackWebhookHook.__init__).parameters
     assert "text" in inspect.signature(webhook.SlackWebhookHook.send).parameters
+
+
+def test_the_title_of_a_last_try_crash_is_final_not_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """message-truth-1: the crash budget grants nothing on the last Airflow try, so the title says final."""
+    sent: list[tuple[str, str]] = []
+    fake_slack(monkeypatch, sent=sent)
+    ti = OneTI(task_id="apply.users", try_number=2, max_tries=1)
+    ti.dag_id = "d"
+    ti.store[("apply.users", "return_value")] = {
+        "decision": "retry_crashed",
+        "crashed_retry": False,
+        "units": [unit(None, "crashed", True)],
+    }
+    slack_failure_callback("slack_rivet")({"ti": ti, "run_id": "manual__1", "exception": raised("crashed")})
+    [(_, text)] = sent
+    assert text.split("\n")[0] == ":x: *d.apply.users — crashed (final)*"
