@@ -201,7 +201,7 @@ class TaskLog:
             step = payload[STOPPED]
             lines.append((logging.WARNING, f"{head} STOPPED by Airflow before rivet {step} started; rivet {step} was not run"))
         elif BUSY in payload:
-            wait = (self._all(Event.LOCK_WAIT) or [{}])[-1]  # the lock that timed out is the last one waited for
+            wait = (self._all(Event.LOCK_WAIT) or [{}])[-1]
             lines.append(
                 (
                     retry_level,
