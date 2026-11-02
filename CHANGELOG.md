@@ -7,6 +7,10 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- A task that found a state directory's `.rivet_airflow_marker` created but not yet written (another task was between the
+  create and the write) returned an empty identity, which the next task compared as the directory's marker. The marker is
+  now written whole under a staged name and linked into place, so a task that loses the race returns the winner's id; an
+  empty marker is refused `RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY`.
 - A failed `RivetInitOperator` (rivet's exit, a refused shared place, a state root not mounted) now publishes its XCom
   payload and writes the task log's block, as every other failure does; before, the exception left no payload and no block.
 - A rivet process ended by a signal is named as one (`was killed by signal N`), not as `exited -N`, in the init's failure.
