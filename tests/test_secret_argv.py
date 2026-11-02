@@ -51,4 +51,5 @@ def test_redacted_argv_masks_every_spelling_of_a_param_value_and_keeps_the_key()
     ]
     assert redacted_argv(["-p", "NOEQ"]) == ["-p", "***"], "a value with no key is masked whole"
     assert redacted_argv(["-p", ""]) == ["-p", ""] and redacted_argv(["-p"]) == ["-p"], "nothing to mask"
+    assert redacted_argv(["-p", "", "x"]) == ["-p", "", "x"], "an empty value is not masked, whatever comes after it"
     assert args[4] == "A=1", "the input list is not changed"
