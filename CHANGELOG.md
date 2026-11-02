@@ -22,6 +22,21 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   refuses one that may resolve to `cdc`, instead of leaving it out of the DAG.
 - A stream named `watcher` beside other CDC streams is refused `RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME` at parse; it
   used to fail the DAG file's import with a duplicate task id.
+- A task that found a state directory's `.rivet_airflow_marker` created but not yet written (another task was between the
+  create and the write) returned an empty identity, which the next task compared as the directory's marker. The marker is
+  now written whole under a staged name and linked into place, so a task that loses the race returns the winner's id; an
+  empty marker is refused `RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY`.
+- A failed `RivetInitOperator` (rivet's exit, a refused shared place, a state root not mounted) now publishes its XCom
+  payload and writes the task log's block, as every other failure does; before, the exception left no payload and no block.
+- A rivet process ended by a signal is named as one (`was killed by signal N`), not as `exited -N`, in the init's failure.
+- The init's refusal of a shared place names the source (`--bigquery-dataset shop`), not the literal `{name}`.
+- An init that finds its config written meanwhile returns `written: False` and no longer logs `written; the next DAG parse
+  replaces this task`; the XCom exports of the init read names, modes and tables as rivet does (`name: 2024` is `"2024"`).
+- A `-p` / `--param` value in a task's extra arguments is masked in the `rivet.start` record (its key kept), so a
+  secret passed that way is in no log record or task log line; rivet still gets the value.
+- A Connection host that holds `@`, `/`, `?`, `#`, `\` or whitespace (outside an IPv6 literal) rewrote the URL and
+  could drop its `sslmode` or send the password to another host; it is now refused `RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`,
+  as a host holding `:` is, and the refusal does not show the host.
 
 ## 0.4.0 (2026-10-30)
 
