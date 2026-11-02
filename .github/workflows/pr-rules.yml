@@ -1,0 +1,26 @@
+name: PR rules
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-rules-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-rules:
+    name: PR rules (trailers, comments, deletions, ratchet, CHANGELOG)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Self-test
+        run: python3 dev/pr_ready.py --self-test
+      - name: The branch and the PR's title and body
+        run: python3 dev/pr_ready.py ci --base "$(git rev-parse HEAD^1)" --event "$GITHUB_EVENT_PATH"
