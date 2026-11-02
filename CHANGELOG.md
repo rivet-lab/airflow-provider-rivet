@@ -7,6 +7,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Tests: hypothesis properties in `tests/properties/` (a dev dependency, `ci` profile at 200 examples, derandomized, about 3 s) over the stderr reader, the config reader's placeholders, connection URLs, DAG task naming, the Slack title, a secret canary sweep and a megabyte timeout per reader. No product code changes.
 - Guard: `docs/failure-surface-matrix.yaml` has a row for every refusal code the package raises (derived from the
   source) and for rivet's exit, signal, timeout, empty source and init draft. Each row names what each of the five
   operator surfaces (exception, task log, Slack text, XCom, retry decision) shows, as a test that exists or a dated gap.
