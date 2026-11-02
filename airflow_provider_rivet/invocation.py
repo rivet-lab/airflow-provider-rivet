@@ -337,7 +337,7 @@ class _Session:
             raise Stopped(name)
         stderr_path = self.logs / f"{self.log_name}.{name}.stderr.log"
         stdout_path = stdout_to or self.logs / f"{self.log_name}.{name}.stdout.log"
-        self.emit({"event": "rivet.start", "step": name, "argv": argv, "stderr_path": str(stderr_path)})
+        self.emit({"event": "rivet.start", "step": name, "argv": _yaml.redacted_argv(argv), "stderr_path": str(stderr_path)})
         cwd = self.req.cwd or str(Path(self.req.config).resolve().parent)
         with _open_private(stdout_path) as out, _open_private(stderr_path) as err:
             code = spawn(argv, out, err, self.req.env, cwd, self.on_process, self.lock_fds)

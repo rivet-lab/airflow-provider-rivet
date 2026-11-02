@@ -88,6 +88,7 @@ _TOML_ESCAPES = {
     ord("\r"): "\\r",
 }
 _SURROGATE = re.compile("[\ud800-\udfff]")
+_HOST_CHARS = re.compile(r"[@/?#\\\s]")
 
 
 def toml_string(text: str, what: str) -> str:
@@ -117,6 +118,12 @@ def url_host(conn: Any) -> str:
                 UNSUPPORTED,
                 f"connection `{getattr(conn, 'conn_id', '?')}` has host `{host}`, which holds a `:` but is no IPv6 address, "
                 "and a port as well; put the port in the port field only",
+            ) from None
+        if _HOST_CHARS.search(host):
+            raise PreflightRefusal(
+                UNSUPPORTED,
+                f"connection `{getattr(conn, 'conn_id', '?')}` has a host holding `@`, `/`, `?`, `#`, `\\` or whitespace, "
+                "which a URL cannot carry; put the address alone in the host field",
             ) from None
         return host
     if percent:
