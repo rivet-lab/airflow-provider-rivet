@@ -89,8 +89,10 @@ def test_a_megabyte_of_hostile_text_is_read_once_and_cheaply(planted: str) -> No
         (("é" * 7 + planted) * 70_000, False),
     ):
         text = error_text(hostile)
-        assert (text is None) == empty
-        assert text is None or (len(text) <= ERROR_TEXT_LIMIT and planted not in text)
+        if empty:
+            assert text is None
+        else:
+            assert text is not None and len(text) <= ERROR_TEXT_LIMIT and planted not in text
     assert time.monotonic() - started < 10
 
 

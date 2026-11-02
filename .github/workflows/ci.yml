@@ -49,9 +49,11 @@ jobs:
         with:
           tool: uv
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - run: uv run pytest -q --junitxml=junit.xml
         env:
           RIVET_SRC: rivet
+      - name: Every skip of the locked job is in its ledger (dev/skip_census.py)
+        run: python3 dev/skip_census.py junit.xml --job locked
 
   airflow:
     name: Airflow ${{ matrix.airflow }} / Python ${{ matrix.python }}
@@ -87,9 +89,11 @@ jobs:
           uv pip install "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack "rivet-cli==$(python3 dev/min_rivet.py)" pytest \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ matrix.airflow }}/constraints-${{ matrix.python }}.txt"
           uv pip install --no-deps -e .
-      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m pytest -q --junitxml=junit.xml
         env:
           RIVET_SRC: rivet
+      - name: Every skip of the Airflow job is in its ledger (dev/skip_census.py)
+        run: python3 dev/skip_census.py junit.xml --job airflow
 
   gate-oracles:
     name: Gate oracles on Airflow ${{ matrix.airflow }} (RED on every mutant)
@@ -109,7 +113,9 @@ jobs:
         run: |
           uv sync --python 3.12 --only-group gate
           uv pip install --python .venv/bin/python "apache-airflow==${{ matrix.airflow }}" apache-airflow-providers-slack
-      - run: .venv/bin/python -m pytest -q gate/tests
+      - run: .venv/bin/python -m pytest -q gate/tests --junitxml=junit.xml
+      - name: Every skip of the gate oracles is in its ledger (dev/skip_census.py)
+        run: python3 dev/skip_census.py junit.xml --job gate-oracles
 
   build:
     name: Build sdist and wheel

@@ -31,9 +31,11 @@ jobs:
       - name: Pin rivet to RIVET_CONTRACT_REF
         run: git -C rivet fetch --depth 1 origin "$(cat RIVET_CONTRACT_REF)" && git -C rivet checkout --quiet FETCH_HEAD
       - name: Tests on the locked environment
-        run: uv sync --locked && uv run pytest -q
+        run: uv sync --locked && uv run pytest -q --junitxml=junit.xml
         env:
           RIVET_SRC: rivet
+      - name: Every skip of the release build is in its ledger (dev/skip_census.py)
+        run: python3 dev/skip_census.py junit.xml --job release
       - name: The tag names the package version, and the changelog dates it
         run: |
           version=$(uv run --no-project python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('airflow_provider_rivet/__init__.py').read_text()).group(1))")
