@@ -18,6 +18,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- A release publishes to PyPI only after the live gate passes on its tag: `release.yml` calls `gate.yml`, and `publish` needs both the build and the gate.
 - `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
   `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
   schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.

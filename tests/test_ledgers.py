@@ -35,7 +35,7 @@ def test_every_weak_assert_ceiling_is_dated_with_a_reason() -> None:
 
 def test_every_workflow_fact_the_ledger_records_is_dated_with_a_reason() -> None:
     ledger = _module("tests/test_workflows.py").LEDGER
-    assert ledger and all(_dated(entry) for entry in ledger.values())
+    assert all(_dated(entry) for entry in ledger.values())
 
 
 def test_the_mutation_ratchet_value_sits_under_a_dated_entry() -> None:

@@ -12,13 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 #: Workflow facts no one has decided yet: (date accepted, reason, what closes it).
-LEDGER: dict[str, tuple[str, str, str]] = {
-    "release.yml publish needs": (
-        "2026-11-02",
-        "publish needs build only; gate.yml runs on the same tag with no edge to it",
-        "the owner decides whether a release waits for the live gate (harness-3)",
-    ),
-}
+LEDGER: dict[str, tuple[str, str, str]] = {}
 
 
 def _workflow(name: str) -> dict:
@@ -52,8 +46,19 @@ def test_the_ci_gate_oracles_matrix_runs_the_versions_the_gate_default_runs() ->
     assert set(matrix) == set(_airflow_default().split(","))
 
 
-def test_publish_needs_build_only_as_the_ledger_records() -> None:
-    needs = _workflow("release.yml")["jobs"]["publish"]["needs"]
-    assert needs in ("build", ["build"])
-    accepted, _, _ = LEDGER["release.yml publish needs"]
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", accepted)
+def _triggers(workflow: dict) -> dict:
+    """A workflow's `on:` block (PyYAML reads the bare key `on` as True)."""
+    return workflow.get("on", workflow.get(True))
+
+
+def test_publish_waits_for_the_build_and_the_live_gate() -> None:
+    """A release reaches PyPI only after the live gate passed on its tag (owner, 2026-11-02, harness-3)."""
+    jobs = _workflow("release.yml")["jobs"]
+    assert set(jobs["publish"]["needs"]) == {"build", "gate"}
+    assert jobs["gate"]["uses"] == "./.github/workflows/gate.yml"
+
+
+def test_the_live_gate_runs_on_a_tag_only_through_the_release() -> None:
+    """gate.yml is called by release.yml, not started a second time by the same tag push."""
+    triggers = _triggers(_workflow("gate.yml"))
+    assert "workflow_call" in triggers and "push" not in triggers
