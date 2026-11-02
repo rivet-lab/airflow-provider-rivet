@@ -13,7 +13,6 @@ from airflow_provider_rivet.operators import RivetRunOperator
 from airflow_provider_rivet.result import error_from_line
 
 TAIL = stderr.STDERR_TAIL
-DEEP = "[" * 10000 + "]" * 10000
 
 
 def test_a_last_line_longer_than_the_tail_is_recorded_malformed_not_silently_generic(rig: Rig) -> None:
@@ -34,30 +33,31 @@ def test_a_last_line_that_fits_the_tail_is_read_whole_after_a_longer_earlier_one
     assert invocation._error_line(stderr.tail_lines(path)[0]) == short
 
 
-@pytest.mark.parametrize(
-    "stderr",
-    [
-        '{"exit_class": 2, "error": ' + DEEP + "}",
-        '{"exit_class": 2, "error": "x", "more": ' + DEEP + "}",
-    ],
-    ids=["deep-value", "deep-trailing"],
-)
-def test_a_deeply_nested_stderr_line_is_not_an_unclassified_recursion_error(stderr: str) -> None:
-    """hostile-input-3: `json.loads` raises RecursionError past its depth; each reader treats the line as not JSON."""
-    assert invocation._error_line([stderr]) is None
-    assert invocation._has_broken_object([stderr]) is True
+def _too_deep(text: str, *args: object, **kwargs: object) -> object:
+    raise RecursionError("maximum recursion depth exceeded while decoding a JSON array from a unicode string")
 
 
-def test_a_deeply_nested_result_file_is_not_an_unclassified_recursion_error() -> None:
-    """hostile-input-3: the summary reader treats a too-deep document as not JSON."""
-    assert reading._json_of(("[" * 10000 + "]" * 10000).encode()) is None
-
-
-def test_a_deeply_nested_alert_line_is_not_an_unclassified_recursion_error(tmp_path: Path) -> None:
-    """hostile-input-3: the alert's reader skips a too-deep line and still reads the next error line."""
+def test_a_value_too_deep_for_the_parser_is_not_json_for_any_reader(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """hostile-input-3: `json.loads` raises RecursionError past the parser's depth (Python 3.14 parses deeper, so the
+    error is simulated); each reader treats that line as not JSON, and the next error line is still read."""
+    monkeypatch.setattr(json, "loads", _too_deep)
+    line = '{"exit_class": 2, "error": "x"}'
+    assert invocation._error_line([line]) is None
+    assert invocation._has_broken_object([line]) is True
+    assert reading._json_of(b"{}") is None
     path = tmp_path / "e.stderr.log"
-    path.write_text('{"error": ' + DEEP + "}\nError: after the deep line\n")
+    path.write_text(line + "\nError: after the deep line\n")
     assert callbacks._rivet_errors({"stderr_path": str(path)}) == [(None, "Error: after the deep line")]
+
+
+def test_a_deep_stderr_line_never_raises_from_a_reader() -> None:
+    """hostile-input-3: a line nested 10000 levels deep is read as JSON or not, and no reader raises."""
+    deep = '{"exit_class": 2, "error": ' + "[" * 10000 + "]" * 10000 + "}"
+    found = invocation._error_line([deep])
+    assert found is None or found["exit_class"] == 2
+    assert invocation._has_broken_object([deep]) in (True, False)
+    doc = reading._json_of(deep.encode())
+    assert doc is None or isinstance(doc, dict)
 
 
 @pytest.mark.parametrize(
