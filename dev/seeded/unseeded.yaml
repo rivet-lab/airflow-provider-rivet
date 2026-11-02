@@ -23,11 +23,11 @@ unseeded:
     date: "2026-11-02"
     reason: the hostile test for error text accepted a None result; a test-only fix
     closes: the hostile test asserts the result is not None before it reads it
-open:
   - bug: seams-4
     date: "2026-11-02"
-    reason: nine same-named parameters in the constructors and a duplicated run/refuse loop; an architecture cleanup, no behaviour defect
-    closes: a deepening PR that removes the duplicated loop with byte-identical outputs
+    reason: architecture cleanup with no behaviour to seed; the run/refuse loop is one _RivetTask._guarded, the constructors keep their parameters because Airflow reads default_args and mapping kwargs from each class's signature
+    closes: the seams-3 seed, whose cells red when the init path stops reporting through the shared helper
+open:
   - bug: seams-5
     date: "2026-11-02"
     reason: the DAG builders repeat their load/compact groups, settings filter, build-or-refuse and mode checks; architecture cleanup

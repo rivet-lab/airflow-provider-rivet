@@ -35,6 +35,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
+  `_RivetTask._guarded`; the busy-lock retry of the ADR-0039 tasks and the init failure of `RivetInitOperator` stay with
+  their own task. No output changes.
 - Refusal codes and task-log event names are the members of `airflow_provider_rivet.codes.Code` and
   `airflow_provider_rivet.events.Event` (a `StrEnum`, so their text and JSON are unchanged). No output changes.
 

@@ -1,13 +1,15 @@
 diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
-index 902e6d6..e44077f 100644
 --- a/airflow_provider_rivet/operators.py
 +++ b/airflow_provider_rivet/operators.py
-@@ -550,8 +550,6 @@ class RivetInitOperator(_RivetTask):
-             self._refuse(ti, refusal)
-         except Stopped as stop:
-             self._stopped(ti, stop)
+@@ -560,10 +560,7 @@
+ 
+     def _written(self, ti: Any, target: Path, env: Mapping[str, str], binary: str) -> dict[str, Any]:
+         """Write the config; a failure of the init itself fails the task without a retry."""
+-        try:
+-            return self._write_config(target, env, binary)
 -        except _InitFailed as failure:
 -            self._failed(ti, failure)
-         finally:
-             self._proc = None
++        return self._write_config(target, env, binary)
  
+     def _failed(self, ti: Any, failure: _InitFailed) -> NoReturn:
+         """Publish and log a failure of the init itself, which Airflow does not retry."""
