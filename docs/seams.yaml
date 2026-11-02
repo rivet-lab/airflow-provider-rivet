@@ -1,0 +1,121 @@
+# Seams of airflow_provider_rivet, read by tests/test_architecture.py; exception counts are exact.
+rules:
+  - id: json-loads
+    owner: airflow_provider_rivet/reading.py::_json_of
+    kind: call
+    match: json.loads
+    scope: [airflow_provider_rivet]
+    allowed: [airflow_provider_rivet/reading.py, airflow_provider_rivet/stderr.py]
+    exceptions:
+      - at: airflow_provider_rivet/dags.py::read_plan_layout
+        count: 1
+        date: 2026-11-02
+        reason: "reads the operator's `rivet plan --format json` file, not stderr"
+        closes: "a plan reader in reading.py beside `_json_of`"
+      - at: airflow_provider_rivet/invocation.py::crashed_retry_allowed
+        count: 1
+        date: 2026-11-02
+        reason: "reads the crash ledger, a JSON file of tries, not stderr"
+        closes: "the ledger reader moves beside `_json_of` in reading.py"
+  - id: fail-channel
+    owner: airflow_provider_rivet/operators.py::_RivetTask._fail
+    kind: raise
+    names: [AirflowFailException, AirflowException]
+    scope: [airflow_provider_rivet]
+    exceptions:
+      - at: airflow_provider_rivet/operators.py::RivetConfigRefused.execute
+        count: 1
+        date: 2026-11-02
+        reason: "publishes its own XCom and raises; no task-log block as `_fail` writes"
+        closes: "route through `_fail` (seams-3)"
+      - at: airflow_provider_rivet/operators.py::RivetRunWatcher.execute
+        count: 1
+        date: 2026-11-02
+        reason: "fails the DAG run after its tasks wrote their own blocks; no XCom or log of its own"
+        closes: "route through `_fail` or a DAG-level message (seams-3)"
+  - id: exit-text
+    owner: airflow_provider_rivet/result.py::error_from_exit
+    kind: text
+    pattern: 'exited \{'
+    scope: [airflow_provider_rivet]
+    exceptions:
+      - at: airflow_provider_rivet/capabilities.py::Capabilities._run
+        count: 1
+        date: 2026-11-02
+        reason: "the probe's own `exited N` text for a failed `rivet --version`"
+        closes: "one describe_exit text for every exit (message-truth-3)"
+      - at: airflow_provider_rivet/operators.py::RivetInitOperator._rivet
+        count: 1
+        date: 2026-11-02
+        reason: "the init's `exited N` text, which prints `exited -9` for a signal"
+        closes: "one describe_exit text for every exit (message-truth-3)"
+  - id: export-entry
+    owner: airflow_provider_rivet/exports.py::name_of
+    kind: get
+    names: [name, tables]
+    scope: [airflow_provider_rivet]
+    allowed: [airflow_provider_rivet/exports.py]
+    exceptions:
+      - at: airflow_provider_rivet/invocation.py::*
+        count: 3
+        date: 2026-11-02
+        reason: "reads an export entry's name or query file beside exports.py"
+        closes: "`exports.name_of` and one query-file reader (seams-6)"
+      - at: airflow_provider_rivet/preflight.py::*
+        count: 2
+        date: 2026-11-02
+        reason: "reads an export entry's name in the checkpoint refusal beside exports.py"
+        closes: "`exports.name_of` (seams-6)"
+  - id: rivet-event
+    owner: null
+    kind: text
+    pattern: '^rivet\.[a-z_][a-z_.]*$'
+    scope: [airflow_provider_rivet]
+    exceptions:
+      - at: airflow_provider_rivet/invocation.py::*
+        count: 10
+        date: 2026-11-02
+        reason: "event-name literals; the event registry is not written yet"
+        closes: "an events.py registry (seams-7, PR 12)"
+      - at: airflow_provider_rivet/operators.py::*
+        count: 6
+        date: 2026-11-02
+        reason: "event-name literals; the event registry is not written yet"
+        closes: "an events.py registry (seams-7, PR 12)"
+      - at: airflow_provider_rivet/tasklog.py::*
+        count: 16
+        date: 2026-11-02
+        reason: "event-name literals; the event registry is not written yet"
+        closes: "an events.py registry (seams-7, PR 12)"
+  - id: seed-size
+    owner: gate/cycle_effect.py::SEED_ORDERS
+    kind: text
+    pattern: '(?<![\d.])5000(?![\d.])'
+    scope: [gate]
+    allowed: [gate/cycle_effect.py]
+    exceptions:
+      - at: gate/sources.py::*
+        count: 4
+        date: 2026-11-02
+        reason: "each engine's seed statement spells its row count"
+        closes: "render every seed from SEED_ORDERS (harness-7)"
+      - at: gate/scenario.py::*
+        count: 1
+        date: 2026-11-02
+        reason: "the Postgres scenario seed spells its row count"
+        closes: "render the seed from SEED_ORDERS (harness-7)"
+      - at: gate/tests/test_source_grading.py::*
+        count: 3
+        date: 2026-11-02
+        reason: "grading expects the seeded row counts as literals"
+        closes: "read the counts from SEED_ORDERS (harness-7)"
+      - at: gate/tests/test_sources_mongodb_oracle.py::*
+        count: 1
+        date: 2026-11-02
+        reason: "an oracle range spells the seeded row count"
+        closes: "read the range from SEED_ORDERS (harness-7)"
+  - id: brace-placeholder
+    owner: null
+    kind: token
+    scope: [airflow_provider_rivet, tests]
+    exceptions: []

@@ -9,8 +9,11 @@ on:
       rivet:
         description: "rivet release tag (default: the latest release)"
         required: false
-  push:
-    tags: ["airflow-v*"]
+  workflow_call:
+    inputs:
+      rivet:
+        type: string
+        required: false
 
 permissions:
   contents: read
