@@ -1,48 +1,21 @@
-"""Every refusal code the package names is documented, and a test asserts it by its code."""
+"""Every refusal code is a `Code` member, documented, and asserted by a test through its code."""
 
 from __future__ import annotations
 
-import ast
-import re
-
 from conftest import DOCS, PACKAGE_ROOT
 
-CODE = re.compile(r"RIVET_AIRFLOW_[A-Z_]+")
-MUTANT = re.compile(r"__mutmut_\d+$")
+from airflow_provider_rivet.codes import Code
 
-
-def _literals(node: ast.AST) -> list[str]:
-    """String literals under a node, without the bodies of mutmut's numbered mutants."""
-    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and MUTANT.search(node.name):
-        return []
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return [node.value]
-    return [text for child in ast.iter_child_nodes(node) for text in _literals(child)]
-
-
-PACKAGE_CODES = sorted(
-    {
-        code
-        for path in (PACKAGE_ROOT / "airflow_provider_rivet").rglob("*.py")
-        for text in _literals(ast.parse(path.read_text()))
-        for code in CODE.findall(text)
-    }
-)
+PACKAGE_CODES = sorted(c.value for c in Code)
 TESTS = "".join(
     p.read_text()
     for p in sorted((PACKAGE_ROOT / "tests").glob("test_*.py")) + sorted((PACKAGE_ROOT / "gate" / "tests").glob("test_*.py"))
 )
 
 
-def test_the_scan_finds_the_codes_the_package_raises() -> None:
-    """The scan is not vacuous: the codes the guide names are in the package source."""
+def test_the_registry_holds_the_codes_the_package_raises() -> None:
+    """The registry is not empty: the codes the guide names are members of `Code`."""
     assert len(PACKAGE_CODES) >= 30 and "RIVET_AIRFLOW_BINARY_MISSING" in PACKAGE_CODES
-
-
-def test_a_mutants_body_adds_no_code() -> None:
-    """mutmut's `XX` around a code literal lives in a numbered mutant and is not read as a code."""
-    tree = ast.parse('def f():\n    return "RIVET_AIRFLOW_A"\ndef x_f__mutmut_1():\n    return "XXRIVET_AIRFLOW_AXX"\n')
-    assert [c for t in _literals(tree) for c in CODE.findall(t)] == ["RIVET_AIRFLOW_A"]
 
 
 def test_every_refusal_code_is_documented() -> None:

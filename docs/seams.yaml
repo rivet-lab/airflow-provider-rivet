@@ -71,22 +71,15 @@ rules:
     kind: text
     pattern: '^rivet\.[a-z_][a-z_.]*$'
     scope: [airflow_provider_rivet]
-    exceptions:
-      - at: airflow_provider_rivet/invocation.py::*
-        count: 10
-        date: 2026-11-02
-        reason: "event-name literals; the event registry is not written yet"
-        closes: "an events.py registry (seams-7, PR 12)"
-      - at: airflow_provider_rivet/operators.py::*
-        count: 6
-        date: 2026-11-02
-        reason: "event-name literals; the event registry is not written yet"
-        closes: "an events.py registry (seams-7, PR 12)"
-      - at: airflow_provider_rivet/tasklog.py::*
-        count: 16
-        date: 2026-11-02
-        reason: "event-name literals; the event registry is not written yet"
-        closes: "an events.py registry (seams-7, PR 12)"
+    allowed: [airflow_provider_rivet/events.py]
+    exceptions: []
+  - id: refusal-code
+    owner: null
+    kind: text
+    pattern: 'RIVET_AIRFLOW_[A-Z_]+'
+    scope: [airflow_provider_rivet]
+    allowed: [airflow_provider_rivet/codes.py]
+    exceptions: []
   - id: seed-size
     owner: gate/cycle_effect.py::SEED_ORDERS
     kind: text

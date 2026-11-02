@@ -12,6 +12,7 @@ from typing import Any
 
 from . import _yaml
 from .capabilities import GCP_SECRET_MIN_RIVET_VERSION, MIN_RIVET_VERSION, Capabilities, ProbeFailed, probe
+from .codes import Code
 from .exports import entries_of, may_be_cdc, mode_of, name_of
 
 MARKER_NAME = ".rivet_airflow_marker"
@@ -27,7 +28,7 @@ SQLITE_STATE_SCHEME = "sqlite:"
 class PreflightRefusal(Exception):
     """A task the package refuses to start; never retried."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: Code, message: str) -> None:
         super().__init__(f"[{code}] {message}")
         self.code = code
 
@@ -106,7 +107,7 @@ def resolve_binary(rivet_bin: str, env: Mapping[str, str]) -> str:
         found = _packaged_rivet()
     if not found:
         where = " nor installed by the rivet-cli package" if rivet_bin == "rivet" else ""
-        raise PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"no rivet binary `{rivet_bin}` on the worker's PATH{where}")
+        raise PreflightRefusal(Code.BINARY_MISSING, f"no rivet binary `{rivet_bin}` on the worker's PATH{where}")
     return found
 
 
@@ -134,20 +135,18 @@ def read_config_source(
         doc, _ = _yaml.resolve_and_load(text, value_of)
     except (OSError, ValueError, RecursionError, _yaml.yaml.YAMLError) as exc:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_CONFIG_UNREADABLE", f"cannot read config {config_path}: {type(exc).__name__}{_where(exc)}"
+            Code.CONFIG_UNREADABLE, f"cannot read config {config_path}: {type(exc).__name__}{_where(exc)}"
         ) from exc
     if not isinstance(doc, dict):
-        raise PreflightRefusal("RIVET_AIRFLOW_CONFIG_UNREADABLE", f"config {config_path} is not a YAML mapping")
+        raise PreflightRefusal(Code.CONFIG_UNREADABLE, f"config {config_path} is not a YAML mapping")
     exports = doc.get("exports")
     if exports is not None and not isinstance(exports, list):
-        raise PreflightRefusal("RIVET_AIRFLOW_CONFIG_UNREADABLE", f"config {config_path}: `exports` is not a list")
+        raise PreflightRefusal(Code.CONFIG_UNREADABLE, f"config {config_path}: `exports` is not a list")
     for i, entry in enumerate(exports or []):
         if not isinstance(entry, dict):
-            raise PreflightRefusal("RIVET_AIRFLOW_CONFIG_UNREADABLE", f"config {config_path}: `exports[{i}]` is not a mapping")
+            raise PreflightRefusal(Code.CONFIG_UNREADABLE, f"config {config_path}: `exports[{i}]` is not a mapping")
         if "name" in entry and (entry["name"] is None or isinstance(entry["name"], list | dict)):
-            raise PreflightRefusal(
-                "RIVET_AIRFLOW_CONFIG_UNREADABLE", f"config {config_path}: `exports[{i}].name` is not a scalar"
-            )
+            raise PreflightRefusal(Code.CONFIG_UNREADABLE, f"config {config_path}: `exports[{i}].name` is not a scalar")
     return doc, text, value_of
 
 
@@ -161,7 +160,7 @@ def read_config(
 def refuse_unresolved(config_path: str, what: str, value: str) -> None:
     """D06: a placeholder neither `-p` nor the task env resolves; rivet refuses the config, and a guard cannot read it."""
     raise PreflightRefusal(
-        "RIVET_AIRFLOW_CONFIG_UNRESOLVED",
+        Code.CONFIG_UNRESOLVED,
         f"{what} `{value}` of config {config_path} holds a `${{...}}` that neither a `-p` param nor the task's env "
         f"sets; rivet refuses an unresolved placeholder: pass the variable through `env`, `env_passthrough` or `-p`",
     )
@@ -190,7 +189,7 @@ def _read_marker(marker: Path) -> str:
     value = marker.read_text().strip()
     if not value:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY",
+            Code.STATE_DIR_MARKER_EMPTY,
             f"state directory marker {marker} is empty; no run may use this directory until a person deletes it; "
             f"see {SETUP_GUIDE}",
         )
@@ -201,18 +200,18 @@ def check_state_dir(state_dir: str | None) -> Path:
     """The declared directory must be absolute, exist and be writable; it is never created here."""
     if not state_dir:
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_STATE_DIR_REQUIRED",
+            Code.STATE_DIR_REQUIRED,
             f"this task keeps state or a CDC checkpoint on the worker and needs `state_dir`; see {SETUP_GUIDE}",
         )
     path = Path(state_dir)
     if not path.is_absolute() or not path.is_dir():
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_STATE_DIR_MISSING",
+            Code.STATE_DIR_MISSING,
             f"state directory {state_dir} is not an existing absolute directory on this worker; "
             f"it is never created by a task, because an empty one reads as a first run; see {SETUP_GUIDE}",
         )
     if not os.access(path, os.W_OK | os.X_OK):
-        raise PreflightRefusal("RIVET_AIRFLOW_STATE_DIR_NOT_WRITABLE", f"state directory {state_dir} is not writable")
+        raise PreflightRefusal(Code.STATE_DIR_NOT_WRITABLE, f"state directory {state_dir} is not writable")
     return path
 
 
@@ -226,7 +225,7 @@ def check_nothing_left_beside_config(
     left = origin / STATE_DB_NAME
     if state_db is not None and left.exists() and not state_db.exists():
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_STATE_BESIDE_CONFIG",
+            Code.STATE_BESIDE_CONFIG,
             f"{left} exists and {state_db} does not: rivet would start from an empty state there and "
             f"treat every export as a first run. Stop every run of this config, then move the file (with its -wal and "
             f"-shm files) to {state_db}; or delete it if that state is not this pipeline's; see {SETUP_GUIDE}",
@@ -241,7 +240,7 @@ def check_nothing_left_beside_config(
         # An absolute checkpoint is one path from both directories, so it never reads as left behind.
         if (origin / str(ref)).exists() and not (state_dir / str(ref)).exists():
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_CHECKPOINT_BESIDE_CONFIG",
+                Code.CHECKPOINT_BESIDE_CONFIG,
                 f"the checkpoint of `{entry.get('name')}` is at {origin / str(ref)}, and under Airflow the relative "
                 f"`cdc.checkpoint` resolves in the state directory: a stream that starts without its checkpoint "
                 f"re-anchors and skips the changes in between. Stop the stream, then move the file to "
@@ -267,11 +266,11 @@ def run_preflight(
     try:
         caps = probe(binary)
     except ProbeFailed as exc:
-        raise PreflightRefusal("RIVET_AIRFLOW_BINARY_MISSING", f"the rivet binary does not answer its probes: {exc}") from exc
+        raise PreflightRefusal(Code.BINARY_MISSING, f"the rivet binary does not answer its probes: {exc}") from exc
     if not caps.new_enough():
         floor = ".".join(str(n) for n in MIN_RIVET_VERSION)
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_BINARY_TOO_OLD",
+            Code.BINARY_TOO_OLD,
             f"rivet {caps.version_text} at {binary} is older than {floor}, the minimum this package runs",
         )
     config = read_config(config_path, env, _yaml.params_of(extra_args))
@@ -279,7 +278,7 @@ def run_preflight(
     if secret and not caps.at_least(GCP_SECRET_MIN_RIVET_VERSION):
         need = ".".join(str(n) for n in GCP_SECRET_MIN_RIVET_VERSION)
         raise PreflightRefusal(
-            "RIVET_AIRFLOW_BINARY_TOO_OLD",
+            Code.BINARY_TOO_OLD,
             f"config {config_path} names its source by `{secret[0]}`, a Google Secret Manager secret that rivet {need} "
             f"or newer reads; rivet {caps.version_text} at {binary} does not: upgrade rivet to {need} or newer",
         )
@@ -291,19 +290,19 @@ def run_preflight(
         for name in modes:
             if "${" in name:
                 refuse_unresolved(config_path, "export name", name)
-        raise PreflightRefusal("RIVET_AIRFLOW_EXPORT_UNKNOWN", f"config {config_path} has no export `{export}`")
+        raise PreflightRefusal(Code.EXPORT_UNKNOWN, f"config {config_path} has no export `{export}`")
     is_cdc = cdc or any(may_be_cdc(mode) for name, mode in modes.items() if export in (None, name))
 
     if where == "pod":
         if kind != "postgres":
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_STATE_SQLITE_ON_POD",
+                Code.STATE_SQLITE_ON_POD,
                 "this worker is an ephemeral pod and RIVET_STATE_URL is not a postgres URL; SQLite state would be "
                 "lost with the pod and every later task would start from an empty state",
             )
         if is_cdc:
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_CDC_ON_POD",
+                Code.CDC_ON_POD,
                 "CDC is refused on an ephemeral pod: the stream's checkpoint is a file and would live on the pod's "
                 "disk; this holds until rivet stores the checkpoint in the state database",
             )
@@ -315,7 +314,7 @@ def run_preflight(
         others = sorted({m for m in upstream_markers if m and m != result.marker}) if kind == "sqlite" else []
         if others:
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_STATE_DIR_DIFFERS",
+                Code.STATE_DIR_DIFFERS,
                 f"an upstream task of this DAG run used another state directory than {state_dir} on this worker "
                 f"(marker {others[0][:8]} against {result.marker[:8]}); every task must see the same path; see {SETUP_GUIDE}",
             )
@@ -323,7 +322,7 @@ def run_preflight(
         check_nothing_left_beside_config(config_path, config, result.state_dir, state_db, export)
         if kind == "sqlite" and spreads_hosts:
             raise PreflightRefusal(
-                "RIVET_AIRFLOW_STATE_SQLITE_MULTI_HOST",
+                Code.STATE_SQLITE_MULTI_HOST,
                 f"SQLite state in {state_db} lives on this worker's disk, and the {spreads_hosts} may run this DAG's "
                 "next task on another worker, whose empty state would re-read every table and write it again; set "
                 "RIVET_STATE_URL to a PostgreSQL state, or pass single_host=True when this deployment has one worker; "
