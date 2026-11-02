@@ -54,6 +54,7 @@ from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_
 from .tasklog import TaskLog
 
 T = TypeVar("T")
+MODES = ("cdc", "batch")
 
 XCOM_KEY = "return_value"
 
@@ -500,6 +501,12 @@ def _asks_for_cdc(args: Sequence[str]) -> bool:
     return "--mode=cdc" in args or any(a == "--mode" and b == "cdc" for a, b in pairwise(args))
 
 
+def check_mode(mode: str) -> None:
+    """Refuse a source mode other than 'cdc' or 'batch'."""
+    if mode not in MODES:
+        raise ValueError("`mode` is 'cdc' or 'batch'")
+
+
 def _refusal() -> ErrorObject:
     """The error object of a refusal the init makes itself: rivet's `refusal` class, never retried."""
     return ErrorObject(code=None, kind=None, class_="refusal", exit_code=None, retryable=False, action=None)
@@ -524,8 +531,7 @@ class RivetInitOperator(_RivetTask):
 
     def __init__(self, *, mode: str, source_env: str, init_args: Sequence[str] = (), **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        if mode not in ("cdc", "batch"):
-            raise ValueError("`mode` is 'cdc' or 'batch'")
+        check_mode(mode)
         if not (self.env_from_connections or {}).get(source_env):
             raise ValueError(f"env_from_connections names no `{source_env}`, the source `rivet init` reads")
         owned = {"--source", "--source-env", "--source-file", "-o", "--output"} | ({"--mode"} if mode == "cdc" else set())

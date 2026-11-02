@@ -38,6 +38,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
   `_RivetTask._guarded`; the busy-lock retry of the ADR-0039 tasks and the init failure of `RivetInitOperator` stay with
   their own task. No output changes.
+- DAG builders: the batch DAG and each CDC stream build their `load` and `compact` groups through one helper; the DAG's
+  own settings, the refused DAG of a config that cannot be built, and the `mode` check are one function each. No DAG
+  shape changes.
 - Refusal codes and task-log event names are the members of `airflow_provider_rivet.codes.Code` and
   `airflow_provider_rivet.events.Event` (a `StrEnum`, so their text and JSON are unchanged). No output changes.
 
