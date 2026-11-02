@@ -235,3 +235,34 @@ def test_a_checkpoint_in_neither_place_or_in_both_is_not_left_behind(rig: Rig) -
     absolute = {"exports": [{"name": "s", "mode": "cdc", "cdc": {"checkpoint": str(origin / "s.ckpt")}}]}
     (rig.state_dir / "s.ckpt").unlink()
     check_nothing_left_beside_config(str(rig.config), absolute, rig.state_dir, False, None)  # one path from both
+
+
+def test_a_task_that_loses_the_marker_race_returns_the_winners_whole_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ensure_marker: a sibling creates and fills the marker inside this task's create-to-write window."""
+    from airflow_provider_rivet import preflight
+
+    real = preflight.uuid.uuid4
+    sibling: list[str] = []
+    nested = [True]
+
+    def interleaved() -> object:
+        if nested:
+            nested.clear()
+            sibling.append(ensure_marker(tmp_path))
+        return real()
+
+    monkeypatch.setattr(preflight.uuid, "uuid4", interleaved)
+    mine = ensure_marker(tmp_path)
+    assert mine == sibling[0] == (tmp_path / ".rivet_airflow_marker").read_text() != ""
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".rivet_airflow_marker")] == [".rivet_airflow_marker"]
+
+
+@pytest.mark.parametrize("content", ["", "\n"])
+def test_an_empty_marker_is_refused_coded_and_never_read_as_an_identity(tmp_path: Path, content: str) -> None:
+    """ensure_marker: a marker left empty (an older build, a crash) is a refusal, not the directory's identity."""
+    (tmp_path / ".rivet_airflow_marker").write_text(content)
+    with pytest.raises(PreflightRefusal) as refused:
+        ensure_marker(tmp_path)
+    assert refused.value.code == "RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY"

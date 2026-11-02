@@ -172,13 +172,30 @@ def refuse_unresolved(config_path: str, what: str, value: str) -> None:
 def ensure_marker(state_dir: Path) -> str:
     """Read the directory's marker, creating it on the first task that sees the directory."""
     marker = state_dir / MARKER_NAME
+    value = uuid.uuid4().hex
+    staged = state_dir / f".{MARKER_NAME}.{value}"
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
-        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        return marker.read_text().strip()
-    with os.fdopen(fd, "w") as handle:
-        value = uuid.uuid4().hex
-        handle.write(value)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(value)
+        try:
+            os.link(staged, marker)
+        except FileExistsError:
+            return _read_marker(marker)
+    finally:
+        staged.unlink(missing_ok=True)
+    return value
+
+
+def _read_marker(marker: Path) -> str:
+    """The id a task wrote into the marker; an empty marker is refused, as it names no directory."""
+    value = marker.read_text().strip()
+    if not value:
+        raise PreflightRefusal(
+            "RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY",
+            f"state directory marker {marker} is empty; no run may use this directory until a person deletes it; "
+            f"see {SETUP_GUIDE}",
+        )
     return value
 
 

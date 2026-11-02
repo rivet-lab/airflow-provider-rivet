@@ -3,6 +3,15 @@
 All notable changes to `airflow-provider-rivet`. The package is versioned independently of the
 rivet binary; its release tags will use the prefix `airflow-v`.
 
+## Unreleased
+
+### Fixed
+
+- A task that found a state directory's `.rivet_airflow_marker` created but not yet written (another task was between the
+  create and the write) returned an empty identity, which the next task compared as the directory's marker. The marker is
+  now written whole under a staged name and linked into place, so a task that loses the race returns the winner's id; an
+  empty marker is refused `RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY`.
+
 ## 0.4.0 (2026-10-30)
 
 ### Added

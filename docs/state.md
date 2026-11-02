@@ -113,7 +113,8 @@ The file still lives on this worker's disk: it is single-host state.
      `airflow/<dag_id>/plans/<run_id>/<export>.json` files by hand when you no longer need
      them. A run in flight during the upgrade plans again, and its crashed budget starts empty
      (at most one extra crash retry).
-   - `.rivet_airflow_marker`: a random id written by the first task that used the directory.
+   - `.rivet_airflow_marker`: a random id written by the first task that used the directory; an empty one is refused
+     (`RIVET_AIRFLOW_STATE_DIR_MARKER_EMPTY`) until a person deletes it.
 
    The copies and every file under `airflow/` and `logs/` are created with mode `0600`, in
    directories of mode `0700` (an existing `airflow/` or `logs/` directory is tightened).
