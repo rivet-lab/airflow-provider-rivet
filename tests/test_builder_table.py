@@ -205,6 +205,12 @@ RAW_FIELDS = [
         "`name`",
         id="placeholder-in-first-export",
     ),
+    pytest.param(
+        "cdc",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: '${NAME}', mode: cdc, table: t, cdc: {checkpoint: ./s.ckpt}}\n",
+        "`name`",
+        id="cdc-export-name",
+    ),
 ]
 
 
