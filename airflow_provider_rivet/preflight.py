@@ -183,7 +183,7 @@ def ensure_marker(state_dir: Path) -> str:
         except FileExistsError:
             return _read_marker(marker)
     finally:
-        staged.unlink(missing_ok=True)
+        staged.unlink()
     return value
 
 
