@@ -25,11 +25,11 @@ IGNORED = shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache"
 def _functions(tree: ast.Module):
     """(the mutmut name, node) of every module-level function and of every method of a module-level class."""
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
+        if isinstance(node, ast.FunctionDef) and "__mutmut_" not in node.name:
             yield f"x_{node.name}", node
         elif isinstance(node, ast.ClassDef):
             for sub in node.body:
-                if isinstance(sub, ast.FunctionDef):
+                if isinstance(sub, ast.FunctionDef) and "__mutmut_" not in sub.name:
                     yield f"xǁ{node.name}ǁ{sub.name}", sub
 
 

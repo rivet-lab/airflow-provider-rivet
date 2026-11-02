@@ -15,10 +15,9 @@ from typing import Any
 
 from .operators import XCOM_KEY
 from .reading import _json_of
-from .result import REFUSED, airflow_retries, error_text, redact
+from .result import REFUSED, airflow_retries, redact
 from .stderr import tail_lines
 
-MAX_UNITS = 10
 # the thread's code block; a webhook message carries title and link too, and stays under Slack's 4000
 THREAD_TEXT_LIMIT = 3500
 WEBHOOK_TEXT_LIMIT = 3000
@@ -32,47 +31,6 @@ def _failed_units(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if not failed and payload.get("error"):
         failed = [{"error": payload["error"]}]  # its name is read with `.get`: `(process)`, no table
     return failed
-
-
-def _retry_word(error: Mapping[str, Any]) -> str:
-    return "retryable" if error.get("retryable") else "not retryable"
-
-
-def _class_and_retry(error: Mapping[str, Any]) -> str:
-    """`class` (retryable); the class alone when it is the retry word itself (`retryable` (retryable) said it twice)."""
-    cls, retry = error.get("class"), _retry_word(error)
-    if not cls or cls == retry:
-        return f"({retry})"
-    return f"`{cls}` ({retry})"
-
-
-def format_failure(payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, run_id: str, log_url: str = "") -> str:
-    """A Slack message from the XCom payload: code, class, action and unit, and rivet's error text on one line."""
-    lines = [f":x: *{dag_id}.{task_id}* failed (run `{run_id}`)"]
-    payload = payload or {}
-    if reason := _reason(payload):
-        lines.append(f"rivet said: {reason}")
-    if payload.get(REFUSED):
-        lines.append(f"refused before rivet started: `{payload[REFUSED]}`")
-    failed = _failed_units(payload)
-    for unit in failed[:MAX_UNITS]:
-        error = unit["error"]
-        name = unit.get("export") or "(process)"
-        if unit.get("table"):
-            name += f" / {unit['table']}"
-        code = f"`{error['code']}` " if error.get("code") else ""
-        lines.append(f"• *{name}*: {code}{_class_and_retry(error)}")
-        if error.get("action"):
-            lines.append(f"    action: {error['action']}")
-    if len(failed) > MAX_UNITS:
-        lines.append(f"… and {len(failed) - MAX_UNITS} more failed units")
-    if not payload:
-        lines.append("no rivet result was published for this try (the task died outside the operator)")
-    if payload.get("stderr_path"):
-        lines.append(f"stderr on the worker: `{payload['stderr_path']}`")
-    if log_url:
-        lines.append(f"<{log_url}|task log>")
-    return "\n".join(lines)
 
 
 def format_title(
@@ -121,21 +79,20 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
     return found or plain  # the human `Error:` line repeats the object when both are printed
 
 
-def _reason(payload: Mapping[str, Any]) -> str | None:
-    """rivet's error text of the failed step on one line (`result.error_text`): its last error line."""
-    errors = _rivet_errors(payload)
-    return error_text(errors[-1][1]) if errors else None
+def _actions(payload: Mapping[str, Any]) -> list[str]:
+    """Each failed unit's remedy as an `action:` line, once each, in unit order."""
+    return list(dict.fromkeys(f"action: {u['error']['action']}" for u in _failed_units(payload) if u["error"].get("action")))
 
 
 def format_error_text(payload: Mapping[str, Any] | None, *, exception: Any = None, limit: int, log_url: str = "") -> str:
-    """The thread's text: rivet's error line(s) of the failed step, else the exception's message; redacted, capped.
-
-    No traceback and no other stderr. When the text is cut, the last line says so and points at the task log.
-    """
-    lines = [f"[{code}] {text}" if code else text for code, text in _rivet_errors(payload or {})]
-    if not lines and exception is not None:
-        lines = [str(exception) or type(exception).__name__]
-    text = redact("\n".join(lines) or "no error text: the task failed without a rivet result or an exception")
+    """The thread's text: the remedies, then rivet's error line(s) or the exception's message; redacted, capped."""
+    payload = payload or {}
+    errors = [f"[{code}] {text}" if code else text for code, text in _rivet_errors(payload)]
+    if not errors and exception is not None:
+        errors = [str(exception) or type(exception).__name__]
+    text = redact(
+        "\n".join([*_actions(payload), *errors]) or "no error text: the task failed without a rivet result or an exception"
+    )
     if len(text) <= limit:
         return text
     tail = f"\n… truncated, full log: {log_url or 'the task log'}"

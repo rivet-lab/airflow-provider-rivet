@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 from conftest import DOCS, FakeTI, fixture
+from test_slack_alerts import posted
 
 from airflow_provider_rivet import __version__, get_provider_info
 from airflow_provider_rivet._compat import AirflowFailException
-from airflow_provider_rivet.callbacks import format_failure
 from airflow_provider_rivet.dags import build_batch_dag, build_cdc_dag, build_config_dag, read_plan_layout
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetRunOperator, RivetRunWatcher, RivetWaveBarrier
 
@@ -311,15 +311,15 @@ def test_the_provider_entry_point_names_the_distribution_and_the_version_has_one
     assert metadata.version("airflow-provider-rivet") == __version__
 
 
-def test_the_slack_text_has_code_class_action_and_no_error_message() -> None:
+def test_the_slack_text_has_the_remedy_and_no_error_message(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {"units": [fixture("xcom_unit.json"), fixture("xcom_unit_load.json")], "stderr_path": "/state/logs/x.log"}
-    text = format_failure(payload, dag_id="d", task_id="apply.orders_cdc", run_id="r1", log_url="http://af/log")
-    assert "*d.apply.orders_cdc* failed" in text and "`RIVET_SOURCE_CDC_LOG_GAP` `refusal` (not retryable)" in text
-    assert "action: restore the missing log" in text and "/state/logs/x.log" in text and "<http://af/log|task log>" in text
-    assert "no longer in the source log" not in text and text.count("•") == 1
-    refused = format_failure({"preflight_refusal": "RIVET_AIRFLOW_CDC_ON_POD", "units": []}, dag_id="d", task_id="t", run_id="r")
-    assert "RIVET_AIRFLOW_CDC_ON_POD" in refused
-    assert "no rivet result" in format_failure(None, dag_id="d", task_id="t", run_id="r")
+    text = posted(monkeypatch, payload, task_id="apply.orders_cdc")
+    assert text.split("\n")[0] == ":x: *d.apply.orders_cdc — RIVET_SOURCE_CDC_LOG_GAP (final)*"
+    assert "action: restore the missing log" in text and "/state/logs/x.log" not in text
+    assert "no longer in the source log" not in text
+    refused = posted(monkeypatch, {"preflight_refusal": "RIVET_AIRFLOW_CDC_ON_POD", "units": []})
+    assert refused.split("\n")[0] == ":x: *d.apply.users — RIVET_AIRFLOW_CDC_ON_POD (final)*"
+    assert "no rivet result" in posted(monkeypatch, None)
 
 
 GATED = ("all_success",)

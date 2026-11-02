@@ -9,9 +9,10 @@ import pytest
 from airflow.exceptions import AirflowException, AirflowFailException
 from conftest import FakeTI, Rig
 from test_refusal_codes import PACKAGE_CODES
+from test_slack_alerts import posted_for
 
 from airflow_provider_rivet import operators
-from airflow_provider_rivet.callbacks import format_failure, format_title
+from airflow_provider_rivet.callbacks import format_title
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetBaseOperator, RivetConfigRefused, RivetRunOperator
 from airflow_provider_rivet.preflight import PreflightRefusal
 
@@ -50,12 +51,13 @@ def test_a_refusal_before_rivet_is_on_every_surface(rig: Rig, monkeypatch: pytes
     payload = ti.store[("task", "return_value")]
     assert payload == {"command": "apply", "decision": "fail", "preflight_refusal": code, "units": []}
     assert any(f"REFUSED [{code}]" in line for line in lines.lines)
-    text = format_failure(payload, dag_id=ti.dag_id, task_id=ti.task_id, run_id=ti.run_id)
-    assert f"refused before rivet started: `{code}`" in text
+    text = posted_for(monkeypatch, ti, exc)
+    assert text.split("\n")[0] == f":x: *dag.{ti.task_id} — {code} (final)*"
+    assert "refused for the surface test" in text
 
 
 @pytest.mark.parametrize("code", PACKAGE_CODES)
-def test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry(code: str) -> None:
+def test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
     """A config no DAG can be built from: its one task fails without retry, publishes the code and reads on Slack."""
     refusal = PreflightRefusal(code, "refused for the surface test")
     ti = FakeTI(task_id="config", try_number=1, max_tries=0)
@@ -65,8 +67,9 @@ def test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry(code
     assert str(exc.value) == str(refusal)
     payload = ti.store[("config", "return_value")]
     assert payload["preflight_refusal"] == code and payload["decision"] == "fail"
-    text = format_failure(payload, dag_id="dag", task_id="config", run_id=ti.run_id)
-    assert f"refused before rivet started: `{code}`" in text
+    text = posted_for(monkeypatch, ti, exc.value)
+    assert text.split("\n")[0] == f":x: *dag.{ti.task_id} — {code} (final)*"
+    assert "refused for the surface test" in text
 
 
 def test_a_source_timeout_is_retried_and_says_so_on_every_surface(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,6 +91,7 @@ def test_a_source_timeout_is_retried_and_says_so_on_every_surface(rig: Rig, monk
     assert any("RIVET_SOURCE_TIMEOUT" in line and "retryable" in line for line in lines.lines)
     title = format_title(payload, dag_id="dag", task_id="task", try_number=1, max_tries=2)
     assert title == "dag.task — RIVET_SOURCE_TIMEOUT (retryable)"
+    assert posted_for(monkeypatch, ti).split("\n")[0] == f":x: *dag.{ti.task_id} — RIVET_SOURCE_TIMEOUT (retryable)*"
 
 
 def test_an_empty_source_is_a_success_on_every_surface(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
