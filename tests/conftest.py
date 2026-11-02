@@ -8,8 +8,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -208,6 +210,32 @@ def own_temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(tempfile, "tempdir", str(path))
     monkeypatch.delenv("RIVET_STATE_URL", raising=False)
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_inherited_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every GIT_* variable: a git hook exports GIT_DIR into the process that runs pytest."""
+    for name in [n for n in os.environ if n.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
+def real_repo_state(repo: Path) -> tuple[str, str, str]:
+    """HEAD, porcelain status and core.bare of `repo`, read with no GIT_* variable."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env).stdout
+
+    return git("rev-parse", "HEAD"), git("status", "--porcelain"), git("config", "--get", "core.bare")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def real_repository_untouched() -> Iterator[None]:
+    """The repository this package lives in keeps its HEAD, status and core.bare across the whole session."""
+    before = real_repo_state(PACKAGE_ROOT)
+    yield
+    after = real_repo_state(PACKAGE_ROOT)
+    assert after == before, f"the test session changed the real repository: {before!r} -> {after!r}"
 
 
 @pytest.fixture
