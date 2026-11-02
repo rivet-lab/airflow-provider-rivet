@@ -29,6 +29,7 @@ from . import _yaml
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
+from .stderr import JSON_ERRORS, lines_of, tail_lines
 
 Emit = Callable[[dict[str, Any]], None]
 ENV_ALLOWLIST = (
@@ -42,7 +43,6 @@ CLOUD_ENV = {
     "aws": ("AWS_*",),
     "azure": ("AZURE_*",),
 }
-STDERR_TAIL = 1 << 20
 STOP_GRACE = 30.0  # seconds a stopped rivet process gets between SIGTERM and SIGKILL
 QUERY_OWNERS = ".rivet_airflow_query_files.json"
 STALE_AFTER = 24 * 3600  # seconds after which an expired plan artifact or an untouched crashed ledger is pruned
@@ -350,12 +350,12 @@ class _Session:
             }
         )
         self.stderr_path = str(stderr_path)
-        lines = _lines(_tail(stderr_path))
+        lines, truncated = tail_lines(stderr_path)
         if self.req.stream_stderr:
             for raw in lines:
                 self.emit({"event": "rivet.stderr", "step": name, "line": raw})
         signal = -code if code < 0 else None
-        return _Step(None if signal else code, signal, _error_line(lines), _has_broken_object(lines))
+        return _Step(None if signal else code, signal, _error_line(lines), truncated or _has_broken_object(lines))
 
     def step_with_result(self, name: str, argv: list[str], result: Path) -> tuple[_Step, ErrorObject | None, Any]:
         """Run a step asked to write `result`, classify its exit, read and remove the file."""
@@ -521,17 +521,6 @@ def _prune_logs(folder: Path, keep: int) -> None:
                 entry.unlink(missing_ok=True)  # pragma: no mutate - just listed; gone only if a parallel task removed it
     except OSError:
         return
-
-
-def _tail(path: Path) -> str:
-    """The last STDERR_TAIL bytes of a file, as text; when that cuts a line, from the next whole line."""
-    with open(path, "rb") as handle:
-        size = handle.seek(0, os.SEEK_END)
-        start = handle.seek(max(0, size - STDERR_TAIL))
-        data = handle.read()
-    if start > 0:
-        data = data[data.find(b"\n") + 1 :]
-    return data.decode(errors="replace")
 
 
 def copy_name(source: Path) -> str:
@@ -781,29 +770,17 @@ class Running:
                     self.proc.kill()
 
 
-def _lines(stderr_text: str) -> list[str]:
-    """The lines of rivet's stderr: cut at "\n" only, a trailing "\r" dropped (D01).
-
-    `str.splitlines` also cuts at U+2028, U+2029, U+0085 and C0 separators, which rivet leaves raw inside the JSON
-    string of a `--json-errors` line.
-    """
-    pieces = stderr_text.split("\n")
-    if pieces and pieces[-1] == "":
-        pieces.pop()
-    return [piece.removesuffix("\r") for piece in pieces]
-
-
 def _error_line(stderr: str | list[str]) -> dict[str, Any] | None:
-    """The last line of the stderr tail that is a JSON object with `exit_class`: the `--json-errors` line."""
-    for raw in reversed(_lines(stderr) if isinstance(stderr, str) else stderr):
+    """The last stderr line that is a JSON object with `exit_class` or the contract's `class` / `retryable`."""
+    for raw in reversed(lines_of(stderr) if isinstance(stderr, str) else stderr):
         raw = raw.strip()
         if not raw.startswith("{"):
             continue
         try:
             obj = json.loads(raw)
-        except ValueError:
+        except JSON_ERRORS:
             continue
-        if isinstance(obj, dict) and "exit_class" in obj:
+        if isinstance(obj, dict) and ("exit_class" in obj or "class" in obj or "retryable" in obj):
             return obj
     return None
 
@@ -815,7 +792,7 @@ def _has_broken_object(lines: list[str]) -> bool:
         if raw.startswith("{"):
             try:
                 json.loads(raw)
-            except ValueError:
+            except JSON_ERRORS:
                 return True
     return False
 

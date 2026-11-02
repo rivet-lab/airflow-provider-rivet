@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from airflow_provider_rivet import invocation
+from airflow_provider_rivet import invocation, stderr
 from airflow_provider_rivet.preflight import PreflightRefusal
 from airflow_provider_rivet.reading import Reading
 
@@ -94,36 +94,46 @@ def test_an_atomic_write_renames_a_hidden_temp_file_from_the_target_directory(
 
 @pytest.mark.parametrize("extra", [1, 7])
 def test_a_long_stderr_is_read_from_the_first_whole_line_of_its_last_tail_bytes(tmp_path: Path, extra: int) -> None:
-    """_tail 10/11/12/23-29: the cut starts `extra` bytes into the file, inside the first line; the tail is every
-    whole line after it (several lines, so `rfind` is not `find`), byte-exact."""
+    """The cut starts `extra` bytes into the first line, so that line is dropped; every whole line after it is read."""
     path = tmp_path / "e.log"
     first = b"x" * (extra + 3) + b"\n"
-    body = first + b"second line\n" + b"y" * (invocation.STDERR_TAIL - 22) + b"\nlast\n"
+    body = first + b"second line\n" + b"y" * (stderr.STDERR_TAIL - 22) + b"\nlast\n"
     path.write_bytes(body)
-    tail = invocation._tail(path)
-    start = len(body) - invocation.STDERR_TAIL
-    assert start == extra
-    window = body[start:]
-    assert tail == window[window.find(b"\n") + 1 :].decode()
-    assert tail.startswith("second line\n") and tail.count("\n") >= 2
+    assert len(body) - stderr.STDERR_TAIL == extra
+    assert stderr.tail_lines(path) == (["second line", "y" * (stderr.STDERR_TAIL - 22), "last"], False)
 
 
 def test_a_cut_that_lands_on_a_newline_keeps_the_line_after_it(tmp_path: Path) -> None:
-    """_tail 12: the window starts exactly at the first line's newline, so the tail is everything after that newline
-    (seeking one byte further would drop the next whole line)."""
+    """The window starts exactly at the first line's newline, so the line after it is whole and read."""
     path = tmp_path / "e.log"
     extra = 4
-    body = b"x" * extra + b"\n" + b"second line\n" + b"y" * (invocation.STDERR_TAIL - 19) + b"\nlast\n"
-    assert len(body) == invocation.STDERR_TAIL + extra
+    body = b"x" * extra + b"\n" + b"second line\n" + b"y" * (stderr.STDERR_TAIL - 19) + b"\nlast\n"
+    assert len(body) == stderr.STDERR_TAIL + extra
     path.write_bytes(body)
-    assert invocation._tail(path) == body[extra + 1 :].decode()
+    assert stderr.tail_lines(path)[0] == ["second line", "y" * (stderr.STDERR_TAIL - 19), "last"]
+
+
+def test_a_window_that_starts_a_line_keeps_that_line(tmp_path: Path) -> None:
+    """The byte before the window is a newline: the window's first line is whole."""
+    path = tmp_path / "e.log"
+    head = b"Error: before\n"
+    body = b"Error: first\n" + b"y" * (stderr.STDERR_TAIL - 13)
+    path.write_bytes(head + body)
+    assert stderr.tail_lines(path)[0][0] == "Error: first"
+
+
+def test_a_last_line_longer_than_the_window_is_reported_as_truncated(tmp_path: Path) -> None:
+    """The window holds only the middle of the last line: no whole line is left, and the reader says so."""
+    path = tmp_path / "e.log"
+    path.write_bytes(b"{" + b"x" * (stderr.STDERR_TAIL + 10) + b"}\n")
+    assert stderr.tail_lines(path) == ([], True)
 
 
 def test_an_undecodable_byte_in_the_tail_is_replaced_not_raised(tmp_path: Path) -> None:
-    """_tail 31/32."""
+    """Invalid UTF-8 is replaced, not raised."""
     path = tmp_path / "e.log"
     path.write_bytes(b"bad \xff byte\n")
-    assert invocation._tail(path) == "bad � byte\n"
+    assert stderr.tail_lines(path) == (["bad � byte"], False)
 
 
 # --- the temp base --------------------------------------------------------------------------------------------------

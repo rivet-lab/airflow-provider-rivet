@@ -3,6 +3,20 @@
 All notable changes to `airflow-provider-rivet`. The package is versioned independently of the
 rivet binary; its release tags will use the prefix `airflow-v`.
 
+## Unreleased
+
+### Fixed
+
+- A failed step whose error line is longer than the 1 MiB read of rivet's stderr file is no longer classified as a
+  generic failure without a trace: the step records `result_malformed`, as for a cut line. The window's end is read
+  line by line; a line cut by the window is never read in part.
+- The failure alert reads rivet's stderr with the same window as the step (1 MiB, was 64 KiB): an error line of up to
+  1 MiB is quoted in the Slack thread, and the classifier and the alert no longer disagree on which line is the error.
+- A stderr line nested past the JSON parser's depth is not an unclassified `RecursionError`: the step, the summary file
+  and the alert skip it as they skip any line that is not JSON.
+- An error line printed with the contract's keys (`class`, `retryable`) and no `exit_class` is read by the step as the
+  contract says, not as a generic failure.
+
 ## 0.4.0 (2026-10-30)
 
 ### Added
