@@ -15,6 +15,13 @@ def _note(report: pytest.TestReport | pytest.CollectReport) -> None:
         _SKIPPED.append(report.nodeid)
 
 
+@pytest.fixture(autouse=True)
+def no_inherited_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every GIT_* variable: a git hook exports GIT_DIR into the process that runs pytest."""
+    for name in [n for n in os.environ if n.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
 def pytest_collectreport(report: pytest.CollectReport) -> None:
     """Record module-level skips."""
     _note(report)
