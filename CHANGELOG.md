@@ -41,6 +41,10 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- An init draft that `rivet init` and `rivet check` accept but the config reader refuses (`exports` not a list, an
+  unreadable file) is published as `RIVET_AIRFLOW_CONFIG_UNREADABLE`: the XCom payload, the task-log block and the
+  Slack text, with no retry. It escaped as an unpublished `PreflightRefusal` before.
+
 - A `${...}` the DAG builders cannot resolve at parse time in a field that decides which tasks a DAG has (the export
   `name`, a CDC export's `table` / `tables` and `cdc.backfill`, the top-level `load`, `keyset_incremental`, `chunk_by_key`,
   `source.type`, `source.url_env` and `source.mongo.resume` / `page_size`) is refused as `RIVET_AIRFLOW_CONFIG_UNRESOLVED`,
