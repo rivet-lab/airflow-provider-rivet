@@ -16,6 +16,14 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   slot and gate, and refuses a broken config as a DAG; a `${VAR}` scalar builds the DAG of its resolved value or a coded
   refusal. The `${VAR}` name and top-level `load` cases are strict xfails until they are fixed.
 
+- Tests: `tests/test_architecture.py` reads `docs/seams.yaml` and scans the package for a bypass of each seam: a stderr
+  JSON parse outside `reading._json_of`, a raw `AirflowFailException` outside `_fail`, an `exited N` text outside its
+  owner, an export entry's `name` read beside `exports.py`, a `rivet.` event literal, a seeded row count in `gate/`, a
+  `{name}` placeholder beside an f-string, and a module constant defined in two modules. An open site is an exception
+  with its date, reason and `closes`; a count is exact, so a new site and a fixed one both fail until the file says so.
+- The failure callback and the step's error line parse rivet's stderr lines through `reading._json_of`, as the summary
+  does: the same result, one parser.
+
 ### Changed (behaviour change)
 
 - A release publishes to PyPI only after the live gate passes on its tag: `release.yml` calls `gate.yml`, and `publish` needs both the build and the gate.

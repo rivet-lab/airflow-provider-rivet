@@ -34,8 +34,8 @@ class _Step:
     broken: bool = False
 
 
-def _json_of(raw: bytes) -> Any:
-    """The JSON document of some bytes, `None` when they are not one (not UTF-8 included)."""
+def _json_of(raw: str | bytes) -> Any:
+    """The JSON document of some text or bytes, `None` when they are not one (not UTF-8 included)."""
     try:
         return json.loads(raw)
     except JSON_ERRORS:

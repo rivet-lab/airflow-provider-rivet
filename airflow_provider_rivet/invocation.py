@@ -29,7 +29,7 @@ from . import _yaml
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
-from .stderr import JSON_ERRORS, lines_of, tail_lines
+from .stderr import lines_of, tail_lines
 
 Emit = Callable[[dict[str, Any]], None]
 ENV_ALLOWLIST = (
@@ -776,10 +776,7 @@ def _error_line(stderr: str | list[str]) -> dict[str, Any] | None:
         raw = raw.strip()
         if not raw.startswith("{"):
             continue
-        try:
-            obj = json.loads(raw)
-        except JSON_ERRORS:
-            continue
+        obj = _json_of(raw)
         if isinstance(obj, dict) and ("exit_class" in obj or "class" in obj or "retryable" in obj):
             return obj
     return None
@@ -789,11 +786,8 @@ def _has_broken_object(lines: list[str]) -> bool:
     """True when a stderr line starts like a JSON object and does not parse: a cut or garbled error line (D01)."""
     for raw in lines:
         raw = raw.strip()
-        if raw.startswith("{"):
-            try:
-                json.loads(raw)
-            except JSON_ERRORS:
-                return True
+        if raw.startswith("{") and _json_of(raw) is None:
+            return True
     return False
 
 
