@@ -1,6 +1,4 @@
-# Seams of airflow_provider_rivet: each rule names the owner of one fact and the bypasses still open.
-# tests/test_architecture.py reads this file and scans the modules. Counts are exact: a new site fails, and a site that
-# is gone fails until its count is lowered. Each exception keeps the date it was made, why, and what closes it.
+# Seams of airflow_provider_rivet, read by tests/test_architecture.py; exception counts are exact.
 rules:
   - id: json-loads
     owner: airflow_provider_rivet/reading.py::_json_of
