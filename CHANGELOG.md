@@ -7,6 +7,11 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- Guard: `docs/failure-surface-matrix.yaml` has a row for every refusal code the package raises (derived from the
+  source) and for rivet's exit, signal, timeout, empty source and init draft. Each row names what each of the five
+  operator surfaces (exception, task log, Slack text, XCom, retry decision) shows, as a test that exists or a dated gap.
+  `tests/test_failure_surfaces.py` holds the tests it cites. No product code changes.
+
 - Repo guards for the harness: every CI job's skips are graded against a dated ledger (`dev/skip_census.py`), the gate
   job name and the matrix follow the `--airflow` default, the release publish `needs` is pinned by a dated ledger,
   weak asserts are ratcheted (`dev/test_checks.py`), dated ledgers are linted, and every `dev/` module is tested or
