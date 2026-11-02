@@ -3,6 +3,14 @@
 All notable changes to `airflow-provider-rivet`. The package is versioned independently of the
 rivet binary; its release tags will use the prefix `airflow-v`.
 
+## Unreleased
+
+### Fixed
+
+- The Slack alert title says `retryable` only when Airflow runs another try (the same rule as the task log): a failure on
+  the last try, or a crash past its budget, is titled `final`.
+- A resolved config value that holds U+E000 or U+E001 is read as written; only an unresolved `${name}` is spelled back.
+
 ## 0.4.0 (2026-10-30)
 
 ### Added

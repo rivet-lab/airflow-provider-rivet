@@ -59,3 +59,9 @@ def test_a_trailing_param_flag_with_no_value_is_ignored() -> None:
     """params_of 12, 15, 17: `-p` / `--param` as the last argument."""
     assert _yaml.params_of(["-p", "A=1", "-p"]) == {"A": "1"}
     assert _yaml.params_of(["--param"]) == {}
+
+
+def test_a_resolved_value_holding_the_mask_marks_is_read_as_written() -> None:
+    """hostile-input-4: only an unresolved placeholder is unmasked; a value's own private-use characters stay."""
+    doc, unresolved = _yaml.resolve_and_load("a: ${PW}\nb: ${U}\n", lambda name: "xU" if name == "PW" else None)
+    assert doc == {"a": "xU", "b": "${U}"} and unresolved == ["U"]

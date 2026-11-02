@@ -132,7 +132,10 @@ def test_a_final_refusal_among_a_retryable_crash_is_titled_final(rig: Rig) -> No
     assert isinstance(exc, AirflowFailException)
     payload = payload_of(ti)
     assert [u["error"]["class"] for u in payload["units"]] == ["crashed", "refusal"]
-    assert format_title(payload, dag_id="d", task_id="run") == "d.run — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
+    assert (
+        format_title(payload, dag_id="d", task_id="run", try_number=1, max_tries=1)
+        == "d.run — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
+    )
 
 
 def unit(code: str | None, cls: str, retryable: bool, export: str) -> dict[str, Any]:
@@ -144,14 +147,20 @@ def test_the_title_reads_the_deciding_error_and_counts_the_other_failed_units() 
     crashed, gap = unit(None, "crashed", True, "a"), unit("RIVET_SOURCE_CDC_LOG_GAP", "refusal", False, "b")
     gap_error = gap["error"]
     deciding = {"units": [crashed, gap], "error": gap_error}
-    assert format_title(deciding, dag_id="d", task_id="t") == "d.t — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
+    assert (
+        format_title(deciding, dag_id="d", task_id="t", try_number=1, max_tries=1)
+        == "d.t — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
+    )
     timeout = unit("RIVET_SOURCE_TIMEOUT", "retryable", True, "a")["error"]
     synthetic = {"decision": "fail", "units": [unit("RIVET_SOURCE_TIMEOUT", "retryable", True, "a"), gap], "error": gap_error}
-    assert format_title(synthetic, dag_id="d", task_id="t") == "d.t — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
-    # unchanged: a payload with no process-level error is titled by its first failed unit, as before
-    assert format_title({"units": [crashed, gap]}, dag_id="d", task_id="t") == "d.t — crashed (retryable) +1 more"
-    # unchanged: a process-level error with no failed unit is the only failure
-    assert format_title({"units": [], "error": timeout}, dag_id="d", task_id="t") == "d.t — RIVET_SOURCE_TIMEOUT (retryable)"
+    assert (
+        format_title(synthetic, dag_id="d", task_id="t", try_number=1, max_tries=1)
+        == "d.t — RIVET_SOURCE_CDC_LOG_GAP (final) +1 more"
+    )
+    crash_retry = {"decision": "retry_crashed", "crashed_retry": True, "units": [crashed, gap]}
+    assert format_title(crash_retry, dag_id="d", task_id="t", try_number=1, max_tries=1) == "d.t — crashed (retryable) +1 more"
+    retry = {"decision": "retry", "units": [], "error": timeout}
+    assert format_title(retry, dag_id="d", task_id="t", try_number=1, max_tries=1) == "d.t — RIVET_SOURCE_TIMEOUT (retryable)"
 
 
 # --- the lock a headline names ----------------------------------------------------------------------------------------

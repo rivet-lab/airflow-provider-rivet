@@ -94,11 +94,39 @@ def test_the_class_word_is_dropped_when_it_is_the_retry_word_or_missing() -> Non
 
 def test_the_title_counts_the_other_failed_units_and_falls_back_to_the_class() -> None:
     """x_format_title: the first failed unit's code, else its class, else `rivet failed`; `+N more` for the rest."""
-    three = {"units": [failed("a", err(None, "crashed", True)), failed("b", err()), failed("c", err())]}
-    assert format_title(three, dag_id="d", task_id="t") == "d.t — crashed (retryable) +2 more"
+    three = {
+        "decision": "retry_crashed",
+        "crashed_retry": True,
+        "units": [failed("a", err(None, "crashed", True)), failed("b", err()), failed("c", err())],
+    }
+    assert format_title(three, dag_id="d", task_id="t", try_number=1, max_tries=1) == "d.t — crashed (retryable) +2 more"
     bare = {"units": [failed("a", {"code": None, "class": None, "retryable": False})]}
-    assert format_title(bare, dag_id="d", task_id="t") == "d.t — rivet failed (final)"
-    assert format_title({}, dag_id="d", task_id="t", exception="not an exception") == "d.t — failed, no rivet result"
+    assert format_title(bare, dag_id="d", task_id="t", try_number=1, max_tries=1) == "d.t — rivet failed (final)"
+    assert (
+        format_title({}, dag_id="d", task_id="t", try_number=1, max_tries=1, exception="not an exception")
+        == "d.t — failed, no rivet result"
+    )
+
+
+@pytest.mark.parametrize(
+    ("decision", "crashed_retry", "try_number", "word"),
+    [
+        ("retry", None, 1, "retryable"),
+        ("retry", None, 2, "final"),
+        ("fail", None, 1, "final"),
+        ("retry_crashed", True, 1, "retryable"),
+        ("retry_crashed", True, 2, "final"),
+        ("retry_crashed", False, 1, "final"),
+    ],
+)
+def test_the_title_says_retryable_only_when_airflow_runs_another_try(
+    decision: str, crashed_retry: bool | None, try_number: int, word: str
+) -> None:
+    """message-truth-1: the title's retry word is the decision Airflow acts on, as the task log's is (max_tries 1)."""
+    payload = {"decision": decision, "units": [failed("a", err(None, "crashed", True))]}
+    if crashed_retry is not None:
+        payload["crashed_retry"] = crashed_retry
+    assert format_title(payload, dag_id="d", task_id="t", try_number=try_number, max_tries=1) == f"d.t — crashed ({word})"
 
 
 # --- rivet's error line from the stderr file ------------------------------------------------------------------------
@@ -180,6 +208,7 @@ class TI:
 
     def __init__(self, pull: Any, map_index: Any = -1, log_url: Any = "http://af/l", run_id: str = "ti_run") -> None:
         self.dag_id, self.task_id, self.map_index, self.log_url, self.run_id = "d", "apply.users", map_index, log_url, run_id
+        self.try_number, self.max_tries = 1, 1
         self.pull, self.pulled = pull, []
 
     def xcom_pull(self, **kwargs: Any) -> Any:
@@ -311,6 +340,7 @@ class BareTI:
     """A task instance with no `map_index`, `run_id` or `log_url` attribute at all (a custom or older runtime)."""
 
     dag_id, task_id = "d", "apply.users"
+    try_number, max_tries = 1, 1
 
     def __init__(self) -> None:
         self.pulled: list = []

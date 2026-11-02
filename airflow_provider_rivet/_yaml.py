@@ -28,6 +28,7 @@ class ScalarFloat(float):
 _INT = re.compile(r"^(?:[-+]?(?:0|[1-9][0-9]*)|\+?0x[0-9a-fA-F]+|\+?0o[0-7]+|\+?0b[01]+|-0x[0-9a-fA-F]+|-0o[0-7]+|-0b[01]+)$")
 _FLOAT = re.compile(r"^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$")
 _LEADING_ZERO = re.compile(r"^[-+]?0[0-9]+$")
+_PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 _CORE = (
     ("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF")),
     ("tag:yaml.org,2002:int", _INT, list("-+0123456789")),
@@ -95,10 +96,8 @@ def text_of(value: Any) -> str | None:
     return getattr(value, "text", None) or str(value)
 
 
-def substitute(text: str, value_of: Callable[[str], str | None]) -> tuple[str, list[str]]:
-    """rivet's one scan of `${name}` (src/config/resolve.rs `substitute`): `${}` becomes empty, an unclosed `${` ends the
-    scan, a value is never scanned again. A name `value_of` cannot resolve stays, masked so it parses as plain text
-    (rivet's `masked`), and is returned; rivet itself refuses such a config."""
+def substitute(text: str, value_of: Callable[[str], str | None], mask: tuple[str, str] = MASK) -> tuple[str, list[str]]:
+    """rivet's one scan of `${name}`, with an unresolved name masked and returned."""
     unresolved: list[str] = []
     out, i = [], 0
     while (start := text.find("${", i)) >= 0:
@@ -109,21 +108,21 @@ def substitute(text: str, value_of: Callable[[str], str | None]) -> tuple[str, l
         value = "" if not name else value_of(name)
         if value is None:
             unresolved.append(name)
-            value = f"{MASK[0]}{name}{MASK[1]}"
+            value = f"{mask[0]}{name}{mask[1]}"
         out += [text[i:start], value]
         i = end + 1
     out.append(text[i:])
     return "".join(out), unresolved
 
 
-def unmasked(value: Any) -> Any:
+def unmasked(value: Any, mask: tuple[str, str] = MASK) -> Any:
     """A parsed value with its unresolved placeholders spelled `${name}` again."""
     if isinstance(value, str):
-        return value.replace(MASK[0], "${").replace(MASK[1], "}")
+        return value.replace(mask[0], "${").replace(mask[1], "}")
     if isinstance(value, list):
-        return [unmasked(v) for v in value]
+        return [unmasked(v, mask) for v in value]
     if isinstance(value, dict):
-        return {unmasked(k): unmasked(v) for k, v in value.items()}
+        return {unmasked(k, mask): unmasked(v, mask) for k, v in value.items()}
     return value
 
 
@@ -151,7 +150,15 @@ def resolver(env: Mapping[str, str], params: Mapping[str, str]) -> Callable[[str
     return lambda name: params[name] if name in params else env.get(name)
 
 
+def _free_mask(taken: str) -> tuple[str, str]:
+    """Two private-use characters that occur in neither the text nor any resolved value."""
+    free = (char for char in map(chr, range(0xE000, 0xF900)) if char not in taken)
+    return next(free), next(free)
+
+
 def resolve_and_load(text: str, value_of: Callable[[str], str | None]) -> tuple[Any, list[str]]:
     """The document rivet would build from this text, and the placeholders nothing resolved (spelled `${name}`)."""
-    resolved, unresolved = substitute(text, value_of)
-    return unmasked(load(resolved)), unresolved
+    values = [value_of(name) for name in _PLACEHOLDER.findall(text) if name]
+    mask = _free_mask(text + "".join(v for v in values if v))
+    resolved, unresolved = substitute(text, value_of, mask)
+    return unmasked(load(resolved), mask), unresolved
