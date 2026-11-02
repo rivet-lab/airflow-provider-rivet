@@ -82,10 +82,15 @@ def test_a_credential_on_the_first_of_two_lines_is_masked(planted: str) -> None:
 
 def test_a_megabyte_of_hostile_text_is_read_once_and_cheaply(planted: str) -> None:
     started = time.monotonic()
-    for hostile in ("\n" * 1_000_000, "a\n" * 500_000, ("\r" * 50 + "\x1b") * 20_000, ("é" * 7 + planted) * 70_000):
+    for hostile, empty in (
+        ("\n" * 1_000_000, True),
+        ("a\n" * 500_000, False),
+        (("\r" * 50 + "\x1b") * 20_000, False),
+        (("é" * 7 + planted) * 70_000, False),
+    ):
         text = error_text(hostile)
-        assert text is None or len(text) <= ERROR_TEXT_LIMIT
-        assert text is None or planted not in text
+        assert (text is None) == empty
+        assert text is None or (len(text) <= ERROR_TEXT_LIMIT and planted not in text)
     assert time.monotonic() - started < 10
 
 
