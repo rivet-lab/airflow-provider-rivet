@@ -117,24 +117,99 @@ CASES = [
     ),
     pytest.param("cdc", {}, {"mode": "${MODE}"}, id="cdc-export-mode"),
     pytest.param("cdc", {"layout": "base_buffer"}, {"layout": "${LAYOUT}"}, id="cdc-export-layout"),
+    pytest.param("batch", {}, {"name": "${NAME}"}, id="batch-export-name"),
+    pytest.param("batch", {"load": False}, {"load": "${LOAD}"}, id="batch-load-flag"),
+]
+
+LOAD_BQ = "load: {target: bigquery, project: p, dataset: d}\n"
+MYSQL = "source: {type: mysql, url_env: RIVET_SOURCE_URL}\n"
+RAW_FIELDS = [
     pytest.param(
-        "batch",
-        {},
-        {"name": "${NAME}"},
-        id="batch-export-name",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="2026-11-02: a `${...}` export name gets a hashed task id, not the resolved one; open until it is refused",
-        ),
+        "cdc",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: s, mode: cdc, table: '${TABLE}', cdc: {checkpoint: ./s.ckpt}}\n",
+        "`table`",
+        id="cdc-export-table",
+    ),
+    pytest.param(
+        "cdc",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: s, mode: cdc, tables: ['${TABLE}'], cdc: {checkpoint: ./s.ckpt}}\n",
+        "`tables`",
+        id="cdc-export-tables-item",
+    ),
+    pytest.param(
+        "cdc",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: s, mode: cdc, tables: '${TABLES}', cdc: {checkpoint: ./s.ckpt}}\n",
+        "`tables`",
+        id="cdc-export-tables-whole",
+    ),
+    pytest.param(
+        "cdc",
+        MYSQL
+        + LOAD_BQ
+        + "exports:\n  - {name: s, mode: cdc, tables: [t], cdc: {checkpoint: ./s.ckpt, backfill: '${BACKFILL}'}}\n",
+        "`cdc.backfill`",
+        id="cdc-backfill",
     ),
     pytest.param(
         "batch",
-        {"load": False},
-        {"load": "${LOAD}"},
-        id="batch-load-flag",
-        marks=pytest.mark.xfail(
-            strict=True, reason="2026-11-02: an unresolved `load: ${...}` is read as a true load; open until it is refused"
-        ),
+        MYSQL
+        + LOAD_BQ
+        + "exports:\n  - {name: s, table: t, mode: chunked, chunk_by_key: [id], keyset_incremental: '${KEYSET}'}\n",
+        "`keyset_incremental`",
+        id="batch-keyset-incremental",
+    ),
+    pytest.param(
+        "batch",
+        MYSQL
+        + LOAD_BQ
+        + "exports:\n  - {name: s, table: t, mode: chunked, chunk_by_key: '${CHUNK}', keyset_incremental: true}\n",
+        "`chunk_by_key`",
+        id="batch-chunk-by-key",
+    ),
+    pytest.param(
+        "batch",
+        "source: {type: postgres, url_env: '${SOURCE_ENV}'}\n" + LOAD_BQ + "exports:\n  - {name: s, table: t}\n",
+        "`source.url_env`",
+        id="source-url-env",
+    ),
+    pytest.param(
+        "batch",
+        "source: {type: '${TYPE}', url_env: RIVET_SOURCE_URL}\n" + LOAD_BQ + "exports:\n  - {name: s, table: t}\n",
+        "`source.type`",
+        id="source-type",
+    ),
+    pytest.param(
+        "batch",
+        "source: {type: mongo, url_env: RIVET_SOURCE_URL, mongo: {resume: '${RESUME}', page_size: 10}}\n"
+        + LOAD_BQ
+        + "exports:\n  - {name: s, table: t}\n",
+        "`source.mongo.resume`",
+        id="source-mongo-resume",
+    ),
+    pytest.param(
+        "batch",
+        "source: {type: mongo, url_env: RIVET_SOURCE_URL, mongo: {resume: true, page_size: '${PAGE}'}}\n"
+        + LOAD_BQ
+        + "exports:\n  - {name: s, table: t}\n",
+        "`source.mongo.page_size`",
+        id="source-mongo-page-size",
+    ),
+    pytest.param("batch", MYSQL + LOAD_BQ + "exports:\n  - {name: '${NAME}', table: t}\n", "`name`", id="batch-export-name"),
+    pytest.param("batch", MYSQL + "load: '${LOAD}'\nexports:\n  - {name: s, table: t}\n", "`load`", id="batch-load-flag"),
+    pytest.param(
+        "batch", MYSQL + "load: '${LOAD}'\nexports:\n  - {name: '${NAME}', table: t}\n", "`load`, `name`", id="two-fields"
+    ),
+    pytest.param(
+        "batch",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: '${NAME}', table: t}\n  - {name: s, table: u}\n",
+        "`name`",
+        id="placeholder-in-first-export",
+    ),
+    pytest.param(
+        "cdc",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: '${NAME}', mode: cdc, table: t, cdc: {checkpoint: ./s.ckpt}}\n",
+        "`name`",
+        id="cdc-export-name",
     ),
 ]
 
@@ -205,3 +280,26 @@ def test_a_placeholder_builds_the_dag_of_its_resolved_value_or_a_coded_refusal(
         assert code in PLACEHOLDER_CODES
     else:
         assert shape(written) == shape(literal)
+
+
+@pytest.mark.parametrize("builder", ["config", "sources"])
+@pytest.mark.parametrize(("kind", "text", "fields"), RAW_FIELDS)
+def test_a_placeholder_in_a_field_that_decides_the_tasks_is_refused_coded(
+    tmp_path: Path, builder: str, kind: str, text: str, fields: str
+) -> None:
+    """A `${...}` the parse cannot resolve in a field that decides which tasks a DAG has is refused as UNRESOLVED, naming it."""
+    dag = dag_of(builder, kind, tmp_path, text)
+    pronoun = "them" if "," in fields else "it"
+    assert dag.task_ids == ["config"]
+    assert dag.get_task("config").refusal == (
+        f"[RIVET_AIRFLOW_CONFIG_UNRESOLVED] {tmp_path / 'shop.yaml'} has a `${{...}}` in {fields}, which decides which tasks "
+        f"the DAG has and cannot be resolved when the DAG is parsed: write {pronoun} as a literal"
+    )
+
+
+@pytest.mark.parametrize("builder", ["config", "sources"])
+def test_a_bare_dollar_in_a_shape_field_is_a_name_and_builds(tmp_path: Path, builder: str) -> None:
+    """A `$` without `{` is text, not a placeholder: the export keeps its name and the DAG builds."""
+    text = "source: {type: mysql, url_env: RIVET_SOURCE_URL}\nload: {target: bigquery, project: p, dataset: d}\n"
+    text += "exports:\n  - {name: 'a$b', table: t, mode: incremental}\n"
+    assert refusal_of(dag_of(builder, "batch", tmp_path, text)) is None

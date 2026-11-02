@@ -19,7 +19,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - Tests: one table over the four public DAG builders (`build_batch_dag`, `build_cdc_dag`, `build_config_dag`,
   `build_source_dags`) checks that each refuses every owned key by name, gives its tasks its own config, state folder,
   slot and gate, and refuses a broken config as a DAG; a `${VAR}` scalar builds the DAG of its resolved value or a coded
-  refusal. The `${VAR}` name and top-level `load` cases are strict xfails until they are fixed.
+  refusal.
 
 - Tests: `tests/test_architecture.py` reads `docs/seams.yaml` and scans the package for a bypass of each seam: a stderr
   JSON parse outside `reading._json_of`, a raw `AirflowFailException` outside `_fail`, an `exited N` text outside its
@@ -38,6 +38,11 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- A `${...}` the DAG builders cannot resolve at parse time in a field that decides which tasks a DAG has (the export
+  `name`, a CDC export's `table` / `tables` and `cdc.backfill`, the top-level `load`, `keyset_incremental`, `chunk_by_key`,
+  `source.type`, `source.url_env` and `source.mongo.resume` / `page_size`) is refused as `RIVET_AIRFLOW_CONFIG_UNRESOLVED`,
+  for `build_config_dag` and `build_source_dags` alike. Before, `name: ${NAME}` built hashed task ids (`apply.__NAME__<hash>`)
+  and `load: ${LOAD}` read as a true load, so a resolved `false` still got load tasks.
 - The Slack alert title says `retryable` only when Airflow runs another try (the same rule as the task log): a failure on
   the last try, or a crash past its budget, is titled `final`.
 - A resolved config value that holds U+E000 or U+E001 is read as written; only an unresolved `${name}` is spelled back.

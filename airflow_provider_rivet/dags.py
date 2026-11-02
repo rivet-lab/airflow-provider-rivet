@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from ._compat import DAG, TaskGroup
-from .exports import compacts, entries_of, may_be_cdc, mode_of, name_of, placeholder_decides_compaction, tables_of
+from .exports import (
+    compacts,
+    entries_of,
+    may_be_cdc,
+    mode_of,
+    name_of,
+    placeholder_decides_compaction,
+    shape_placeholders,
+    tables_of,
+)
 from .invocation import PLAN_ERRORS, plan_layout, warehouse_table
 from .operators import (
     RivetApplyOperator,
@@ -402,6 +411,13 @@ def _unresolved_compaction(config: Path, names: list[str]) -> tuple[str, str]:
 def _dag_of_config(dag_id: str, as_cdc: bool, config: Path, doc: Mapping[str, Any], common: Mapping[str, Any]) -> DAG:
     """The CDC (`as_cdc`) or batch DAG of a config read as `doc`; a config with no export for the mode is refused, coded."""
     exports = entries_of(doc)
+    held = shape_placeholders(doc)
+    if held:
+        raise ConfigRefusal(
+            "RIVET_AIRFLOW_CONFIG_UNRESOLVED",
+            f"{config} has a `${{...}}` in {', '.join(f'`{field}`' for field in held)}, which decides which tasks the DAG has "
+            f"and cannot be resolved when the DAG is parsed: write {'it' if len(held) == 1 else 'them'} as a literal",
+        )
     cdc = [e for e in exports if mode_of(e) == "cdc"]
     uncertain = [f"{name_of(e)}: `{mode_of(e)}`" for e in exports if mode_of(e) != "cdc" and may_be_cdc(mode_of(e))]
     if as_cdc:
