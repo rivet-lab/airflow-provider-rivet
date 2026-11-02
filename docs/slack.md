@@ -46,10 +46,9 @@ dag = build_batch_dag(
 The `watcher` task carries no failure callback: the builders set its `on_failure_callback` to
 none, so a failed run sends one message per failed task and nothing for the watcher (which has no
 rivet result to show). Unlike XCom and the task log ([Secrets](connections-and-secrets.md#secrets)), the thread carries rivet's error
-text, which can hold source values. `format_title`, `format_error_text` and `format_failure` are
-the formatters on their own, to send through another channel. `format_failure` (the whole message
-in one piece) carries rivet's error text as a `rivet said:` line: masked, on one line, at most 300
-characters. `format_title` never does: a channel is a list of titles.
+text, which can hold source values. `format_title` and `format_error_text` are the formatters on their own, to send
+through another channel. The thread (or the webhook message) carries each failed unit's remedy as an `action:` line
+before rivet's error line. `format_title` never carries text: a channel is a list of titles.
 
 Mutual exclusion: under Airflow, rivet's own notifications are off and alerting is Airflow's.
 The operators pass `--no-notify` to every rivet process. To keep rivet's own notifications instead (a config

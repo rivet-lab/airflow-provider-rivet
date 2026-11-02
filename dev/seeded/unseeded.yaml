@@ -24,10 +24,6 @@ unseeded:
     reason: the hostile test for error text accepted a None result; a test-only fix
     closes: the hostile test asserts the result is not None before it reads it
 open:
-  - bug: seams-2
-    date: "2026-11-02"
-    reason: format_failure is dead in production and only tests call it; open, no fix merged
-    closes: format_failure is wired into the task path with a test that calls it from there, or deleted
   - bug: seams-4
     date: "2026-11-02"
     reason: nine same-named parameters in the constructors and a duplicated run/refuse loop; an architecture cleanup, no behaviour defect

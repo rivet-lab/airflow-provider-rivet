@@ -1,5 +1,4 @@
-"""rivet's error text where an operator reads it (see #100): the one-line, redacted, bounded form (`error_text`), the
-exception text, the task log's failure lines, and `format_failure`. The text is operator and source text, so hostile."""
+"""rivet's error text where an operator reads it: the one-line, redacted, bounded form (`error_text`), the Slack text and the task log's failure lines. Operator and source text, so hostile."""
 
 from __future__ import annotations
 
@@ -9,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_slack_alerts import posted
 
-from airflow_provider_rivet.callbacks import format_failure
 from airflow_provider_rivet.result import ERROR_TEXT_LIMIT, ErrorObject, error_text
 
 PLANTED = "hunter2-planted-by-a-connection"
@@ -110,38 +109,36 @@ def test_an_error_without_text_reads_as_it_did_before() -> None:
     assert ErrorObject(None, None, "generic", 1, False, None, " \n").describe(None) == "generic"
 
 
-# --- format_failure ---------------------------------------------------------------------------------------------------
-
-
 def stderr_of(tmp_path: Path, *lines: str) -> dict:
     path = tmp_path / "step.stderr.log"
     path.write_bytes(b"".join(line.encode() + b"\n" for line in lines))
     return {"stderr_path": str(path)}
 
 
-def test_the_failure_message_says_rivets_reason_on_one_line(tmp_path: Path) -> None:
+def test_the_posted_text_says_rivets_reason_on_its_error_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     payload = stderr_of(
         tmp_path, json.dumps({"error": "table 'orders':\nBigQuery job X failed", "code": "RIVET_LOAD_WAREHOUSE_REJECTED"})
     )
-    text = format_failure(payload, dag_id="d", task_id="t", run_id="r")
-    assert text.split("\n")[:2] == [":x: *d.t* failed (run `r`)", "rivet said: table 'orders': | BigQuery job X failed"]
+    assert posted(monkeypatch, payload).split("\n")[2:] == [
+        "```",
+        "[RIVET_LOAD_WAREHOUSE_REJECTED] table 'orders':",
+        "BigQuery job X failed",
+        "```",
+    ]
 
 
-def test_the_failure_message_masks_the_credential_and_bounds_the_reason(tmp_path: Path, planted: str) -> None:
+def test_the_posted_text_masks_the_credential(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planted: str) -> None:
     payload = stderr_of(tmp_path, json.dumps({"error": f"{planted} " + "y" * 1000}))
-    text = format_failure(payload, dag_id="d", task_id="t", run_id="r")
-    reason = text.split("\n")[1]
-    assert planted not in text and reason.startswith("rivet said: *** yyy") and reason.endswith("…")
-    assert len(reason) == len("rivet said: ") + ERROR_TEXT_LIMIT
+    text = posted(monkeypatch, payload)
+    assert planted not in text and "*** yyy" in text
 
 
-def test_the_failure_message_without_a_stderr_file_is_what_it_was() -> None:
-    assert format_failure({}, dag_id="d", task_id="t", run_id="r").split("\n")[0] == ":x: *d.t* failed (run `r`)"
-    assert "rivet said" not in format_failure({"stderr_path": "/nonexistent/step.log"}, dag_id="d", task_id="t", run_id="r")
+def test_without_a_rivet_result_or_error_line_the_posted_text_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for payload in ({}, {"stderr_path": "/nonexistent/step.log"}):
+        assert "no error text: the task failed without a rivet result or an exception" in posted(monkeypatch, payload)
 
 
-def test_a_raw_unicode_separator_inside_the_json_line_does_not_split_it(tmp_path: Path) -> None:
+def test_a_raw_unicode_separator_inside_the_json_line_does_not_split_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """D01: the stderr tail is read by `\\n`, so a raw U+2028 / U+0085 in a JSON string cannot cut the line in two."""
-    line = json.dumps({"error": "cell a b\x85c\x0bd", "code": "RIVET_X"}, ensure_ascii=False)
-    text = format_failure(stderr_of(tmp_path, line), dag_id="d", task_id="t", run_id="r")
-    assert "rivet said: cell a\\u{2028}b\\u{85}c\\u{0b}d" in text.split("\n")
+    line = json.dumps({"error": "cell a b\x85c\x0bd", "code": "RIVET_X"}, ensure_ascii=False)
+    assert "[RIVET_X] cell a b\x85c\x0bd" in posted(monkeypatch, stderr_of(tmp_path, line)).split("\n")

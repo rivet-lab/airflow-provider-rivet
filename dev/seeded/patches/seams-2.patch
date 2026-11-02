@@ -1,0 +1,12 @@
+diff --git a/airflow_provider_rivet/callbacks.py b/airflow_provider_rivet/callbacks.py
+--- a/airflow_provider_rivet/callbacks.py
++++ b/airflow_provider_rivet/callbacks.py
+@@ -91,7 +91,7 @@
+     if not errors and exception is not None:
+         errors = [str(exception) or type(exception).__name__]
+     text = redact(
+-        "\n".join([*_actions(payload), *errors]) or "no error text: the task failed without a rivet result or an exception"
++        "\n".join(errors) or "no error text: the task failed without a rivet result or an exception"
+     )
+     if len(text) <= limit:
+         return text

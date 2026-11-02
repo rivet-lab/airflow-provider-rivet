@@ -23,6 +23,15 @@ seeds:
     cells:
       - tests/test_source_dags.py::test_init_reports_each_export_as_rivet_reads_it
       - tests/test_source_dags.py::test_places_reads_the_exports_as_rivet_reads_them
+  - name: seams-2
+    bug: seams-2
+    fix: "#TBD"
+    what: a failed unit's remedy (`action`) is dropped from the Slack text, the formatter that carried it being dead code
+    patch: patches/seams-2.patch
+    cells:
+      - tests/test_slack_alerts.py::test_the_posted_text_carries_the_remedy_of_each_failed_unit
+      - tests/test_dags.py::test_the_slack_text_has_the_remedy_and_no_error_message
+      - tests/test_slack_alerts.py::test_the_error_text_is_redacted_and_capped_with_a_pointer_to_the_task_log
   - name: message-truth-1
     bug: message-truth-1
     fix: "#120"

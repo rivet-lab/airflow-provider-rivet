@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from conftest import DagRig, FakeTI
 
-from airflow_provider_rivet.callbacks import format_error_text, format_failure, format_title, slack_failure_callback
+from airflow_provider_rivet.callbacks import format_error_text, format_title, slack_failure_callback
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "rivet_slack_alerts.py"
@@ -49,13 +49,6 @@ CRASHED = {"decision": "retry_crashed", "crashed_retry": True, "units": [unit(No
 )
 def test_the_title_is_dag_task_and_the_error_type_per_outcome_class(payload: Any, exception: Any, title: str) -> None:
     assert format_title(payload, dag_id="d", task_id="apply.users", try_number=1, max_tries=1, exception=exception) == title
-
-
-def test_a_retryable_class_is_not_said_twice() -> None:
-    """The owner's screenshot read "`RIVET_PLAN_SOURCE_UNREADABLE` `retryable` (retryable)": class and retry word both."""
-    text = format_failure(RETRYABLE, dag_id="d", task_id="t", run_id="r")
-    assert "• *users*: `RIVET_PLAN_SOURCE_UNREADABLE` (retryable)" in text.splitlines(), text
-    assert "`RIVET_SOURCE_CDC_LOG_GAP` `refusal` (not retryable)" in format_failure(REFUSAL, dag_id="d", task_id="t", run_id="r")
 
 
 def raised(message: str) -> BaseException:
@@ -118,7 +111,9 @@ def test_without_a_rivet_error_line_the_thread_text_is_the_exception_message_not
 def test_the_error_text_is_redacted_and_capped_with_a_pointer_to_the_task_log(tmp_path: Path, planted: str) -> None:
     line = '{"error":"cannot convert value ' + planted + " " + "x" * 5000 + '","code":"RIVET_SOURCE_VALUE_UNREPRESENTABLE"}'
     text = format_error_text({**REFUSAL, "stderr_path": stderr_file(tmp_path, line)}, limit=3500, log_url="http://af/l")
-    assert planted not in text and text.startswith("[RIVET_SOURCE_VALUE_UNREPRESENTABLE] cannot convert value *** xxx")
+    assert planted not in text and text.startswith(
+        "action: re-baseline\n[RIVET_SOURCE_VALUE_UNREPRESENTABLE] cannot convert value *** xxx"
+    )
     assert len(text) == 3500 and text.endswith("x\n… truncated, full log: http://af/l")
 
 
@@ -164,11 +159,49 @@ class OneTI(FakeTI):
         return super().xcom_pull(task_ids=task_ids, key=key)
 
 
-def failed_context(payload: dict, exception: BaseException | None = None) -> dict:
-    ti = OneTI(task_id="apply.users")
+def failed_context(payload: dict, exception: BaseException | None = None, task_id: str = "apply.users") -> dict:
+    ti = OneTI(task_id=task_id)
     ti.dag_id = "d"
-    ti.store[("apply.users", "return_value")] = payload
+    ti.store[(task_id, "return_value")] = payload
     return {"ti": ti, "run_id": "manual__1", "exception": exception}
+
+
+def posted_for(monkeypatch: pytest.MonkeyPatch, ti: FakeTI, exception: BaseException | None = None) -> str:
+    """The webhook text the real `on_failure_callback` posts for the failed task instance `ti`."""
+    sent: list[tuple[str, str]] = []
+    fake_slack(monkeypatch, sent=sent)
+    twin = OneTI(task_id=ti.task_id, try_number=ti.try_number, max_tries=ti.max_tries, store=ti.store)
+    twin.dag_id = ti.dag_id
+    slack_failure_callback("slack_rivet")({"ti": twin, "run_id": ti.run_id, "exception": exception})
+    [(_, text)] = sent
+    return text
+
+
+def posted(
+    monkeypatch: pytest.MonkeyPatch, payload: dict | None, exception: BaseException | None = None, task_id: str = "apply.users"
+) -> str:
+    """The webhook text the real `on_failure_callback` posts for a failed task with `payload`."""
+    sent: list[tuple[str, str]] = []
+    fake_slack(monkeypatch, sent=sent)
+    slack_failure_callback("slack_rivet")(failed_context(payload, exception, task_id))
+    [(_, text)] = sent
+    return text
+
+
+def test_the_posted_text_carries_the_remedy_of_each_failed_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed unit's remedy (`action`) is in the posted text, one `action:` line each."""
+    payload = {
+        "units": [
+            unit("RIVET_A", "refusal", False, "users", "re-baseline"),
+            unit("RIVET_B", "refusal", False, "orders", "rerun with --full"),
+        ]
+    }
+    assert posted(monkeypatch, payload).split("\n")[2:] == [
+        "```",
+        "action: re-baseline",
+        "action: rerun with --full",
+        "```",
+    ]
 
 
 def test_the_bot_posts_the_title_then_the_error_text_as_a_code_block_in_its_thread(

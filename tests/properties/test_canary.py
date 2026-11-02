@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 from conftest import FakeTI, Rig
+from test_slack_alerts import posted_for
 
-from airflow_provider_rivet.callbacks import format_error_text, format_failure, format_title
+from airflow_provider_rivet.callbacks import format_error_text, format_title
 from airflow_provider_rivet.connections import connection_url
 from airflow_provider_rivet.operators import RivetRunOperator
 
@@ -38,7 +39,11 @@ SCENARIOS = {
 
 @pytest.mark.parametrize("spec", list(SCENARIOS.values()), ids=list(SCENARIOS))
 def test_the_canary_reaches_no_text_the_provider_emits(
-    rig: Rig, spec: dict[str, Any], caplog: pytest.LogCaptureFixture, capfd: pytest.CaptureFixture
+    rig: Rig,
+    spec: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Whatever rivet does with the canary in the URL and the extra arguments, every emitted text is free of it."""
     caplog.set_level(logging.DEBUG)
@@ -51,7 +56,7 @@ def test_the_canary_reaches_no_text_the_provider_emits(
     if isinstance(result, dict):
         emitted += [
             format_title(result, dag_id="dag", task_id="task", try_number=1, max_tries=2),
-            format_failure(result, dag_id="dag", task_id="task", run_id="run"),
+            posted_for(monkeypatch, ti),
             format_error_text(result, limit=3500),
         ]
     for text in emitted:

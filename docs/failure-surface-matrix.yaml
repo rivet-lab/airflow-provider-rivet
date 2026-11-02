@@ -208,7 +208,7 @@ RIVET_AIRFLOW_VARIABLE_MISSING:
 rivet-exit-nonzero:
   exception: 'test: tests/test_operators.py::test_exits_1_3_4_6_fail_without_retry'
   task_log: 'test: tests/test_task_log.py::test_golden_refused_final_with_its_action'
-  slack: 'test: tests/test_slack_alert_text.py::test_format_failure_writes_each_line_of_a_failed_task_in_order'
+  slack: 'test: tests/test_slack_alerts.py::test_the_posted_text_carries_the_remedy_of_each_failed_unit'
   xcom: 'test: tests/test_operators.py::test_a_coded_refusal_fails_without_retry_and_keeps_the_message_out_of_xcom'
   retry: 'test: tests/test_operators.py::test_exits_1_3_4_6_fail_without_retry'
 rivet-signal:

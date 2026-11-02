@@ -16,6 +16,7 @@ MATRIX = ROOT / "docs" / "failure-surface-matrix.yaml"
 SURFACES = ("exception", "task_log", "slack", "xcom", "retry")
 NON_CODE_ROWS = frozenset({"rivet-exit-nonzero", "rivet-signal", "rivet-timeout", "empty-source", "init-draft-unreadable"})
 TEST_CELL = re.compile(r"^test: (tests/[\w/]+\.py)::(\w+)$")
+CALLBACK_ENTRY = frozenset({"slack_failure_callback", "posted", "posted_for"})
 
 
 class _UniqueKeys(yaml.SafeLoader):
@@ -78,6 +79,28 @@ def _cell_problem(cell: str) -> str | None:
     return None
 
 
+def _function(path: Path, name: str) -> ast.AST | None:
+    """The top-level function or method definition `name` in a file, by AST, or None."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return next((n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name), None)
+
+
+def _names(node: ast.AST) -> set[str]:
+    """Every name the node reads, by AST."""
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _slack_problem(cell: str) -> str | None:
+    """Why a Slack cell's test does not drive the callback entry point, or None when it does."""
+    found = TEST_CELL.match(cell)
+    if not found or _cell_problem(cell):
+        return None
+    test = _function(ROOT / found.group(1), found.group(2))
+    if not _names(test) & CALLBACK_ENTRY:
+        return f"{found.group(2)} does not drive the Slack callback ({', '.join(sorted(CALLBACK_ENTRY))})"
+    return None
+
+
 def _cells() -> list[tuple[str, str, Any]]:
     """Every (row, surface, cell) of the matrix."""
     return [
@@ -135,3 +158,19 @@ def test_every_gap_carries_a_date() -> None:
         if isinstance(cell, dict) and _gap_problem(cell.get("gap"))
     ]
     assert not problems, "\n".join(problems)
+
+
+def test_every_slack_cell_names_a_test_that_drives_the_callback() -> None:
+    """Each Slack cell names a test that calls `slack_failure_callback`, directly or through the helpers `posted` and `posted_for`."""
+    problems = [
+        f"{row}.slack: {_slack_problem(cell)}"
+        for row, s, cell in _cells()
+        if s == "slack" and isinstance(cell, str) and _slack_problem(cell)
+    ]
+    assert not problems, "\n".join(problems)
+
+
+def test_the_slack_helpers_call_the_callback() -> None:
+    """The helpers the Slack cells name post through the real `slack_failure_callback`, not a formatter."""
+    helpers = ROOT / "tests" / "test_slack_alerts.py"
+    assert all("slack_failure_callback" in _names(_function(helpers, name)) for name in ("posted", "posted_for"))

@@ -1,6 +1,4 @@
-"""Slack alerts, the text a reader sees and what the callback sends: every line of `format_failure`, which units it
-reports, how rivet's error line is read from the stderr file, how the thread text is capped, and the task instance,
-hook and response the callback reads. The mutant ids in the comments are the ones each test was written for."""
+"""Slack alerts: the title, the error text, how rivet's error line is read from the stderr file, the cap, and the task instance, hook and response the callback reads."""
 
 from __future__ import annotations
 
@@ -14,7 +12,7 @@ from typing import Any
 import pytest
 
 from airflow_provider_rivet import callbacks
-from airflow_provider_rivet.callbacks import format_error_text, format_failure, format_title, slack_failure_callback
+from airflow_provider_rivet.callbacks import format_error_text, format_title, slack_failure_callback
 from airflow_provider_rivet.stderr import STDERR_TAIL
 
 
@@ -24,73 +22,6 @@ def err(code: str | None = "RIVET_X", cls: str = "refusal", retryable: bool = Fa
 
 def failed(export: str | None, error: dict, table: str | None = None) -> dict:
     return {"export": export, "table": table, "status": "failed", "error": error}
-
-
-# --- format_failure: the whole text, line by line --------------------------------------------------------------------
-
-
-def test_format_failure_writes_each_line_of_a_failed_task_in_order() -> None:
-    """x_format_failure 1, 21-29, 32, 38, 47-49, 52 and _failed_units: header, refusal, each unit with table, code,
-    class and action, the stderr path and the link, exactly."""
-    payload = {
-        "preflight_refusal": "RIVET_AIRFLOW_EXPORT_UNKNOWN",
-        "units": [
-            failed("users", err("RIVET_A", "refusal", False, action="re-baseline")),
-            failed("orders", err(None, "transient", True), table="orders_v2"),
-            {"export": "ok", "table": None, "status": "success", "error": None},
-        ],
-        "stderr_path": "/state/logs/try1.stderr.log",
-    }
-    text = format_failure(payload, dag_id="d", task_id="t", run_id="r1", log_url="http://af/log")
-    assert text.split("\n") == [
-        ":x: *d.t* failed (run `r1`)",
-        "refused before rivet started: `RIVET_AIRFLOW_EXPORT_UNKNOWN`",
-        "• *users*: `RIVET_A` `refusal` (not retryable)",
-        "    action: re-baseline",
-        "• *orders / orders_v2*: `transient` (retryable)",
-        "stderr on the worker: `/state/logs/try1.stderr.log`",
-        "<http://af/log|task log>",
-    ]
-
-
-def test_format_failure_shows_ten_units_and_counts_the_rest() -> None:
-    """MAX_UNITS: ten unit lines, then `… and N more failed units` (format_failure 32-38)."""
-    payload = {"units": [failed(f"e{i}", err(f"RIVET_{i}")) for i in range(12)]}
-    lines = format_failure(payload, dag_id="d", task_id="t", run_id="r").split("\n")
-    assert [line for line in lines if line.startswith("•")] == [
-        f"• *e{i}*: `RIVET_{i}` `refusal` (not retryable)" for i in range(10)
-    ]
-    assert lines[-1] == "… and 2 more failed units"
-    exactly = {"units": [failed(f"e{i}", err()) for i in range(10)]}
-    assert "more failed units" not in format_failure(exactly, dag_id="d", task_id="t", run_id="r")
-
-
-def test_format_failure_without_a_failed_unit_reports_the_process_error_or_says_no_result() -> None:
-    """_failed_units 10-22: no unit carries an error, so the payload's own error is the `(process)` line; a unit with
-    an empty error is not a failed unit; a payload with neither has no unit line at all."""
-    process = {"units": [{"export": "users", "error": None}], "error": err("RIVET_P", "internal", False)}
-    assert format_failure(process, dag_id="d", task_id="t", run_id="r").split("\n") == [
-        ":x: *d.t* failed (run `r`)",
-        "• *(process)*: `RIVET_P` `internal` (not retryable)",
-    ]
-    nothing = {"units": None, "decision": "fail"}
-    assert format_failure(nothing, dag_id="d", task_id="t", run_id="r") == ":x: *d.t* failed (run `r`)"
-    assert format_failure(None, dag_id="d", task_id="t", run_id="r").split("\n") == [
-        ":x: *d.t* failed (run `r`)",
-        "no rivet result was published for this try (the task died outside the operator)",
-    ]
-    # a unit's own error wins over the process-level one
-    both = {"units": [failed("users", err("RIVET_U"))], "error": err("RIVET_P")}
-    assert "RIVET_P" not in format_failure(both, dag_id="d", task_id="t", run_id="r")
-
-
-def test_the_class_word_is_dropped_when_it_is_the_retry_word_or_missing() -> None:
-    assert "• *u*: `RIVET_X` (retryable)" in format_failure(
-        {"units": [failed("u", err(cls="retryable", retryable=True))]}, dag_id="d", task_id="t", run_id="r"
-    )
-    assert "• *u*: `RIVET_X` (not retryable)" in format_failure(
-        {"units": [failed("u", err(cls=None))]}, dag_id="d", task_id="t", run_id="r"
-    )
 
 
 def test_the_title_counts_the_other_failed_units_and_falls_back_to_the_class() -> None:
