@@ -15,6 +15,7 @@ from typing import Any
 from . import _yaml
 from .exports import entry_named, load_mode
 from .result import DIGEST_COUNTS, DIGEST_KEYS, STATUSES, ErrorObject, UnitResult, error_from_exit, error_from_line
+from .stderr import JSON_ERRORS
 
 # The `load:` keys that hold where a warehouse's tables are created, outermost first (rivet's src/config/load.rs).
 TARGET_CONTAINER = {"bigquery": ("project", "dataset"), "snowflake": ("database", "schema"), "clickhouse": ("database",)}
@@ -37,7 +38,7 @@ def _json_of(raw: bytes) -> Any:
     """The JSON document of some bytes, `None` when they are not one (not UTF-8 included)."""
     try:
         return json.loads(raw)
-    except ValueError:
+    except JSON_ERRORS:
         return None
 
 
