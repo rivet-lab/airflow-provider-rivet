@@ -76,6 +76,16 @@ def test_any_export_name_builds_a_dag_or_a_coded_refusal(export: str, tmp_path: 
     )
     dag = build_config_dag("d", config=config, state_dir=STATE)
     if dag.task_ids == ["config"]:
-        assert dag.get_task("config").code == "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME"
+        assert dag.get_task("config").code.startswith("RIVET_AIRFLOW_CONFIG_")
     else:
         assert len(dag.task_ids) == len(set(dag.task_ids))
+
+
+def test_an_export_named_watcher_beside_another_cdc_stream_is_refused_by_its_own_code(tmp_path: Path) -> None:
+    """The watcher id is taken by an export beside another CDC stream: refused as RESERVED_EXPORT_NAME, not a generic code."""
+    config = _write_config(
+        tmp_path / "shop.yaml", [_cdc("watcher", "orders", "./cdc/a.ckpt"), _cdc("other_stream", "t2", "./cdc/b.ckpt")]
+    )
+    dag = build_config_dag("d", config=config, state_dir=STATE)
+    assert dag.task_ids == ["config"]
+    assert dag.get_task("config").code == "RIVET_AIRFLOW_CONFIG_RESERVED_EXPORT_NAME"
