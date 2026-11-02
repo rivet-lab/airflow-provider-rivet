@@ -54,10 +54,12 @@ def test_a_deep_stderr_line_never_raises_from_a_reader() -> None:
     """hostile-input-3: a line nested 10000 levels deep is read as JSON or not, and no reader raises."""
     deep = '{"exit_class": 2, "error": ' + "[" * 10000 + "]" * 10000 + "}"
     found = invocation._error_line([deep])
-    assert found is None or found["exit_class"] == 2
+    if found is not None:
+        assert found["exit_class"] == 2
     assert invocation._has_broken_object([deep]) in (True, False)
     doc = reading._json_of(deep.encode())
-    assert doc is None or isinstance(doc, dict)
+    if doc is not None:
+        assert isinstance(doc, dict)
 
 
 @pytest.mark.parametrize(

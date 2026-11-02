@@ -148,11 +148,11 @@ def test_the_owned_keys_checked_here_are_the_builders_owned_keys() -> None:
 def test_a_valid_build_gives_every_rivet_task_the_builders_config_folder_and_gate(tmp_path: Path, builder: str) -> None:
     """Every rivet task carries the builder's config and state folder, one slot, the gate and the operator_kwargs."""
     dags, cfg = built(builder, tmp_path, {"retries": 3})
-    assert dags
+    assert len(dags) >= 1
     for dag in dags:
         assert "watcher" in dag.task_ids
         rivet = [t for t in dag.tasks if isinstance(t, _RivetTask)]
-        assert rivet
+        assert len(rivet) >= 1
         for t in rivet:
             assert (t.config, t.state_dir, t.max_active_tis_per_dag, t.trigger_rule, t.retries) == (
                 cfg,
