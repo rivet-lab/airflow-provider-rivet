@@ -48,9 +48,13 @@ jobs:
           name: dist
           path: dist/
 
+  gate:
+    name: Live gate
+    uses: ./.github/workflows/gate.yml
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build, gate]
     runs-on: ubuntu-latest
     environment:
       name: pypi
