@@ -12,3 +12,4 @@ index 7f68c1b..a6d882e 100644
 +                    "`--clickhouse-database {name}`); no config was written",
                      _refusal(),
                  )
+ 

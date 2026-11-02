@@ -11,3 +11,5 @@ index 27e8e58..c562c3f 100644
 -    v.grade(f"{name}/sqlite-pause-window-opened", sources.window_problems(opened, time.monotonic(), PAUSE_MS))
 +    v.grade(f"{name}/sqlite-pause-window-opened", problems)
      return states | wait_runs(stand, cdc, run_id)
+ 
+ 

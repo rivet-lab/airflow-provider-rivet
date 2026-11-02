@@ -13,3 +13,5 @@ index 27e8e58..781a505 100644
 +    "initial/mssql/cdc/staged-parts-cleaned": "rivet-lab/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
 +    "initial/mongodb/cdc/staged-parts-cleaned": "rivet-lab/rivet#671 (cleanup_source skips the CDC baseline, 0.32.3)",
  }
+ 
+ 

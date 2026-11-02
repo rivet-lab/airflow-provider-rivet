@@ -10,3 +10,4 @@ index 4a8f437..50e4bd5 100644
 +        if isinstance(obj, dict) and "exit_class" in obj:
              return obj
      return None
+ 

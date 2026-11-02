@@ -17,3 +17,5 @@ index 2db71e2..a341f6e 100644
 -                            task_id=task_name(warehouse_table(table)), export=export, table=table, **common
 +                            task_id=task_name(table), export=export, table=table, **common
                          )
+ 
+ 

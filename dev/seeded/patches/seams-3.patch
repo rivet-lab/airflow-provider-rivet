@@ -10,3 +10,4 @@ index 7f68c1b..41fa84f 100644
 -            self._failed(ti, failure)
          finally:
              self._proc = None
+ 
