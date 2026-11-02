@@ -5,6 +5,13 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
+### Added
+
+- Tests: one table over the four public DAG builders (`build_batch_dag`, `build_cdc_dag`, `build_config_dag`,
+  `build_source_dags`) checks that each refuses every owned key by name, gives its tasks its own config, state folder,
+  slot and gate, and refuses a broken config as a DAG; a `${VAR}` scalar builds the DAG of its resolved value or a coded
+  refusal. The `${VAR}` name and top-level `load` cases are strict xfails until they are fixed.
+
 ### Changed (behaviour change)
 
 - `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
