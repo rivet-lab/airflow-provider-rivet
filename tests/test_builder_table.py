@@ -199,6 +199,12 @@ RAW_FIELDS = [
     pytest.param(
         "batch", MYSQL + "load: '${LOAD}'\nexports:\n  - {name: '${NAME}', table: t}\n", "`load`, `name`", id="two-fields"
     ),
+    pytest.param(
+        "batch",
+        MYSQL + LOAD_BQ + "exports:\n  - {name: '${NAME}', table: t}\n  - {name: s, table: u}\n",
+        "`name`",
+        id="placeholder-in-first-export",
+    ),
 ]
 
 
