@@ -220,7 +220,7 @@ def stored_cursors(stand: Stand, state: str) -> dict[str, str]:
 
 
 def trigger_cycle(stand: Stand, v: Verdicts, name: str, run_id: str, dags: list[str]) -> dict[str, str]:
-    """Start the SQLite CDC run, wait for its pause window, start every other DAG, wait for all; their states."""
+    """Start the SQLite CDC run, wait for its pause window, start every other DAG, grade the work's end; their states."""
     marker = stand.rivet_dir / "markers" / MARKER
     marker.unlink(missing_ok=True)
     stand.trigger("gate_cdc_sqlite", run_id)
@@ -228,8 +228,11 @@ def trigger_cycle(stand: Stand, v: Verdicts, name: str, run_id: str, dags: list[
     for dag in dags:
         if dag != "gate_cdc_sqlite":
             stand.trigger(dag, run_id)
+    cdc = [dag for dag in dags if dag == "gate_cdc_sqlite"]
+    work = [dag for dag in dags if dag != "gate_cdc_sqlite"]
+    states = wait_runs(stand, work, run_id)
     v.grade(f"{name}/sqlite-pause-window-opened", sources.window_problems(opened, time.monotonic(), PAUSE_MS))
-    return wait_runs(stand, dags, run_id)
+    return states | wait_runs(stand, cdc, run_id)
 
 
 def grade_runs(
