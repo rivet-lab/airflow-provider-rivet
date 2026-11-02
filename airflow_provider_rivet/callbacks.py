@@ -7,7 +7,6 @@ message's thread. An incoming webhook (`SlackWebhookHook`) cannot thread: it pos
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -15,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from .operators import XCOM_KEY
+from .reading import _json_of
 from .result import REFUSED, error_text, redact
-from .stderr import JSON_ERRORS, tail_lines
+from .stderr import tail_lines
 
 MAX_UNITS = 10
 # the thread's code block; a webhook message carries title and link too, and stays under Slack's 4000
@@ -105,9 +105,8 @@ def _rivet_errors(payload: Mapping[str, Any]) -> list[tuple[str | None, str]]:
     found: list[tuple[str | None, str]] = []
     plain: list[tuple[str | None, str]] = []
     for line in lines:
-        try:
-            obj = json.loads(line)
-        except JSON_ERRORS:
+        obj = _json_of(line)
+        if obj is None:
             if line.lstrip().lower().startswith("error:"):
                 plain.append((None, line.strip()))
             continue
