@@ -8,26 +8,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 XFAILED_ON_MAIN: dict[str, tuple[str, str, str]] = {
-    "tests.test_builder_table::test_a_placeholder_builds_the_dag_of_its_resolved_value_or_a_coded_refusal[batch-export-name-config]": (
-        "2026-11-02",
-        "a `${...}` export name gets a hashed task id, not the resolved one",
-        "rivet refuses a `${...}` export name with a coded refusal",
-    ),
-    "tests.test_builder_table::test_a_placeholder_builds_the_dag_of_its_resolved_value_or_a_coded_refusal[batch-export-name-sources]": (
-        "2026-11-02",
-        "a `${...}` export name gets a hashed task id, not the resolved one",
-        "rivet refuses a `${...}` export name with a coded refusal",
-    ),
-    "tests.test_builder_table::test_a_placeholder_builds_the_dag_of_its_resolved_value_or_a_coded_refusal[batch-load-flag-config]": (
-        "2026-11-02",
-        "an unresolved `load: ${...}` is read as a true load",
-        "rivet refuses an unresolved `load: ${...}` with a coded refusal",
-    ),
-    "tests.test_builder_table::test_a_placeholder_builds_the_dag_of_its_resolved_value_or_a_coded_refusal[batch-load-flag-sources]": (
-        "2026-11-02",
-        "an unresolved `load: ${...}` is read as a true load",
-        "rivet refuses an unresolved `load: ${...}` with a coded refusal",
-    ),
     "tests.test_operators::test_a_task_applies_its_own_plan_when_rivet_records_another_spelling_of_the_config[case]": (
         "2026-11-02",
         "this file system tells `STATE` from `state`",
@@ -60,7 +40,7 @@ SKIP_ALLOWED: dict[str, dict[str, tuple[str, str, str]]] = {
     "airflow": dict(XFAILED_ON_MAIN),
     "gate-oracles": {},
 }
-SKIP_CEILING = {"locked": 7, "release": 7, "airflow": 6, "gate-oracles": 0}
+SKIP_CEILING = {"locked": 3, "release": 3, "airflow": 2, "gate-oracles": 0}
 
 
 def skipped(junit: Path) -> dict[str, str]:
