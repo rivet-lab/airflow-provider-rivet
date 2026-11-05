@@ -130,6 +130,7 @@ The same pages, with the command builder: https://rivet-lab.github.io/airflow-pr
 | [Add your own database](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/your-database.md) | the commands that add your MySQL or PostgreSQL database as a pipeline of the quickstart stack; with the form that writes them on the [docs site](https://rivet-lab.github.io/airflow-provider-rivet/your-database.html) |
 | [Operators](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/operators.md) | each operator, its parameters, the XCom value, reading the task log |
 | [DAG builders](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/dag-builders.md) | `build_batch_dag`, `build_cdc_dag`: tasks, waves, trigger rules, the `watcher` |
+| [DAGs from one file](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/dags-from-file.md) | `build_dags_from_file`: every source from one YAML file, the drift check, moving from `build_cdc_dag` |
 | [Retries](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/retries.md) | exit status → success, retry or stop; the crashed budget; a retry of an apply that succeeded |
 | [State](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/state.md) | state by deployment, the local worker setup guide, moving to PostgreSQL |
 | [Recipe: CDC from cron to Airflow](https://github.com/rivet-lab/airflow-provider-rivet/blob/main/docs/cron-to-airflow-cdc.md) | a MySQL CDC stream run by cron moved to a DAG with PostgreSQL state, one stream per source, no new baseline |

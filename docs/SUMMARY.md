@@ -7,6 +7,7 @@
 
 - [Operators](operators.md)
 - [DAG builders](dag-builders.md)
+- [DAGs from one file](dags-from-file.md)
 - [Connections and secrets](connections-and-secrets.md)
 - [State](state.md)
 - [Retries](retries.md)

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rivet-lab/airflow-provider-rivet/main/airflow_provider_rivet/schemas/rivet-sources.schema.json",
+  "title": "rivet sources file",
+  "description": "Every source database of an Airflow deployment and its settings, read by airflow_provider_rivet.dags.build_dags_from_file (airflow-provider-rivet 0.4.0 and later). `{name}` in any text value is replaced by the source's name.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "state_root", "state_connection", "sources"],
+  "properties": {
+    "version": {"description": "The format of this file; 1 is the only one.", "const": 1},
+    "mode": {"description": "`cdc` (one stream per source) or `batch`; default `cdc`.", "enum": ["cdc", "batch"]},
+    "config_dir": {
+      "description": "Where each source's rivet config `<name>.yaml` lives; a relative path is read against this file's folder. Default `rivet`, beside this file.",
+      "type": "string",
+      "minLength": 1
+    },
+    "state_root": {
+      "description": "The parent of every source's state folder `<state_root>/<name>`: a volume every worker mounts at the same path.",
+      "type": "string",
+      "minLength": 1
+    },
+    "state_connection": {
+      "description": "The Airflow Connection (type postgres) of the PostgreSQL server that holds each source's state database.",
+      "type": "string",
+      "minLength": 1
+    },
+    "source_connection": {
+      "description": "The Airflow Connection of a source, `{name}` replaced; default `{name}`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "odbc_ini": {
+      "description": "The odbc.ini whose data source `[<name>]` is used when no Connection has the source's id; null turns it off. Default /etc/odbc.ini.",
+      "type": ["string", "null"]
+    },
+    "template": {
+      "description": "A source of this file whose existing config gives the GCS bucket, the BigQuery project and the TLS mode to the sources that have no config yet; `defaults` and a source's own settings win over it.",
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "defaults": {"description": "Settings of every source; a source's own win.", "$ref": "#/$defs/settings"},
+    "sources": {
+      "description": "Each source by name (an Airflow Connection id part, a file stem and a database name: lower-case letters, digits and `_`), with its own settings; `{}` or nothing for none.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z0-9_]+$"},
+      "additionalProperties": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/settings"}]}
+    }
+  },
+  "$defs": {
+    "globs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Table names or globs (`*` any run, `?` one character, case-sensitive, the whole name). Quote a glob that starts with `*`: \"*_tmp\"."
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include": {"$ref": "#/$defs/globs", "description": "`rivet init --include`: keep only the tables these globs match."},
+        "exclude": {"$ref": "#/$defs/globs", "description": "`rivet init --exclude`: drop the tables these globs match; wins over include."},
+        "schema": {"type": "string", "minLength": 1, "description": "`rivet init --schema`."},
+        "tls": {"enum": ["disable", "require", "verify-ca", "verify-full"], "description": "`rivet init --tls`: how rivet reaches the source."},
+        "tls_ca": {"type": "string", "minLength": 1, "description": "`rivet init --tls-ca`: a PEM CA file on the worker."},
+        "gcs_bucket": {"type": "string", "minLength": 1, "description": "`rivet init --gcs-bucket`."},
+        "bigquery_project": {"type": "string", "minLength": 1, "description": "`rivet init --bigquery-project`."},
+        "bigquery_dataset": {"type": "string", "minLength": 1, "description": "`rivet init --bigquery-dataset`; give each source its own, e.g. `{name}`."},
+        "init_args": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "More `rivet init` arguments, as written; a flag a setting above sets is refused here."
+        },
+        "state_database": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The state database on the state server; default `rivet_state_{name}`. `connection`: the database the state Connection names itself (a DAG moved from build_cdc_dag)."
+        },
+        "schedule": {"type": ["string", "null"], "description": "The DAG's schedule (cron or preset); null: triggered only."},
+        "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "The DAG's start_date, YYYY-MM-DD, in the past."},
+        "catchup": {"type": "boolean"},
+        "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags added to the DAG's own."},
+        "cloud_credentials": {
+          "type": "array",
+          "items": {"enum": ["gcp", "aws", "azure"]},
+          "description": "The worker's cloud credentials rivet receives (`cloud_credentials` of every task)."
+        },
+        "env_from_variables": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "An environment variable per Airflow Variable key, `{name}` replaced in the key."
+        }
+      }
+    }
+  }
+}

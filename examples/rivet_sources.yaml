@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rivet-lab/airflow-provider-rivet/main/airflow_provider_rivet/schemas/rivet-sources.schema.json
+#
+# Every source database of this Airflow, one DAG each: rivet_<name>_cdc. Read by examples/rivet_sources.py
+# (airflow-provider-rivet 0.4.0 or later); see docs/dags-from-file.md. A new source is one line under `sources:`.
+version: 1
+mode: cdc                                   # or batch
+config_dir: rivet                           # dags/rivet/<name>.yaml, beside this file
+state_root: /opt/airflow/rivet-state        # a volume every Airflow service mounts at this path
+state_connection: rivet_state               # a PostgreSQL server; each source's state is the database rivet_state_<name>
+source_connection: "rivet_{name}"           # the Airflow Connection of each source
+template: shop                              # sources with no config yet take shop's bucket, project and TLS mode
+
+defaults:
+  bigquery_dataset: "{name}"                # one dataset per source: two sources never share a table
+  schedule: "0 */2 * * *"
+  start_date: "2026-10-01"
+  cloud_credentials: [gcp]
+
+sources:
+  shop:
+    gcs_bucket: my-bucket
+    bigquery_project: my-project
+    tls: verify-full
+  billing:
+    exclude: ["*_tmp", "audit_log"]         # a glob that starts with * is quoted
+  analytics:
+    include: [pageviews, visitors]

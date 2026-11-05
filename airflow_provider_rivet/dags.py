@@ -37,12 +37,14 @@ from .operators import (
     RivetPlanOperator,
     RivetRunOperator,
     RivetRunWatcher,
+    RivetSpecDriftOperator,
     RivetWaveBarrier,
     _RivetTask,
     check_mode,
     config_present,
 )
 from .preflight import ConfigRefusal, PreflightRefusal, read_config
+from .sources import Source, SourcesFile, drift, read_sources_file
 
 ORDER_ONLY = "all_done"
 WATCHER_ID = "watcher"
@@ -57,6 +59,9 @@ RUN_ONLY = (
     - frozenset(inspect.signature(RivetInitOperator.__init__).parameters)
     - frozenset(inspect.signature(_RivetTask.__init__).parameters)
 )
+FILTER_FLAGS = ("--include", "--exclude")
+DRIFT_ID = "spec_drift"
+DRIFT_GATE_ID = "spec_checked"
 NOT_IN_TASK_ID = re.compile(r"[^A-Za-z0-9_.-]")  # ASCII only: Airflow 3 cannot run a non-ASCII task id
 
 
@@ -311,6 +316,9 @@ def build_source_dags(
     init_args: Sequence[str] = (),
     odbc_ini: str | None = "/etc/odbc.ini",
     operator_kwargs: Mapping[str, Any] | None = None,
+    state_database: str | None = "rivet_state_{name}",
+    include: Sequence[str] = (),
+    exclude: Sequence[str] = (),
     **dag_kwargs: Any,
 ) -> dict[str, DAG]:
     """One DAG `rivet_<name>_<mode>` per named database, created paused; put them in the DAG file's globals.
@@ -327,8 +335,18 @@ def build_source_dags(
     in the key), e.g. `{"RIVET_SOURCE_URL_SECRET": "rivet_{name}_url_secret"}` for a config with
     `url_secret: ${RIVET_SOURCE_URL_SECRET}`. Every task of the source reads its Variables when it runs, never at parse;
     a missing one fails that source's tasks with the variable-missing refusal (`Code.VARIABLE_MISSING`) and no other source.
+
+    `state_database` names each source's state database (`{name}` replaced); None uses the database the state
+    Connection names itself, as `build_cdc_dag` did. `include` and `exclude` are `rivet init`'s table globs; once the
+    config exists, a config that captures a table they leave out (or misses one an include names literally) gets a
+    `spec_drift` task that writes it again while the stream has not started, and names what to edit once it has.
     """
     names = _names("sources", sources)
+    include, exclude = _names("include", include), _names("exclude", exclude)
+    filters = [*(["--include", *include] if include else []), *(["--exclude", *exclude] if exclude else [])]
+    doubled = sorted({a.partition("=")[0] for a in init_args if a.partition("=")[0] in FILTER_FLAGS})
+    if filters and doubled:
+        raise ValueError(f"init_args set {doubled} beside `include`/`exclude`: give the globs once")
     bad = [n for n in names if not SOURCE_NAME.fullmatch(n)]
     twice = sorted({n for n in names if names.count(n) > 1})
     if bad or twice:
@@ -345,7 +363,7 @@ def build_source_dags(
             "conn_id": source_connection.replace("{name}", name),
             **({"odbc_ini": odbc_ini, "dsn": name} if odbc_ini else {}),
         }
-        state = {"conn_id": state_connection, "database": f"rivet_state_{name}"}
+        state = {"conn_id": state_connection, **({"database": state_database.replace("{name}", name)} if state_database else {})}
         variables = {env: key.replace("{name}", name) for env, key in (env_from_variables or {}).items()}
         kwargs = {
             **(operator_kwargs or {}),
@@ -355,10 +373,12 @@ def build_source_dags(
         settings = {"is_paused_upon_creation": True, **dag_kwargs}
         dag_id = f"rivet_{name}_{mode}"
         common = {"config": str(config), "state_dir": str(Path(state_root) / name), "operator_kwargs": kwargs, **settings}
+        source_init_args = [*(a.replace("{name}", name) for a in init_args), *filters]
         if not config_present(config):
-            dags[dag_id] = _init_dag(dag_id, mode, [a.replace("{name}", name) for a in init_args], common)
+            dags[dag_id] = _init_dag(dag_id, mode, source_init_args, common)
             continue
-        build = partial(_config_dag, dag_id, mode, config, common, kwargs, source, state)
+        drift_check = (include, exclude, source_init_args) if filters else None
+        build = partial(_config_dag, dag_id, mode, config, common, kwargs, source, state, drift_check)
         dags[dag_id] = _built_or_refused(dag_id, mode, config, common, build)
     return dags
 
@@ -371,8 +391,11 @@ def _config_dag(
     kwargs: dict[str, Any],
     source: Mapping[str, Any],
     state: Mapping[str, Any],
+    drift_check: tuple[Sequence[str], Sequence[str], list[str]] | None = None,
 ) -> DAG:
-    """The DAG built from a source's config."""
+    """The DAG built from a source's config; with `drift_check` (include, exclude, init_args), a config that differs
+    from the include and exclude gets the tasks that say so (`_with_drift_check`)."""
+    init_kwargs = {**kwargs, "env_from_connections": {SOURCE_ENV: source, "RIVET_STATE_URL": state}}
     doc = read_config(str(config))
     source_block = doc.get("source") or {}
     url_env = source_block.get("url_env")
@@ -382,7 +405,37 @@ def _config_dag(
         kwargs["env_from_connections"] = {"RIVET_STATE_URL": state}
     elif url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
-    return _dag_of_config(dag_id, mode == "cdc", config, doc, common)
+    dag = _dag_of_config(dag_id, mode == "cdc", config, doc, common)
+    if drift_check and drift(doc, mode, drift_check[0], drift_check[1]):
+        _with_drift_check(dag, mode, drift_check, {**common, "operator_kwargs": init_kwargs})
+    return dag
+
+
+def _with_drift_check(
+    dag: DAG, mode: str, drift_check: tuple[Sequence[str], Sequence[str], list[str]], common: Mapping[str, Any]
+) -> None:
+    """Add `spec_drift` (`RivetSpecDriftOperator`) before every task that starts the run, through `spec_checked`, which
+    runs when `spec_drift` succeeded or failed and is skipped with it: a config written again skips the rest of the run,
+    and a drift that cannot be fixed fails the run (the watcher) while the stream goes on."""
+    include, exclude, init_args = drift_check
+    roots = [t for t in dag.tasks if not t.upstream_task_ids]
+    task_kwargs = {k: v for k, v in common["operator_kwargs"].items() if k not in RUN_ONLY}
+    with dag:
+        check = RivetSpecDriftOperator(
+            task_id=DRIFT_ID,
+            mode=mode,
+            source_env=SOURCE_ENV,
+            include=include,
+            exclude=exclude,
+            init_args=init_args,
+            config=common["config"],
+            state_dir=common["state_dir"],
+            **{**task_kwargs, "retries": 0},
+        )
+        gate = RivetWaveBarrier(task_id=DRIFT_GATE_ID, trigger_rule="none_skipped")
+        check.set_downstream(gate)
+        gate.set_downstream(roots)
+        dag.get_task(WATCHER_ID).set_upstream([check, gate])
 
 
 def build_config_dag(
@@ -525,3 +578,82 @@ def _init_dag(dag_id: str, mode: str, init_args: list[str], common: Mapping[str,
             **{**task_kwargs, "retries": 0},  # a failed init is re-run by the operator, after reading why it failed
         )
     return dag
+
+
+def build_dags_from_file(
+    path: str | Path, *, operator_kwargs: Mapping[str, Any] | None = None, **dag_kwargs: Any
+) -> dict[str, DAG]:
+    """One DAG per source of a sources file (`airflow_provider_rivet.sources`), as `build_source_dags` builds each:
+    `rivet_<name>_<mode>`, paused at creation, that writes its config with `rivet init` and then runs it. A relative
+    `path` is read against the folder of the DAG file that calls this. Put the result in the DAG file's globals:
+
+        globals().update(build_dags_from_file("rivet_sources.yaml"))
+
+    Each source gets its own settings: the template's (`template:`) under `defaults` under its own. A file this reader
+    refuses is an import error naming each line and column; a source that cannot be built is a DAG of one failing task,
+    `config`, naming why (`Code.SOURCES_FILE_REFUSED`), and the other sources are built as they are.
+    `operator_kwargs` (callbacks, `rivet_bin`) and `dag_kwargs` (`on_failure_callback`, `default_args`) are given to every
+    source and are overridden by what the file says."""
+    path = Path(path)
+    if not path.is_absolute():
+        path = _caller_folder() / path
+    spec = read_sources_file(path)
+    dags: dict[str, DAG] = {}
+    for name, source in spec.sources.items():
+        dag_id = f"rivet_{name}_{spec.mode}"
+        try:
+            dags.update(_source_dag(spec, source, operator_kwargs, dag_kwargs))
+        except Exception as exc:
+            refusal = PreflightRefusal(Code.SOURCES_FILE_REFUSED, f"source `{name}` of {path}: {type(exc).__name__}: {exc}")
+            common = {"config": str(spec.config_dir / f"{name}.yaml"), "is_paused_upon_creation": True, **dag_kwargs}
+            dags[dag_id] = _refused_dag(dag_id, spec.mode, spec.config_dir / f"{name}.yaml", refusal, common)
+    return dags
+
+
+def _caller_folder() -> Path:
+    """The folder of the file that called `build_dags_from_file`."""
+    frame = inspect.stack(context=0)[2]
+    return Path(frame.filename).resolve().parent
+
+
+def _source_dag(
+    spec: SourcesFile,
+    source: Source,
+    operator_kwargs: Mapping[str, Any] | None,
+    dag_kwargs: Mapping[str, Any],
+) -> dict[str, DAG]:
+    """The DAG of one source of a sources file."""
+    name, settings = source.name, source.settings
+    config = spec.config_dir / f"{name}.yaml"
+    if spec.template_missing and name != spec.template and not config_present(config):
+        raise ValueError(
+            f"{spec.template_missing}: a source with no config yet takes its bucket, project and TLS mode from it; run "
+            f"the DAG of `{spec.template}` first, or name them in `defaults`"
+        )
+    task_kwargs = dict(operator_kwargs or {})
+    if settings.get("cloud_credentials") is not None:
+        task_kwargs["cloud_credentials"] = list(settings["cloud_credentials"])
+    dag_settings: dict[str, Any] = dict(dag_kwargs)
+    for key in ("schedule", "catchup"):
+        if key in settings:
+            dag_settings[key] = settings[key]
+    if settings.get("start_date"):
+        dag_settings["start_date"] = datetime.strptime(settings["start_date"], "%Y-%m-%d")
+    if settings.get("tags"):
+        dag_settings["tags"] = ["rivet", spec.mode, *settings["tags"]]
+    return build_source_dags(
+        [name],
+        mode=spec.mode,
+        config_dir=str(spec.config_dir),
+        state_root=spec.state_root,
+        state_connection=spec.state_connection,
+        source_connection=spec.source_connection,
+        env_from_variables=settings.get("env_from_variables"),
+        init_args=source.init_args(),
+        odbc_ini=spec.odbc_ini,
+        operator_kwargs=task_kwargs,
+        state_database=source.state_database(),
+        include=settings.get("include") or (),
+        exclude=settings.get("exclude") or (),
+        **dag_settings,
+    )
