@@ -164,7 +164,8 @@ in `state_dir`.
 
 ## 5. The DAG
 
-[`examples/rivet_cdc_per_source.py`](../examples/rivet_cdc_per_source.py) builds one DAG per source. It reads the
+[`examples/rivet_cdc_per_source.py`](../examples/rivet_cdc_per_source.py) is deprecated: build new DAGs from one file
+([DAGs from one file](dags-from-file.md)), which keeps this layout. The example builds one DAG per source. It reads the
 `mode: cdc` export's name and tables from `dags/rivet/<src>.yaml` and wires `state_dir`, the two Connections and
 `cloud_credentials=["gcp"]` by the layout above. Copy it into `dags/`, then list the sources (`RIVET_EXAMPLE_SOURCES`,
 or edit `SOURCES`) and set the schedule to cron's. The scheduler and the worker read `RIVET_EXAMPLE_SOURCES` when

@@ -1,0 +1,473 @@
+"""The first run of a source: a long step is not silent, the preflight checks, the folders other services share."""
+
+from __future__ import annotations
+
+import logging
+import os
+import stat
+import sys
+import time
+import types
+from pathlib import Path
+from typing import Any
+
+import pytest
+from airflow.exceptions import AirflowFailException
+from conftest import FakeTI, Rig
+from test_source_dags import Init, connection, lookup
+
+from airflow_provider_rivet import checks
+from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
+from airflow_provider_rivet.events import Event
+from airflow_provider_rivet.operators import RivetPreflightOperator, RivetRunOperator, make_shared_folder
+from airflow_provider_rivet.stderr import Follower
+from airflow_provider_rivet.tasklog import TaskLog
+
+
+def follow(path: Path, every: float | None = None, lines: bool = True) -> tuple[Follower, list[str], list[tuple]]:
+    seen: list[str] = []
+    beats: list[tuple] = []
+    follower = Follower(path, seen.append if lines else None, lambda *b: beats.append(b), every, poll=0.05)
+    return follower, seen, beats
+
+
+def wait_for(condition: Any, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+def test_the_follower_passes_each_whole_line_as_it_comes_and_the_unfinished_one_at_the_end(tmp_path: Path) -> None:
+    path = tmp_path / "err.log"
+    path.write_bytes(b"")
+    follower, seen, _ = follow(path)
+    with follower, open(path, "ab", buffering=0) as out:
+        out.write(b"first\r\nsec")
+        wait_for(lambda: seen == ["first"])
+        out.write(b"ond\nlast, no newline")
+        wait_for(lambda: seen == ["first", "second"])
+    assert seen == ["first", "second", "last, no newline"]
+
+
+def test_the_follower_beats_with_the_time_run_the_size_and_the_time_since_the_file_grew(tmp_path: Path) -> None:
+    path = tmp_path / "err.log"
+    path.write_bytes(b"12345\n")
+    follower, _, beats = follow(path, every=0.1)
+    with follower:
+        wait_for(lambda: len(beats) >= 2)
+    elapsed, size, idle = beats[-1]
+    assert size == 6 and elapsed >= idle > 0 and elapsed >= 0.1
+
+
+def test_without_lines_to_pass_the_follower_never_reads_the_file_only_its_size(tmp_path: Path) -> None:
+    path = tmp_path / "err.log"
+    path.write_bytes(b"secret-ish text\n")
+    path.chmod(0)
+    follower, seen, beats = follow(path, every=0.1, lines=False)
+    with follower:
+        wait_for(lambda: beats)
+    assert seen == [] and beats[-1][1] == 16
+
+
+def test_a_follower_with_nothing_to_do_starts_no_thread_and_a_missing_file_is_no_error(tmp_path: Path) -> None:
+    follower, seen, beats = follow(tmp_path / "never.log", every=None, lines=False)
+    with follower:
+        pass
+    assert not follower.thread.is_alive() and follower.thread.ident is None and (seen, beats) == ([], [])
+    with follow(tmp_path / "never.log", every=0.05)[0]:
+        time.sleep(0.15)
+
+
+def test_a_heartbeat_says_how_long_the_step_ran_and_only_the_first_says_how_to_follow_it() -> None:
+    lines: list[tuple[int, str]] = []
+    log = TaskLog("run", "orders", None, lambda level, text: lines.append((level, text)))
+    log.record({"event": Event.START, "step": "run"})
+    beat = {"event": Event.PROGRESS, "step": "run", "stderr_bytes": 2048, "stderr_path": "/s/run.stderr.log"}
+    log.record({**beat, "elapsed": 61.0, "idle": 4.0})
+    log.record({**beat, "elapsed": 3725.0, "idle": 125.0})
+    shown = [text for level, text in lines if level == logging.INFO]
+    assert shown == [
+        "rivet run running for 1m 1s; stderr 2.0 KiB, last written 4 s ago; follow it: tail -f /s/run.stderr.log",
+        "rivet run running for 1h 2m; stderr 2.0 KiB, last written 2m 5s ago",
+    ]
+
+
+def test_a_long_rivet_step_writes_heartbeats_and_its_stderr_lines_into_the_task_log(rig: Rig, tmp_path: Path) -> None:
+    rig.scenario(run={"stderr": "connected to the source", "sleep": 2.5, "started": str(tmp_path / "started")})
+    payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=0.5, stream_stderr=True))
+    assert payload["decision"] == "success", payload
+    beats = rig.events(Event.PROGRESS)
+    assert beats and beats[0]["step"] == "run" and beats[0]["stderr_path"] == payload["stderr_path"]
+    assert any("connected to the source" in str(r) for r in rig.records)
+
+
+def test_progress_every_none_writes_no_heartbeat(rig: Rig, tmp_path: Path) -> None:
+    rig.scenario(run={"sleep": 1.5, "started": str(tmp_path / "started")})
+    payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=None))
+    assert payload["decision"] == "success" and rig.events(Event.PROGRESS) == []
+
+
+def test_a_shared_folder_and_its_missing_parents_are_group_writable_never_world_writable(tmp_path: Path) -> None:
+    existing = tmp_path / "volume"
+    existing.mkdir(mode=0o755)
+    existing.chmod(0o755)
+    make_shared_folder(existing / "rivet" / "shop")
+    for path in (existing / "rivet", existing / "rivet" / "shop"):
+        mode = path.stat().st_mode
+        assert mode & stat.S_IWGRP and not mode & stat.S_IWOTH, f"{path}: {mode:o}"
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o755
+
+
+def test_the_config_init_writes_is_group_writable_and_its_folder_too(init: Init) -> None:
+    out = init.run(init_args=["--tls", "disable"])
+    assert out["written"] is True
+    assert stat.S_IMODE(init.config.stat().st_mode) == 0o664
+    assert init.config.parent.stat().st_mode & stat.S_IWGRP and not init.config.parent.stat().st_mode & stat.S_IWOTH
+
+
+@pytest.fixture
+def init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Init:
+    return Init(tmp_path, monkeypatch)
+
+
+# --- checks ---
+
+
+def test_a_check_line_names_the_fix_unless_it_passed() -> None:
+    assert Check("x", FAIL, "is off", "turn it on").line() == "FAIL x: is off -> fix: turn it on"
+    assert Check("x", PASS, "is on", "turn it on").line() == "PASS x: is on"
+    found = [Check("a", PASS, ""), Check("b", FAIL, ""), Check("c", SKIP, ""), Check("d", FAIL, "")]
+    assert checks.summary(found) == {PASS: 1, WARN: 0, FAIL: 2, SKIP: 1}
+    assert [c.name for c in checks.failed(found)] == ["b", "d"]
+
+
+def test_a_folder_is_writable_or_created_in_its_nearest_existing_parent(tmp_path: Path) -> None:
+    assert checks.folder("f", tmp_path) == Check("f", PASS, f"{tmp_path} is writable")
+    later = tmp_path / "a" / "b"
+    assert checks.folder("f", later) == Check("f", PASS, f"{tmp_path} is writable; {later} is created there")
+    assert not later.exists()
+    gone = checks.folder("f", later, must_exist=True)
+    assert gone.status == FAIL and gone.fix == "mount the volume at this path in every Airflow service"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes into a read-only folder")
+def test_a_folder_this_worker_cannot_write_says_who_it_is_and_who_owns_it(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    try:
+        found = checks.folder("config folder", locked / "rivet")
+    finally:
+        locked.chmod(0o755)
+    assert found.status == FAIL
+    assert f"(uid {os.getuid()}, gid {os.getgid()}: Permission denied); {locked} is owned by uid" in found.detail
+    assert "mode 555" in found.detail and "chmod -R g+w" in found.fix and "777" not in found.fix
+
+
+class Cursor:
+    """A DB-API cursor answering each statement from `answers` (a row, a list of rows, or an exception)."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        self.answers, self.last = answers, None
+
+    def __enter__(self) -> Cursor:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def execute(self, sql: str, args: tuple = ()) -> None:
+        answer = self.answers.get(sql)
+        if isinstance(answer, Exception):
+            raise answer
+        self.last = answer
+
+    def fetchone(self) -> Any:
+        return self.last[0] if isinstance(self.last, list) else self.last
+
+    def fetchall(self) -> Any:
+        return self.last if isinstance(self.last, list) else ([self.last] if self.last else [])
+
+
+def db_of(answers: dict[str, Any]) -> Any:
+    db = types.SimpleNamespace(closed=False)
+    db.cursor = lambda: Cursor(answers)
+    db.close = lambda: setattr(db, "closed", True)
+    return db
+
+
+SERVER = types.SimpleNamespace(host="pg", port=None, schema="admin", login="rivet")
+EXISTS = "SELECT 1 FROM pg_database WHERE datname = %s"
+CREATEDB = "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user"
+
+
+@pytest.mark.parametrize(
+    ("answers", "status", "said"),
+    [
+        ({EXISTS: (1,), CREATEDB: (False,)}, PASS, "exists"),
+        ({EXISTS: None, CREATEDB: (True,)}, PASS, "does not exist yet; `init` creates it"),
+        ({EXISTS: None, CREATEDB: (False,)}, FAIL, "may not create it"),
+    ],
+)
+def test_the_state_database_check_says_whether_it_exists_or_can_be_created(answers: dict, status: str, said: str) -> None:
+    (found,) = checks.state(SERVER, "rivet_state_shop", "rivet_state", connect=lambda _: db_of(answers))
+    assert found.status == status and said in found.detail
+    assert found.detail.startswith("`rivet_state_shop` on pg:5432 (Connection `rivet_state`)")
+    if status == FAIL:
+        assert found.fix == 'CREATE DATABASE "rivet_state_shop"; or ALTER ROLE rivet CREATEDB;'
+
+
+def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
+    def refuse(_: Any) -> Any:
+        raise OSError("timeout")
+
+    (found,) = checks.state(SERVER, None, "rivet_state", connect=refuse)
+    assert (found.status, found.fix) == (FAIL, "check Connection `rivet_state`") and "OSError: timeout" in found.detail
+
+
+def test_without_psycopg2_the_state_database_is_a_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "psycopg2", None)
+    (found,) = checks.state(SERVER, "d", "c")
+    assert found.status == SKIP and found.fix == "pip install psycopg2-binary"
+
+
+MYSQL = types.SimpleNamespace(host="my", port=3307, login="reader")
+MYSQL_OK = {
+    "SELECT @@global.log_bin": (1,),
+    "SELECT @@global.binlog_format": ("ROW",),
+    "SELECT @@global.binlog_row_image": ("FULL",),
+    "SELECT @@global.binlog_row_metadata": ("full",),
+    "SHOW REPLICA STATUS": [],
+    "SHOW SLAVE STATUS": [],
+    "SHOW GRANTS": [("GRANT SELECT, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO `reader`@`%`",)],
+    "SELECT @@global.server_id": (1,),
+    "SHOW REPLICAS": [],
+    "SHOW SLAVE HOSTS": [],
+}
+
+
+def mysql(answers: dict[str, Any], server_id: int | None = 4271) -> dict[str, Check]:
+    db = db_of({**MYSQL_OK, **answers})
+    found = checks.mysql_source(MYSQL, server_id, connect=lambda _: db)
+    assert db.closed is True
+    return {c.name: c for c in found}
+
+
+def test_a_mysql_source_ready_for_cdc_passes_every_check() -> None:
+    found = mysql({})
+    assert {n: c.status for n, c in found.items()} == {
+        "mysql log_bin": PASS,
+        "mysql binlog_format": PASS,
+        "mysql binlog_row_image": PASS,
+        "mysql binlog_row_metadata": PASS,
+        "mysql grants": PASS,
+        "mysql server_id": PASS,
+    }
+    assert found["mysql server_id"].detail == "the stream's server_id 4271 is free (the server's is 1)"
+
+
+def test_a_mysql_setting_a_cdc_stream_cannot_read_fails_with_the_statement_that_fixes_it() -> None:
+    found = mysql({"SELECT @@global.binlog_format": ("STATEMENT",), "SELECT @@global.binlog_row_metadata": RuntimeError()})
+    assert found["mysql binlog_format"] == Check(
+        "mysql binlog_format", FAIL, "is STATEMENT", "SET PERSIST binlog_format = 'ROW';"
+    )
+    assert found["mysql binlog_row_metadata"].status == WARN
+
+
+def test_a_missing_mysql_grant_is_named_with_its_grant_statement() -> None:
+    found = mysql({"SHOW GRANTS": [("GRANT SELECT ON `shop`.* TO `reader`@`%`",)]})["mysql grants"]
+    assert found.status == FAIL and found.fix == "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'reader'@'%';"
+    assert mysql({"SHOW GRANTS": [("GRANT ALL PRIVILEGES ON *.* TO `reader`@`%`",)]})["mysql grants"].status == PASS
+
+
+def test_a_replica_id_another_replica_uses_is_a_warning_and_no_id_yet_is_a_skip() -> None:
+    assert mysql({"SHOW REPLICAS": [(4271, "", 3306, 1)]})["mysql server_id"].status == WARN
+    assert mysql({"SELECT @@global.server_id": (4271,)})["mysql server_id"].status == WARN
+    assert mysql({}, server_id=None)["mysql server_id"].status == SKIP
+
+
+def test_a_mysql_replica_without_log_replica_updates_fails() -> None:
+    found = mysql({"SHOW REPLICA STATUS": [("primary",)], "SELECT @@global.log_replica_updates": (0,)})
+    assert found["mysql log_replica_updates"].status == FAIL
+
+
+def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
+    answers = {
+        "SHOW wal_level": ("replica",),
+        "SELECT rolreplication OR rolsuper FROM pg_roles WHERE rolname = current_user": (True,),
+        "SELECT current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots)": (0,),
+    }
+    found = {c.name: c for c in checks.postgres_source(SERVER, connect=lambda _: db_of(answers))}
+    assert {n: c.status for n, c in found.items()} == {
+        "postgres wal_level": FAIL,
+        "postgres replication role": PASS,
+        "postgres replication slots": FAIL,
+    }
+    assert found["postgres wal_level"].fix == "ALTER SYSTEM SET wal_level = logical; then restart"
+
+
+class Blob:
+    def __init__(self, bucket: Bucket, name: str) -> None:
+        self.bucket, self.name = bucket, name
+
+    def upload_from_string(self, data: bytes) -> None:
+        if self.bucket.read_only:
+            raise PermissionError("403 storage.objects.create denied")
+        self.bucket.objects.add(self.name)
+
+    def delete(self) -> None:
+        self.bucket.objects.discard(self.name)
+
+
+class Bucket:
+    def __init__(self, location: str, read_only: bool = False) -> None:
+        self.location, self.read_only, self.objects = location, read_only, set()
+
+    def blob(self, name: str) -> Blob:
+        return Blob(self, name)
+
+
+class Storage:
+    def __init__(self, bucket: Bucket | None) -> None:
+        self.bucket = bucket
+
+    def lookup_bucket(self, name: str) -> Bucket | None:
+        return self.bucket
+
+    def list_blobs(self, name: str, prefix: str, max_results: int) -> list:
+        return []
+
+
+def test_a_bucket_is_written_listed_and_cleaned_and_its_location_returned() -> None:
+    bucket = Bucket("US")
+    found, location = checks.gcs("b", "rivet/shop/", client=Storage(bucket))
+    assert [c.status for c in found] == [PASS] and location == "US" and bucket.objects == set()
+    assert found[0].name == "gcs gs://b/rivet/shop/"
+
+
+def test_a_missing_bucket_is_not_created_and_says_how_to_create_it() -> None:
+    (found,), location = checks.gcs("b", "", client=Storage(None))
+    assert found.status == FAIL and location is None
+    assert found.fix == "gcloud storage buckets create gs://b --location=<the dataset's>"
+
+
+def test_a_bucket_the_identity_cannot_write_fails_naming_the_role() -> None:
+    (found,), location = checks.gcs("b", "p/", client=Storage(Bucket("EU", read_only=True)))
+    assert found.status == FAIL and "403" in found.detail and "roles/storage.objectAdmin" in found.fix and location == "EU"
+
+
+class NotFound(Exception):
+    pass
+
+
+class BigQuery:
+    def __init__(self, location: str | None, ddl_error: Exception | None = None) -> None:
+        self.location, self.ddl_error, self.sql = location, ddl_error, []
+
+    def get_dataset(self, ref: str) -> Any:
+        if self.location is None:
+            raise NotFound(ref)
+        return types.SimpleNamespace(location=self.location)
+
+    def query(self, sql: str) -> Any:
+        self.sql.append(sql)
+        if self.ddl_error:
+            raise self.ddl_error
+        return types.SimpleNamespace(result=lambda: None)
+
+
+def test_a_dataset_in_the_buckets_location_passes_after_a_table_is_created_and_dropped() -> None:
+    client = BigQuery("us")
+    assert [c.status for c in checks.bigquery("p", "d", "US", client=client)] == [PASS]
+    assert "CREATE TABLE `p.d._rivet_airflow_preflight_" in client.sql[0] and "DROP TABLE" in client.sql[0]
+
+
+def test_a_dataset_away_from_the_bucket_is_a_warning_and_a_missing_one_says_how_to_make_it() -> None:
+    found = checks.bigquery("p", "d", "EU", client=BigQuery("US"))
+    assert [c.status for c in found] == [PASS, WARN] and "the dataset is in US, the bucket in EU" in found[1].detail
+    (missing,) = checks.bigquery("p", "d", None, client=BigQuery(None))
+    assert missing.status == FAIL and missing.fix == "bq mk --dataset --location=<the bucket's> p:d"
+    (denied,) = checks.bigquery("p", "d", None, client=BigQuery("US", ddl_error=PermissionError("403")))
+    assert denied.status == FAIL and "roles/bigquery.dataEditor" in denied.fix
+
+
+def test_without_the_google_libraries_the_bucket_and_dataset_are_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(checks, "_optional", lambda *_: None)
+    (bucket,), _ = checks.gcs("b", "")
+    (dataset,) = checks.bigquery("p", "d", None)
+    assert (bucket.status, dataset.status) == (SKIP, SKIP) and dataset.fix == "run by hand: bq show p:d"
+
+
+# --- the preflight task ---
+
+
+class Caps:
+    def __init__(self, version: str, new: bool) -> None:
+        self.version_text, self.new = version, new
+
+    def new_enough(self) -> bool:
+        return self.new
+
+
+def preflight(init: Init, monkeypatch: pytest.MonkeyPatch, caps: Caps | None = None, **kwargs: Any) -> Any:
+    monkeypatch.setattr("airflow_provider_rivet.operators.probe", lambda _: caps or Caps("0.33.0 (abc)", True))
+    monkeypatch.setattr(checks, "_optional", lambda *_: None)
+    kwargs.setdefault("env_from_connections", {"RIVET_SOURCE_URL": {"conn_id": "shop", "odbc_ini": str(init.tmp / "odbc.ini")}})
+    op = RivetPreflightOperator(
+        task_id="preflight",
+        mode="cdc",
+        source_env="RIVET_SOURCE_URL",
+        config=str(init.config),
+        state_dir=str(init.tmp / "state" / "shop"),
+        rivet_bin=str(init.tmp / "bin" / "rivet"),
+        **kwargs,
+    )
+    try:
+        return op.execute({"ti": FakeTI(task_id="preflight"), "run_id": "r"})
+    except Exception as exc:
+        return exc
+
+
+def test_preflight_before_init_checks_the_binary_the_folders_and_skips_what_it_cannot_reach(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = preflight(init, monkeypatch, init_args=["--gcs-bucket", "b", "--tls", "disable"])
+    assert out["decision"] == "pass", out
+    by_name = {line.split(":")[0].split(None, 1)[1]: line.split()[0] for line in out["checks"]}
+    assert by_name == {
+        "rivet binary": PASS,
+        "config folder": PASS,
+        "state folder": PASS,
+        "mysql cdc": SKIP,
+        "gcs gs": SKIP,
+    }
+    assert init.calls() == [] and not init.config.exists()
+
+
+def test_preflight_of_a_written_config_runs_rivet_check_on_it(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    init.run(init_args=["--tls", "disable"])
+    out = preflight(init, monkeypatch)
+    assert out["decision"] == "pass" and f"PASS rivet check: {init.config} checks clean" in out["checks"]
+    assert init.calls()[-1]["argv"] == ["check", "--config", str(init.config)]
+
+
+def test_a_failed_preflight_check_fails_the_task_without_a_retry_naming_each_check(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = preflight(init, monkeypatch, caps=Caps("0.20.0", False))
+    assert isinstance(out, AirflowFailException), out
+    assert "preflight: 1 check(s) failed: rivet binary; each line above says what to change" in str(out)
+
+
+def test_preflight_checks_the_state_database_the_tasks_will_use(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    lookup(monkeypatch, {"rivet_state": connection("rivet_state", "postgres", schema="admin")})
+    refs = {
+        "RIVET_SOURCE_URL": {"conn_id": "shop", "odbc_ini": str(init.tmp / "odbc.ini")},
+        "RIVET_STATE_URL": {"conn_id": "rivet_state", "database": "rivet_state_shop"},
+    }
+    out = preflight(init, monkeypatch, env_from_connections=refs)
+    assert (
+        "SKIP state database: `rivet_state_shop` on rivet_state.host:5432 (Connection `rivet_state`); psycopg2 is not "
+        "installed, so it was not reached -> fix: pip install psycopg2-binary"
+    ) in out["checks"]

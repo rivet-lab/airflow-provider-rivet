@@ -58,6 +58,21 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - The failure callback and the step's error line parse rivet's stderr lines through `reading._json_of`, as the summary
   does: the same result, one parser.
 
+- **First run**: every DAG built from the file starts with a `preflight` task (`RivetPreflightOperator`, `preflight:
+  false` leaves it out) that checks what the next tasks need and logs one PASS / WARN / FAIL / SKIP line per check with
+  what to change: the rivet binary and its version, the config and state folders, the state database, the source's
+  CDC settings (MySQL binlog settings, grants, `server_id`; PostgreSQL `wal_level`, `REPLICATION`, slots), the GCS
+  bucket and the BigQuery dataset (written to and in one location) until the stream has a checkpoint, and `rivet check`
+  once the config exists. A FAIL fails it with no retry. A check whose client library is not installed is a SKIP that
+  names the command to run by hand.
+- Every task logs where it reads and writes (`state    database ...`, `writes   bigquery ..., gcs ...`). While a rivet
+  step runs, a heartbeat every `progress_every` seconds (default 60, `None` for none) says how long it has run, the size
+  of its stderr and when rivet last wrote; the first names `tail -f <stderr path>`. `stream_stderr=True` copies rivet's
+  stderr lines into the task log as they come; DAGs built from the file set it (`stream_stderr: false` in the file).
+- Docs: the bucket and the dataset are not created for you; running on Docker Compose (host and container paths, two
+  compose files and `--env-file`, `up -d --build`, a grey queued task, the hashed config is a working copy, restarting a
+  source); troubleshooting, with a 403 on served logs (the same `AIRFLOW__WEBSERVER__SECRET_KEY` on every service).
+
 ### Changed (behaviour change)
 
 - Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
@@ -73,6 +88,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
   `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
   schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.
+
+- `examples/rivet_cdc_per_source.py` is deprecated in favour of `build_dags_from_file`.
+- The folders and the config a task creates are group-writable (`g+w`, the config `0o664`), never world-writable.
 
 ### Fixed
 

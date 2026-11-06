@@ -366,7 +366,14 @@ class _Session:
 
         def beat(elapsed: float, size: int, idle: float) -> None:
             self.emit(
-                {"event": Event.PROGRESS, "step": name, "elapsed": elapsed, "stderr_bytes": size, "idle": idle, "stderr_path": str(stderr_path)}
+                {
+                    "event": Event.PROGRESS,
+                    "step": name,
+                    "elapsed": elapsed,
+                    "stderr_bytes": size,
+                    "idle": idle,
+                    "stderr_path": str(stderr_path),
+                }
             )
 
         return Follower(stderr_path, line if self.req.stream_stderr else None, beat, self.req.progress_every)

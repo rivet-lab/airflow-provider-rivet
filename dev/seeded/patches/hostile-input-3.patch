@@ -1,9 +1,9 @@
 diff --git a/airflow_provider_rivet/stderr.py b/airflow_provider_rivet/stderr.py
-index 3f23532..978ea6b 100644
+index a2bf358..1e562c7 100644
 --- a/airflow_provider_rivet/stderr.py
 +++ b/airflow_provider_rivet/stderr.py
-@@ -6,7 +6,7 @@ import os
- from pathlib import Path
+@@ -11,7 +11,7 @@ from pathlib import Path
+ from typing import Any
  
  STDERR_TAIL = 1 << 20  # bytes from the end of the file; rivet's error is the last thing it writes
 -JSON_ERRORS = (ValueError, RecursionError)  # a value nested past the parser's depth is not JSON either

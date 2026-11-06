@@ -1093,7 +1093,7 @@ def test_the_state_database_sql_word_for_word(init: Init, monkeypatch: pytest.Mo
     init.run(env_from_connections=state_refs(init, 'we"ird'))
     assert server.dsn == ["postgresql://u:pw@rivet_state.host/admin"]
     assert server.sql == [("SELECT 1 FROM pg_database WHERE datname = %s", ('we"ird',)), ('CREATE DATABASE "we""ird"', ())]
-    assert said(logged(), 'state database `we"ird` created on rivet_state.host')
+    assert said(logged(), 'state database `we"ird` created on rivet_state.host:5432 (Connection `rivet_state`)')
 
 
 def test_without_psycopg2_the_state_database_is_refused(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:

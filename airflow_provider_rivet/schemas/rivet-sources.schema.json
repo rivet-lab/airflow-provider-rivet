@@ -88,6 +88,14 @@
           "type": "object",
           "additionalProperties": {"type": "string"},
           "description": "An environment variable per Airflow Variable key, `{name}` replaced in the key."
+        },
+        "preflight": {
+          "type": "boolean",
+          "description": "Run the `preflight` task first in the source's DAG (the binary, folders, state database, the source's CDC settings, the bucket and dataset before the stream starts, `rivet check`); default true."
+        },
+        "stream_stderr": {
+          "type": "boolean",
+          "description": "Copy rivet's stderr into the task log as it is written; default true. The heartbeat line comes either way."
         }
       }
     }

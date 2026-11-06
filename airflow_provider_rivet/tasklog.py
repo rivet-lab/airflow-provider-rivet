@@ -48,6 +48,16 @@ def _secs(seconds: float) -> str:
     return f"{seconds:.1f} s"
 
 
+def _duration(seconds: float) -> str:
+    """`4 s`, `12m 3s`, `2h 5m`: a running time as an operator reads it."""
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole} s"
+    if whole < 3600:
+        return f"{whole // 60}m {whole % 60}s"
+    return f"{whole // 3600}h {whole % 3600 // 60}m"
+
+
 def _counts(units: list[dict[str, Any]]) -> list[str]:
     """`30 rows`, `1 file`: the sums of what the units report, a count no unit reports left out."""
     parts = []
@@ -142,6 +152,8 @@ class TaskLog:
         event = record.get("event")
         if event == Event.START:
             self.steps.append({"step": record.get("step"), "start": clock()})
+        elif event == Event.PROGRESS:
+            self.write(logging.INFO, self._beat(record))
         elif event == Event.STEP and self.steps:
             self.steps[-1].update(end=clock(), exit_status=record.get("exit_status"), signal=record.get("signal"))
         elif event == Event.LOCK_WAIT:
@@ -336,6 +348,18 @@ class TaskLog:
             name = f"{_unit_name(unit)}{f' → {target}' if target else ''}"
             lines.append((logging.INFO, f"  {UNIT_WORD.get(self.command, 'export'):<8} {name}: {text}{run}"))
         return lines
+
+    def _beat(self, record: dict[str, Any]) -> str:
+        """The heartbeat line of a long step; its first beat also says how to follow the step's full output."""
+        text = (
+            f"rivet {record.get('step')} running for {_duration(record.get('elapsed') or 0.0)}; stderr "
+            f"{_size(int(record.get('stderr_bytes') or 0))}, last written {_duration(record.get('idle') or 0.0)} ago"
+        )
+        step = self.steps[-1] if self.steps else {}
+        if step.get("hinted") or not record.get("stderr_path"):
+            return text
+        step["hinted"] = True
+        return f"{text}; follow it: tail -f {record['stderr_path']}"
 
     def _notes(self, payload: dict[str, Any]) -> list[tuple[int, str]]:
         """What the operator should know: single-host state, workarounds; WARNING when they must act."""

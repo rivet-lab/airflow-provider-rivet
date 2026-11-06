@@ -42,8 +42,8 @@ def tail_lines(path: Path) -> tuple[list[str], bool]:
 class Follower:
     """Follows rivet's stderr file while the process runs, so a long step is not silent in the task log: each new whole
     line goes to `on_line` (when the task streams stderr), and every `every` seconds `on_beat(elapsed, size, idle)` says
-    how long it has run, how big the file is and how long it has been since it last grew. The last lines are passed when
-    the step ends, so a streamed line is never lost."""
+    how long it has run, how big the file is and how long since it last grew. The lines left when the step ends are
+    passed on exit, so a streamed line is never lost; without `on_line` the file is never read, only its size."""
 
     def __init__(
         self,
@@ -71,6 +71,7 @@ class Follower:
         self._drain(final=True)
 
     def _run(self) -> None:
+        """Drain the file every `poll` seconds and beat every `every`, until the step ends."""
         while not self.stop.wait(self.poll):
             self._drain(final=False)
             now = time.monotonic()
@@ -79,19 +80,21 @@ class Follower:
                 self.on_beat(now - self.started, self.size, now - self.grew)
 
     def _drain(self, final: bool) -> None:
-        """Read what the file gained; pass each whole line, and on the `final` drain the unfinished one too."""
+        """Note what the file gained; pass each whole line, and on the `final` drain the unfinished one too."""
         try:
-            with open(self.path, "rb") as handle:
-                handle.seek(self.offset)
-                data = handle.read()
+            size = os.stat(self.path).st_size
         except OSError:
             return
-        if data:
-            self.offset += len(data)
-            self.size = self.offset
-            self.grew = time.monotonic()
+        if size > self.size:
+            self.size, self.grew = size, time.monotonic()
         if not self.on_line:
             return
+        data = b""
+        if size > self.offset:
+            with open(self.path, "rb") as handle:
+                handle.seek(self.offset)
+                data = handle.read(size - self.offset)
+            self.offset += len(data)
         *whole, self.partial = (self.partial + data).split(b"\n")
         if final and self.partial:
             whole, self.partial = [*whole, self.partial], b""

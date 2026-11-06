@@ -24,7 +24,7 @@ MYSQL_CDC_SETTINGS = (
     ("binlog_row_metadata", ("FULL",), "SET PERSIST binlog_row_metadata = 'FULL';"),
 )
 MYSQL_GRANTS = ("REPLICATION SLAVE", "REPLICATION CLIENT", "SELECT")
-DEFAULT_SERVER_ID = 4271
+RIVET_DEFAULT_SERVER_ID = 4271
 
 
 @dataclass(frozen=True)
@@ -42,25 +42,42 @@ class Check:
         return f"{self.status:<4} {self.name}: {self.detail}{fix}"
 
 
+def write_probe(folder: Path) -> None:
+    """Create and remove a file in `folder`; OSError when this process cannot."""
+    handle, probe = tempfile.mkstemp(dir=folder, prefix=".rivet-airflow-probe-")
+    os.close(handle)
+    os.unlink(probe)
+
+
+def not_writable(folder: Path, exc: OSError) -> tuple[str, str]:
+    """What a failed `write_probe` found (who this process is, who owns the nearest existing folder) and the remedy."""
+    owner = next((p for p in (folder, *folder.parents) if p.exists()), folder)
+    st = owner.stat()
+    uid, gid = os.getuid(), os.getgid()
+    found = (
+        f"{folder} is not writable by this worker (uid {uid}, gid {gid}: {exc.strerror or exc}); {owner} is owned by uid "
+        f"{st.st_uid}, gid {st.st_gid}, mode {st.st_mode & 0o7777:o}"
+    )
+    fix = (
+        f"on the host, `sudo chown -R {uid}:0 <folder> && sudo chmod -R g+w <folder>` (the official Airflow image runs as "
+        "AIRFLOW_UID, 50000 by default, in group 0), not a world-writable folder"
+    )
+    return found, fix
+
+
 def folder(name: str, path: Path, must_exist: bool = False) -> Check:
-    """Whether this worker can create a file in `path`; a folder `must_exist` (a mounted volume) is never created."""
+    """Whether this worker can create a file in `path`, or in its nearest existing parent; one that `must_exist` (a
+    mounted volume) is never created."""
     if must_exist and not path.is_dir():
-        return Check(name, FAIL, f"{path} does not exist on this worker", "mount the volume at this path in every Airflow service")
+        return Check(
+            name, FAIL, f"{path} does not exist on this worker", "mount the volume at this path in every Airflow service"
+        )
     probe_dir = next((p for p in (path, *path.parents) if p.exists()), path)
     try:
-        handle, probe = tempfile.mkstemp(dir=probe_dir, prefix=".rivet-airflow-probe-")
-        os.close(handle)
-        os.unlink(probe)
+        write_probe(probe_dir)
     except OSError as exc:
-        st = probe_dir.stat()
-        return Check(
-            name,
-            FAIL,
-            f"{probe_dir} is not writable by uid {os.getuid()}, gid {os.getgid()} ({exc.strerror or exc}); owner uid "
-            f"{st.st_uid}, gid {st.st_gid}, mode {st.st_mode & 0o7777:o}",
-            f"sudo chown -R {os.getuid()}:0 <folder> && sudo chmod -R g+w <folder> on the host",
-        )
-    return Check(name, PASS, f"{path} is writable")
+        return Check(name, FAIL, *not_writable(probe_dir, exc))
+    return Check(name, PASS, f"{path} is writable" if probe_dir == path else f"{probe_dir} is writable; {path} is created there")
 
 
 def _optional(*modules: str) -> Any:
@@ -80,11 +97,15 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
     if connect is None:
         psycopg2 = _optional("psycopg2")
         if psycopg2 is None:
-            return [Check(name, SKIP, f"{where}; psycopg2 is not installed, so it was not reached", "pip install psycopg2-binary")]
+            return [
+                Check(name, SKIP, f"{where}; psycopg2 is not installed, so it was not reached", "pip install psycopg2-binary")
+            ]
         from .connections import connection_url, with_database
 
-        def connect(c: Any) -> Any:
+        def _connect(c: Any) -> Any:
             return psycopg2.connect(connection_url(with_database(c, c.schema or "postgres")))
+
+        connect = _connect
 
     try:
         db = connect(server)
@@ -109,7 +130,7 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
             name,
             FAIL,
             f"{where} does not exist and the Connection's role may not create it",
-            f"CREATE DATABASE \"{target}\"; or ALTER ROLE {server.login} CREATEDB;",
+            f'CREATE DATABASE "{target}"; or ALTER ROLE {server.login} CREATEDB;',
         )
     ]
 
@@ -117,24 +138,40 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
 def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], Any] | None = None) -> list[Check]:
     """The MySQL settings, grants and replica id a CDC stream needs, read from the source as rivet will read them."""
     name = "mysql cdc"
-    sql = (
-        "SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata, @@log_replica_updates; "
-        "SHOW GRANTS"
-    )
+    sql = "SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata; SHOW GRANTS"
     if connect is None:
         driver = _optional("MySQLdb", "pymysql")
         if driver is None:
-            return [Check(name, SKIP, "no MySQL driver on this worker (MySQLdb or pymysql), so it was not reached", f"run by hand: {sql}")]
+            return [
+                Check(
+                    name,
+                    SKIP,
+                    "no MySQL driver on this worker (MySQLdb or pymysql), so it was not reached",
+                    f"run by hand: {sql}",
+                )
+            ]
 
-        def connect(c: Any) -> Any:
+        def _connect(c: Any) -> Any:
             password = "passwd" if driver.__name__ == "MySQLdb" else "password"
-            args = {"host": c.host, "port": int(c.port or 3306), "user": c.login, password: c.password or "", "connect_timeout": 10}
+            args = {
+                "host": c.host,
+                "port": int(c.port or 3306),
+                "user": c.login,
+                password: c.password or "",
+                "connect_timeout": 10,
+            }
             return driver.connect(**args)
+
+        connect = _connect
 
     try:
         db = connect(source)
     except Exception as exc:
-        return [Check(name, FAIL, f"cannot connect to {source.host}:{source.port or 3306} ({type(exc).__name__})", f"run by hand: {sql}")]
+        return [
+            Check(
+                name, FAIL, f"cannot connect to {source.host}:{source.port or 3306} ({type(exc).__name__})", f"run by hand: {sql}"
+            )
+        ]
     out: list[Check] = []
     try:
         cur = db.cursor()
@@ -143,6 +180,9 @@ def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], An
             values[variable] = _first(cur, f"SELECT @@global.{variable}")
         for variable, wanted, fix in MYSQL_CDC_SETTINGS:
             got = values[variable]
+            if got is None:
+                out.append(Check(f"mysql {variable}", WARN, "could not be read", f"run by hand: SELECT @@global.{variable};"))
+                continue
             ok = str(got).upper() in wanted
             out.append(Check(f"mysql {variable}", PASS if ok else FAIL, f"is {got}", "" if ok else fix))
         replicating = _rows(cur, "SHOW REPLICA STATUS") or _rows(cur, "SHOW SLAVE STATUS")
@@ -168,7 +208,10 @@ def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], An
             )
         )
         own = _first(cur, "SELECT @@global.server_id")
-        wanted_id = server_id or DEFAULT_SERVER_ID
+        if server_id is None:
+            out.append(Check("mysql server_id", SKIP, "`rivet init` names the stream's server_id; the next run checks it"))
+            return out
+        wanted_id = server_id
         peers = [r for r in _rows(cur, "SHOW REPLICAS") or _rows(cur, "SHOW SLAVE HOSTS") if r and str(r[0]) == str(wanted_id)]
         clash = str(own) == str(wanted_id) or peers
         out.append(
@@ -213,8 +256,10 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
             return [Check(name, SKIP, "psycopg2 is not installed, so the source was not reached", "run by hand: SHOW wal_level;")]
         from .connections import connection_url
 
-        def connect(c: Any) -> Any:
+        def _connect(c: Any) -> Any:
             return psycopg2.connect(connection_url(c, "postgresql"))
+
+        connect = _connect
 
     try:
         db = connect(source)
@@ -231,7 +276,12 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
     finally:
         db.close()
     return [
-        Check("postgres wal_level", PASS if wal == "logical" else FAIL, f"is {wal}", "ALTER SYSTEM SET wal_level = logical; then restart"),
+        Check(
+            "postgres wal_level",
+            PASS if wal == "logical" else FAIL,
+            f"is {wal}",
+            "ALTER SYSTEM SET wal_level = logical; then restart",
+        ),
         Check(
             "postgres replication role",
             PASS if replication else FAIL,
@@ -247,20 +297,33 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
     ]
 
 
-def gcs(bucket: str, prefix: str, client: Any = None) -> tuple[list[Check], str | None]:
+def gcs(bucket: str, prefix: str, client: Any = None, key_file: str | None = None) -> tuple[list[Check], str | None]:
     """Write, list and delete a small object under the stream's prefix, as rivet will; the bucket's location."""
     name = f"gcs gs://{bucket}/{prefix}"
     if client is None:
         storage = _optional("google.cloud.storage")
         if storage is None:
-            return [Check(name, SKIP, "google-cloud-storage is not installed", f"run by hand: gcloud storage ls gs://{bucket}/")], None
-        client = storage.Client()
+            return [
+                Check(name, SKIP, "google-cloud-storage is not installed", f"run by hand: gcloud storage ls gs://{bucket}/")
+            ], None
+        client = storage.Client.from_service_account_json(key_file) if key_file else storage.Client()
     try:
         handle = client.lookup_bucket(bucket)
     except Exception as exc:
-        return [Check(name, FAIL, f"cannot read the bucket ({type(exc).__name__}: {exc})", "grant the worker's identity roles/storage.objectAdmin on it")], None
+        return [
+            Check(
+                name,
+                FAIL,
+                f"cannot read the bucket ({type(exc).__name__}: {exc})",
+                "grant the worker's identity roles/storage.objectAdmin on it",
+            )
+        ], None
     if handle is None:
-        return [Check(name, FAIL, "the bucket does not exist", f"gcloud storage buckets create gs://{bucket} --location=<the dataset's>")], None
+        return [
+            Check(
+                name, FAIL, "the bucket does not exist", f"gcloud storage buckets create gs://{bucket} --location=<the dataset's>"
+            )
+        ], None
     blob = handle.blob(f"{prefix}.rivet-airflow-preflight-{uuid.uuid4().hex}")
     try:
         blob.upload_from_string(b"")
@@ -268,12 +331,19 @@ def gcs(bucket: str, prefix: str, client: Any = None) -> tuple[list[Check], str 
         blob.delete()
     except Exception as exc:
         return [
-            Check(name, FAIL, f"cannot write, list and delete there ({type(exc).__name__}: {exc})", "grant the worker's identity roles/storage.objectAdmin on the bucket")
+            Check(
+                name,
+                FAIL,
+                f"cannot write, list and delete there ({type(exc).__name__}: {exc})",
+                "grant the worker's identity roles/storage.objectAdmin on the bucket",
+            )
         ], handle.location
     return [Check(name, PASS, f"exists in {handle.location}; an object was written, listed and deleted")], handle.location
 
 
-def bigquery(project: str, dataset: str, bucket_location: str | None, client: Any = None) -> list[Check]:
+def bigquery(
+    project: str, dataset: str, bucket_location: str | None, client: Any = None, key_file: str | None = None
+) -> list[Check]:
     """The dataset exists, sits where the bucket is, and the identity can create and drop a table in it (as a load and a
     MERGE do)."""
     name = f"bigquery {project}.{dataset}"
@@ -281,7 +351,7 @@ def bigquery(project: str, dataset: str, bucket_location: str | None, client: An
         bq = _optional("google.cloud.bigquery")
         if bq is None:
             return [Check(name, SKIP, "google-cloud-bigquery is not installed", f"run by hand: bq show {project}:{dataset}")]
-        client = bq.Client(project=project)
+        client = bq.Client.from_service_account_json(key_file, project=project) if key_file else bq.Client(project=project)
     try:
         ds = client.get_dataset(f"{project}.{dataset}")
     except Exception as exc:
@@ -291,7 +361,9 @@ def bigquery(project: str, dataset: str, bucket_location: str | None, client: An
                 name,
                 FAIL,
                 "the dataset does not exist" if missing else f"cannot read it ({type(exc).__name__}: {exc})",
-                f"bq mk --dataset --location=<the bucket's> {project}:{dataset}" if missing else "grant roles/bigquery.dataEditor and roles/bigquery.jobUser",
+                f"bq mk --dataset --location=<the bucket's> {project}:{dataset}"
+                if missing
+                else "grant roles/bigquery.dataEditor and roles/bigquery.jobUser",
             )
         ]
     out = []
@@ -309,7 +381,12 @@ def bigquery(project: str, dataset: str, bucket_location: str | None, client: An
         client.query(f"CREATE TABLE `{table}` (id INT64); DROP TABLE `{table}`;").result()
     except Exception as exc:
         out.append(
-            Check(name, FAIL, f"cannot create and drop a table there ({type(exc).__name__}: {exc})", "grant roles/bigquery.dataEditor on the dataset and roles/bigquery.jobUser on the project")
+            Check(
+                name,
+                FAIL,
+                f"cannot create and drop a table there ({type(exc).__name__}: {exc})",
+                "grant roles/bigquery.dataEditor on the dataset and roles/bigquery.jobUser on the project",
+            )
         )
         return out
     out.insert(0, Check(name, PASS, f"exists in {ds.location}; a table was created and dropped"))

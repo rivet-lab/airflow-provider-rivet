@@ -4,6 +4,7 @@ and the warehouse layout it resolves to (src/plan/load_settings.rs `load_mode_of
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import _yaml
@@ -19,6 +20,43 @@ def entries_of(config: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 def name_of(entry: Mapping[str, Any]) -> str:
     """The export's name as rivet reads the scalar (D07: `name: 2024` is `"2024"`)."""
     return str(_yaml.text_of(entry.get("name")))
+
+
+def checkpoints(config: Mapping[str, Any], base: Path) -> dict[str, Path]:
+    """The checkpoint file each export of the config names under `cdc.checkpoint`, by export name; relative to `base`."""
+    out = {}
+    for entry in entries_of(config):
+        cdc = entry.get("cdc")
+        ref = cdc.get("checkpoint") if isinstance(cdc, Mapping) else None
+        if ref:
+            path = Path(str(_yaml.text_of(ref)))
+            out[name_of(entry)] = path if path.is_absolute() else base / path
+    return out
+
+
+def server_id_of(config: Mapping[str, Any], default: int) -> int | None:
+    """The MySQL replica id of the config's first CDC export (`cdc.server_id`, else rivet's `default`); None for none."""
+    for entry in entries_of(config):
+        if mode_of(entry) == "cdc":
+            cdc = _mapping(entry.get("cdc"))
+            value = _yaml.text_of(cdc.get("server_id"))
+            return int(value) if value not in (None, "") else default
+    return None
+
+
+def staging_of(config: Mapping[str, Any]) -> dict[str, str]:
+    """The GCS bucket and prefix of the config's first export that stages in one, and the BigQuery project and dataset
+    it loads into: the keys `bucket`, `prefix`, `project`, `dataset` that the config names."""
+    out: dict[str, str] = {}
+    for entry in entries_of(config):
+        dest = _mapping(entry.get("destination"))
+        if _yaml.text_of(dest.get("type")) == "gcs" and dest.get("bucket"):
+            out = {"bucket": str(_yaml.text_of(dest["bucket"])), "prefix": str(_yaml.text_of(dest.get("prefix")) or "")}
+            break
+    load = _mapping(config.get("load"))
+    if _yaml.text_of(load.get("target")) == "bigquery":
+        out.update({k: str(_yaml.text_of(load[k])) for k in ("project", "dataset") if load.get(k)})
+    return out
 
 
 def mode_of(entry: Mapping[str, Any]) -> str:

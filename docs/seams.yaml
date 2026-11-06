@@ -44,7 +44,7 @@ rules:
         date: 2026-11-02
         reason: "the probe's own `exited N` text for a failed `rivet --version`"
         closes: "one describe_exit text for every exit (message-truth-3)"
-      - at: airflow_provider_rivet/operators.py::RivetInitOperator._rivet
+      - at: airflow_provider_rivet/operators.py::_SourceTask._rivet
         count: 1
         date: 2026-11-02
         reason: "the init's `exited N` text, which prints `exited -9` for a signal"
