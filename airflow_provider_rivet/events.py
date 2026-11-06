@@ -14,6 +14,7 @@ class Event(StrEnum):
     LOCK_ACQUIRED = "rivet.lock.acquired"
     LOCK_WAIT = "rivet.lock.wait"
     PLAN_SEALED = "rivet.plan.sealed"
+    PROGRESS = "rivet.progress"
     REFUSED = "rivet.refused"
     RESULT = "rivet.result"
     START = "rivet.start"
