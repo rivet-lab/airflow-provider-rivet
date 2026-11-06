@@ -291,6 +291,7 @@ table "last written" grows: the heartbeat says the step still runs, not how far 
 | The DAG of a source shows only `preflight` and `init` | its config does not exist yet | run it once; the next parse builds the stream's tasks from the config `init` wrote |
 | `***` in the task log where a word should be (`***_state_shop`) | Airflow masks every Connection password wherever it appears, and this password is also a word of a name | give the Connection a password that is no word of its names |
 | A run that seems stuck | a first CDC run copies every table first | read the heartbeat lines, or `tail -f` the stderr path the first one names |
+| `run` fails after about 5 minutes: `[RIVET_SOURCE_STATEMENT_TIMEOUT] mysql: statement timeout after 300s` | a source of one table gets a baseline of one `SELECT` of the whole table (two or more tables are paged), and the `balanced` profile stops a statement at 300 s; 3,000,000 rows of MySQL took 3.5 minutes | under the export in `<config_dir>/<source>.yaml`, raise `tuning: { statement_timeout_s: 3600 }` and run again: a first run that failed reads the table again from the start |
 
 ## After a first run that failed
 

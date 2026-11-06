@@ -73,7 +73,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   stderr lines into the task log as they come; DAGs built from the file set it (`stream_stderr: false` in the file).
 - Docs: the bucket and the dataset are not created for you; running on Docker Compose (host and container paths, two
   compose files and `--env-file`, `up -d --build`, a grey queued task, the hashed config is a working copy, restarting a
-  source); troubleshooting, with a 403 on served logs (the same `AIRFLOW__WEBSERVER__SECRET_KEY` on every service).
+  source); troubleshooting, with a 403 on served logs (the same `AIRFLOW__WEBSERVER__SECRET_KEY` on every service), and the
+  statement timeout of a one-table source's baseline (one `SELECT` of the whole table, stopped at 300 s).
 
 ### Changed (behaviour change)
 
