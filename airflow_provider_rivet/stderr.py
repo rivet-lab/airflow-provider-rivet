@@ -1,5 +1,4 @@
-"""rivet's stderr file, read in one place: the tail a step classifies and the failure alert quotes, and the lines and
-heartbeats a running step shows."""
+"""rivet's stderr file, read in one place: the tail a step classifies, and the lines and heartbeats of a running step."""
 
 from __future__ import annotations
 
@@ -40,10 +39,7 @@ def tail_lines(path: Path) -> tuple[list[str], bool]:
 
 
 class Follower:
-    """Follows rivet's stderr file while the process runs, so a long step is not silent in the task log: each new whole
-    line goes to `on_line` (when the task streams stderr), and every `every` seconds `on_beat(elapsed, size, idle)` says
-    how long it has run, how big the file is and how long since it last grew. The lines left when the step ends are
-    passed on exit, so a streamed line is never lost; without `on_line` the file is never read, only its size."""
+    """Follows rivet's stderr file while the process runs: new lines to `on_line`, and `on_beat(elapsed, size, idle)`."""
 
     def __init__(
         self,

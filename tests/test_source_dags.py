@@ -98,6 +98,12 @@ if argv[0] == "init":
     if spec.get("init_exit"):
         print("error: cannot connect", file=sys.stderr)
         sys.exit(spec["init_exit"])
+    if "--discover" in argv:
+        if spec.get("discover_exit"):
+            print("error: access denied", file=sys.stderr)
+            sys.exit(spec["discover_exit"])
+        print(json.dumps(spec.get("discover", {"source_type": "mysql", "tables": [{"table": "orders"}, {"table": "customers"}]})))
+        sys.exit(0)
     Path(argv[argv.index("-o") + 1]).write_text(spec["yaml"])
     print("wrote config, 100% %s of it")
 elif argv[0] == "check":

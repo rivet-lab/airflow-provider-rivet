@@ -45,8 +45,7 @@ def server_id_of(config: Mapping[str, Any], default: int) -> int | None:
 
 
 def staging_of(config: Mapping[str, Any]) -> dict[str, str]:
-    """The GCS bucket and prefix of the config's first export that stages in one, and the BigQuery project and dataset
-    it loads into: the keys `bucket`, `prefix`, `project`, `dataset` that the config names."""
+    """The `bucket`, `prefix`, `project` and `dataset` of the config's first export that stages in GCS."""
     out: dict[str, str] = {}
     for entry in entries_of(config):
         dest = _mapping(entry.get("destination"))

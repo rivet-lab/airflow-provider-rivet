@@ -232,6 +232,12 @@ def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
         ("127.0.0.1", {}, PASS),
         ("pg-state", {}, FAIL),
         ("pg-state", {"sslmode": "prefer"}, FAIL),
+        ("localhost", {"sslmode": "prefer"}, PASS),
+        ("::1", {}, PASS),
+        ("[::1]", {"sslmode": "prefer"}, PASS),
+        ("127.8.0.1", {}, PASS),
+        ("127.0.0.1,pg-state", {}, FAIL),
+        ("127.evil.com", {}, FAIL),
     ],
 )
 def test_a_remote_state_server_needs_an_sslmode_rivet_dials(host: str, extra: dict, status: str) -> None:
@@ -503,9 +509,11 @@ def test_preflight_before_init_checks_the_binary_the_folders_and_skips_what_it_c
         "config folder": PASS,
         "state folder": PASS,
         "mysql cdc": SKIP,
+        "baseline": PASS,
         "gcs gs": SKIP,
     }
-    assert init.calls() == [] and not init.config.exists()
+    assert [c["argv"] for c in init.calls()] == [["init", "--source-env", "RIVET_SOURCE_URL", "--discover", "--tls", "disable"]]
+    assert not init.config.exists() and sorted(p.name for p in (init.tmp / "state" / "shop" / ".init").iterdir()) == []
 
 
 def test_preflight_of_a_written_config_runs_rivet_check_on_it(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -535,6 +543,113 @@ def test_preflight_checks_the_state_database_the_tasks_will_use(init: Init, monk
         "SKIP state database: `rivet_state_shop` on rivet_state.host:5432 (Connection `rivet_state`); psycopg2 is not "
         "installed, so it was not reached -> fix: pip install psycopg2-binary"
     ) in out["checks"]
+
+
+def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:
+    args = ["--gcs-bucket", "b", "--include", "a", "b*", "--bigquery-dataset=d", "--tls=disable", "--schema", "s"]
+    assert checks.discovery_args(args) == ["--include", "a", "b*", "--tls=disable", "--schema", "s"]
+
+
+def table(name: str, mode: str, rows: int | None = 3_000_000, schema: str = "") -> dict[str, Any]:
+    return {"schema": schema, "table": name, "row_estimate": rows, "suggested_mode": mode}
+
+
+@pytest.mark.parametrize(
+    ("kind", "tables", "status", "said"),
+    [
+        ("mysql", [table("a", "chunked"), table("b", "full")], PASS, "2 tables in one stream; each baseline is read through"),
+        ("postgres", [table("a", "chunked", schema="public"), table("b", "full", schema="public")], PASS, "2 tables in one"),
+        ("mysql", [table("events", "full", rows=900)], PASS, "`events` (~900 rows) read in one SELECT each, as rivet"),
+        ("mysql", [table("events", "chunked")], WARN, "`events` (~3,000,000 rows) read in one SELECT each though rivet"),
+        (
+            "postgres",
+            [table("a", "full", schema="public"), table("b", "chunked", rows=None, schema="sales")],
+            WARN,
+            "`sales.b` read",
+        ),
+        ("mysql", [], WARN, "`rivet init --discover` finds no table"),
+    ],
+)
+def test_a_baseline_rivet_would_page_but_reads_in_one_select_is_a_warning(
+    kind: str, tables: list, status: str, said: str
+) -> None:
+    check = checks.baseline({"source_type": kind, "tables": tables}, "/cfg/shop.yaml")
+    assert check.status == status and check.detail.startswith(said), check
+
+
+def test_the_baseline_warning_says_why_and_where_to_raise_the_timeout() -> None:
+    check = checks.baseline({"source_type": "mysql", "tables": [table("events", "chunked")]}, "/cfg/shop.yaml")
+    assert check.detail.endswith("`tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile)")
+    assert check.fix == "after `init`, set `tuning: { statement_timeout_s: 3600 }` under each of these exports in /cfg/shop.yaml"
+
+
+def test_preflight_before_init_warns_of_a_one_table_baseline_rivet_would_page(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init.spec(discover={"source_type": "mysql", "tables": [table("events", "chunked")]})
+    out = preflight(init, monkeypatch)
+    assert out["decision"] == "pass", out
+    assert [line for line in out["checks"] if line.startswith("WARN baseline")] == [
+        f"WARN baseline: `events` (~3,000,000 rows) read in one SELECT each though rivet would page them, and "
+        f"`tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile) -> fix: after `init`, set "
+        f"`tuning: {{ statement_timeout_s: 3600 }}` under each of these exports in {init.config}"
+    ]
+
+
+def test_a_discovery_that_fails_is_a_warning_with_the_command_to_run_by_hand(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    init.spec(discover_exit=3)
+    out = preflight(init, monkeypatch)
+    assert out["decision"] == "pass", out
+    assert (
+        "WARN baseline: `rivet init --discover` exited 3; its stderr is above -> fix: run by hand: rivet init --source-env "
+        "RIVET_SOURCE_URL --discover"
+    ) in out["checks"]
+
+
+def test_preflight_of_a_written_config_does_not_discover_again(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    init.run(init_args=["--tls", "disable"])
+    preflight(init, monkeypatch)
+    assert [c["argv"][:4] for c in init.calls() if "--discover" in c["argv"]] == []
+
+
+def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[tuple]:
+    calls: list[tuple] = []
+
+    def gcs(bucket: str, prefix: str, key_file: str | None = None) -> tuple[list[Check], str]:
+        calls.append(("gcs", bucket, prefix))
+        return [Check(f"gcs gs://{bucket}/{prefix}", status, "probed")], "US"
+
+    def bigquery(project: str, dataset: str, location: str, key_file: str | None = None) -> list[Check]:
+        calls.append(("bigquery", project, dataset))
+        return [Check(f"bigquery {project}.{dataset}", PASS, "probed")]
+
+    monkeypatch.setattr(checks, "gcs", gcs)
+    monkeypatch.setattr(checks, "bigquery", bigquery)
+    return calls
+
+
+def test_preflight_writes_to_a_bucket_and_dataset_once_until_they_change(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = staging_calls(monkeypatch)
+    args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
+    (init.tmp / "state" / "shop").mkdir()
+    preflight(init, monkeypatch, init_args=args)
+    second = preflight(init, monkeypatch, init_args=args)
+    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
+    mark = init.tmp / "state" / "shop" / ".preflight-staging.json"
+    assert (
+        f"SKIP bucket and dataset: an earlier preflight wrote to gs://b/ and bigquery p.d; {mark} records it" in second["checks"]
+    )
+    preflight(init, monkeypatch, init_args=[*args[:-1], "d2"])
+    assert calls[2:] == [("gcs", "b", ""), ("bigquery", "p", "d2")]
+
+
+def test_a_bucket_check_that_failed_is_run_again_next_time(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = staging_calls(monkeypatch, status=FAIL)
+    (init.tmp / "state" / "shop").mkdir()
+    for _ in range(2):
+        preflight(init, monkeypatch, init_args=["--gcs-bucket", "b"])
+    assert calls == [("gcs", "b", ""), ("gcs", "b", "")]
+    assert not (init.tmp / "state" / "shop" / ".preflight-staging.json").exists()
 
 
 def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:

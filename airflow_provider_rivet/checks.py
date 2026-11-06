@@ -1,13 +1,8 @@
-"""The checks of a source's `preflight` task: one line each, PASS / WARN / FAIL / SKIP, with what to change.
-
-Each check reaches one thing the DAG's tasks will need (the rivet binary, the state server, the folders, the source's
-CDC settings, the bucket, the dataset) the way those tasks will, and says what is wrong in the words of the setting to
-change. A check whose client library is not on the worker (psycopg2, MySQLdb or pymysql, google-cloud-storage,
-google-cloud-bigquery) is a SKIP naming the command to run by hand; it never fails the task.
-"""
+"""The checks of a source's `preflight` task: one PASS / WARN / FAIL / SKIP line each, with what to change."""
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import tempfile
 import uuid
@@ -26,8 +21,8 @@ MYSQL_CDC_SETTINGS = (
 MYSQL_GRANTS = ("REPLICATION SLAVE", "REPLICATION CLIENT", "SELECT")
 RIVET_DEFAULT_SERVER_ID = 4271
 STATE_SSLMODES = ("disable", "require", "verify-ca", "verify-full")
-LOOPBACK_HOSTS = ("localhost", "::1")
 GCP_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+DISCOVERY_FLAGS = ("--include", "--exclude", "--schema", "--table", "--tls", "--tls-ca")
 
 
 @dataclass(frozen=True)
@@ -69,8 +64,7 @@ def not_writable(folder: Path, exc: OSError) -> tuple[str, str]:
 
 
 def folder(name: str, path: Path, must_exist: bool = False) -> Check:
-    """Whether this worker can create a file in `path`, or in its nearest existing parent; one that `must_exist` (a
-    mounted volume) is never created."""
+    """Whether this worker can create a file in `path` or its nearest existing parent; a `must_exist` one is never made."""
     if must_exist and not path.is_dir():
         return Check(
             name, FAIL, f"{path} does not exist on this worker", "mount the volume at this path in every Airflow service"
@@ -145,7 +139,7 @@ def state_tls(server: Any, conn_id: str) -> Check:
     host = str(server.host or "")
     if mode in STATE_SSLMODES:
         return Check("state database tls", PASS, f"Connection `{conn_id}` says sslmode={mode}")
-    if not mode and (host in LOOPBACK_HOSTS or host.startswith(("127.", "/"))):
+    if host and all(_loopback(h) for h in host.split(",")):
         return Check("state database tls", PASS, f"{host} is this machine, so no sslmode is needed")
     asked = f"says sslmode={mode}, which rivet cannot negotiate" if mode else "names no sslmode"
     return Check(
@@ -155,6 +149,17 @@ def state_tls(server: Any, conn_id: str) -> Check:
         "set the Connection's extra sslmode: `require` (or `verify-ca`, `verify-full`) with TLS on the state server, "
         "or `disable` for plaintext on a private network",
     )
+
+
+def _loopback(host: str) -> bool:
+    """Whether a host stays on this machine as rivet reads it: localhost, a loopback address, or a socket path."""
+    host = host.strip().removeprefix("[").removesuffix("]")
+    if host.lower() == "localhost" or host.startswith("/"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], Any] | None = None) -> list[Check]:
@@ -320,8 +325,7 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
 
 
 def _google_client(module: str, key_file: str | None, project: str | None = None) -> Any:
-    """A client of `module` on the key file rivet gets, of any type google-auth reads, else on the default credentials;
-    None when `module` is not installed."""
+    """A client of `module` on rivet's key file or the default credentials; None when `module` is not installed."""
     lib = _optional(module)
     if lib is None:
         return None
@@ -392,8 +396,7 @@ def gcs(bucket: str, prefix: str, client: Any = None, key_file: str | None = Non
 def bigquery(
     project: str, dataset: str, bucket_location: str | None, client: Any = None, key_file: str | None = None
 ) -> list[Check]:
-    """The dataset exists, sits where the bucket is, and the identity can create and drop a table in it (as a load and a
-    MERGE do)."""
+    """The dataset exists, sits where the bucket is, and the identity can create and drop a table in it."""
     name = f"bigquery {project}.{dataset}"
     if client is None:
         try:
@@ -441,6 +444,49 @@ def bigquery(
         return out
     out.insert(0, Check(name, PASS, f"exists in {ds.location}; a table was created and dropped"))
     return out
+
+
+def discovery_args(init_args: Sequence[str]) -> list[str]:
+    """The arguments of `init_args` that choose the tables, for `rivet init --discover`, which refuses the others."""
+    out: list[str] = []
+    keep = False
+    for arg in init_args:
+        if arg.startswith("-"):
+            keep = arg.partition("=")[0] in DISCOVERY_FLAGS
+        if keep:
+            out.append(arg)
+    return out
+
+
+def baseline(discovery: Mapping[str, Any], config: str) -> Check:
+    """Whether the first run reads a table rivet would page in one SELECT, as `rivet init --mode cdc` lays it out."""
+    name = "baseline"
+    tables = [t for t in discovery.get("tables") or [] if isinstance(t, Mapping)]
+    if not tables:
+        return Check(name, WARN, "`rivet init --discover` finds no table", "check the source's `schema`, `include` and `exclude`")
+    kind = discovery.get("source_type")
+    if len(tables) > 1 and (kind == "mysql" or (kind == "postgres" and all(t.get("schema") == "public" for t in tables))):
+        return Check(name, PASS, f"{len(tables)} tables in one stream; each baseline is read through its batch recipe")
+    paged = [t for t in tables if t.get("suggested_mode") not in (None, "full")]
+    if not paged:
+        return Check(name, PASS, f"{_tables(tables)} read in one SELECT each, as rivet suggests")
+    return Check(
+        name,
+        WARN,
+        f"{_tables(paged)} read in one SELECT each though rivet would page them, and `tuning.statement_timeout_s` stops a "
+        "SELECT (300 s under the `balanced` profile)",
+        f"after `init`, set `tuning: {{ statement_timeout_s: 3600 }}` under each of these exports in {config}",
+    )
+
+
+def _tables(tables: Sequence[Mapping[str, Any]]) -> str:
+    """The tables by name with rivet's estimate of their rows."""
+    named = []
+    for t in tables:
+        rows = t.get("row_estimate")
+        label = ".".join(str(p) for p in (t.get("schema"), t.get("table")) if p)
+        named.append(f"`{label}` (~{rows:,} rows)" if isinstance(rows, int) else f"`{label}`")
+    return ", ".join(named)
 
 
 def failed(checks: Sequence[Check]) -> list[Check]:

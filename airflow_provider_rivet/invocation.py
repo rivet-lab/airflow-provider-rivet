@@ -358,8 +358,7 @@ class _Session:
         return _Step(None if signal else code, signal, _error_line(lines), truncated or _has_broken_object(lines))
 
     def _follow(self, name: str, stderr_path: Path) -> Follower:
-        """The follower of a step's stderr: its lines as they come when the task streams them, and a heartbeat every
-        `progress_every` seconds (its size and when it last grew, never its text)."""
+        """The follower of a step's stderr: its lines when the task streams them, and a heartbeat every `progress_every` s."""
 
         def line(raw: str) -> None:
             self.emit({"event": Event.STDERR, "step": name, "line": raw})

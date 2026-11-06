@@ -65,16 +65,23 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   bucket and the BigQuery dataset (written to and in one location) until the stream has a checkpoint, and `rivet check`
   once the config exists. A remote state server whose Connection names no `sslmode` rivet dials fails it before `init`
   meets `RIVET_STATE_URL_TLS_REQUIRED`. The GCP key file is read as google-auth reads it (a service account key or the
-  file of `gcloud auth application-default login`); one it cannot read is a FAIL line, not a crash. A FAIL fails it with no retry. A check whose client library is not installed is a SKIP that
-  names the command to run by hand.
+  file of `gcloud auth application-default login`); one it cannot read is a FAIL line, not a crash. A FAIL fails it with no retry. A check whose
+  client library is not installed is a SKIP that names the command to run by hand.
 - Every task logs where it reads and writes (`state    database ...`, `writes   bigquery ..., gcs ...`). While a rivet
   step runs, a heartbeat every `progress_every` seconds (default 60, `None` for none) says how long it has run, the size
   of its stderr and when rivet last wrote; the first names `tail -f <stderr path>`. `stream_stderr=True` copies rivet's
   stderr lines into the task log as they come; DAGs built from the file set it (`stream_stderr: false` in the file).
+- `preflight` before `init` of a CDC source runs `rivet init --discover` with init's table arguments and WARNs of each
+  table rivet would page that the first run reads in one `SELECT` (a one-table source), naming the
+  `tuning.statement_timeout_s` to raise. The bucket and dataset checks write once per place: a pass is recorded in
+  `<state_dir>/.preflight-staging.json` and checked again only when the bucket, prefix, project or dataset changes.
+  The state TLS check counts a host as local as rivet does: `localhost`, any loopback address (`127.0.0.0/8`, `::1`,
+  `[::1]`), a socket path, and every host of a comma list.
 - Docs: the bucket and the dataset are not created for you; running on Docker Compose (host and container paths, two
   compose files and `--env-file`, `up -d --build`, a grey queued task, the hashed config is a working copy, restarting a
   source); troubleshooting, with a 403 on served logs (the same `AIRFLOW__WEBSERVER__SECRET_KEY` on every service), and the
-  statement timeout of a one-table source's baseline (one `SELECT` of the whole table, stopped at 300 s).
+  statement timeout of a one-table source's baseline (one `SELECT` of the whole table, stopped at 300 s), and `init`
+  left in the grid below `watcher` (a task of the DAG's first version).
 
 ### Changed (behaviour change)
 

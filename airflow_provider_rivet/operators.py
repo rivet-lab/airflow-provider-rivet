@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -63,6 +64,7 @@ T = TypeVar("T")
 MODES = ("cdc", "batch")
 
 XCOM_KEY = "return_value"
+STAGING_CHECKED = ".preflight-staging.json"
 
 
 def airflow_connection(conn_id: str) -> Any:
@@ -645,8 +647,7 @@ class _InitFailed(AirflowFailException):
 
 
 class _SourceTask(_RivetTask):
-    """A task about one source before or beside its rivet tasks: its mode, the `env_from_connections` entry of the data
-    source, the arguments of its `rivet init`, and rivet commands run with their output in the task log."""
+    """A task about one source beside its rivet tasks: its mode, data source entry, init arguments and rivet commands."""
 
     def __init__(self, *, mode: str, source_env: str | None = None, init_args: Sequence[str] = (), **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -666,8 +667,7 @@ class _SourceTask(_RivetTask):
     def _rivet(
         self, binary: str, argv: list[str], env: Mapping[str, str], cwd: Path, outcome: str = ", and no config was written"
     ) -> None:
-        """Run one rivet command, stoppable by `on_kill`, its output in the task log; a nonzero exit fails the task
-        without a retry, its text ending in `outcome`. A stop requested before it starts raises `Stopped`."""
+        """Run one rivet command into the task log, stoppable by `on_kill`; a nonzero exit fails the task without a retry."""
         if self._stop_requested:
             raise Stopped(argv[0])
         output = cwd / f"{argv[0]}.log"
@@ -687,9 +687,7 @@ class _SourceTask(_RivetTask):
 
 
 class RivetInitOperator(_SourceTask):
-    """Writes the config a source's DAG is built from: `rivet init` against the source, `rivet check` of what it wrote,
-    then the file at `config`, never over one that exists. The data source is the `source_env` entry of
-    `env_from_connections`; a `database` named for RIVET_STATE_URL is created on its PostgreSQL server if missing."""
+    """Writes a source's config: `rivet init`, `rivet check` of what it wrote, then `config`, never over an existing one."""
 
     command = "init"
     template_fields: Sequence[str] = ("config", "state_dir", "init_args")
@@ -901,9 +899,7 @@ class RivetSpecDriftOperator(RivetInitOperator):
 
 
 class RivetPreflightOperator(_SourceTask):
-    """Checks, first in a source's DAG, what its tasks will need, one line each (`checks`): the rivet binary, the config
-    and state folders, the state database, the source's CDC settings, the bucket and dataset before the stream starts,
-    and `rivet check` of a config. A FAIL fails the task without a retry; a check with no client library is a SKIP."""
+    """Checks, first in a source's DAG, what its tasks will need, one PASS / WARN / FAIL / SKIP line each."""
 
     command = "preflight"
     template_fields: Sequence[str] = ("config", "state_dir", "init_args")
@@ -951,10 +947,12 @@ class RivetPreflightOperator(_SourceTask):
             out += checks.state(self._server(state), state.get("database"), state["conn_id"])
         if self.mode == "cdc":
             out += self._source(doc, refs)
+            if not doc and binary:
+                out.append(self._baseline(binary, env, state_dir))
         if any(path.exists() for path in checkpoints(doc, state_dir).values()):
             out.append(Check("bucket and dataset", SKIP, "the stream has a checkpoint, so its first run reached them"))
         else:
-            out += self._staging(doc, env)
+            out += self._staging(doc, env, state_dir)
         if doc and binary:
             out.append(self._rivet_check(binary, env, state_dir))
         return out
@@ -992,19 +990,59 @@ class RivetPreflightOperator(_SourceTask):
             Check("source", SKIP, f"Connection `{ref['conn_id']}` is of type `{kind}`; only MySQL and PostgreSQL are checked")
         ]
 
-    def _staging(self, doc: Mapping[str, Any], env: Mapping[str, str]) -> list[Check]:
-        """The bucket and the dataset the stream writes, from the config or, before it exists, the `init_args`."""
+    def _staging(self, doc: Mapping[str, Any], env: Mapping[str, str], state_dir: Path) -> list[Check]:
+        """The bucket and dataset the tasks write, written to once per place: `STAGING_CHECKED` records the ones passed."""
         staged = staging_of(doc) if doc else {}
         if not doc:
             flags = {"--gcs-bucket": "bucket", "--bigquery-project": "project", "--bigquery-dataset": "dataset"}
             staged = {key: value for flag, key in flags.items() if (value := _value_of(self.init_args, flag))}
         if not staged.get("bucket"):
             return [Check("bucket", SKIP, "the config names no GCS bucket")]
+        place = {key: staged.get(key) or "" for key in ("bucket", "prefix", "project", "dataset")}
+        mark = state_dir / STAGING_CHECKED
+        if mark.is_file() and _json_of(mark.read_bytes()) == place:
+            return [Check("bucket and dataset", SKIP, f"an earlier preflight wrote to {_place_text(place)}; {mark} records it")]
         key_file = env.get("GOOGLE_APPLICATION_CREDENTIALS")
-        out, location = checks.gcs(staged["bucket"], staged.get("prefix", ""), key_file=key_file)
-        if staged.get("project") and staged.get("dataset"):
-            out += checks.bigquery(staged["project"], staged["dataset"], location, key_file=key_file)
+        out, location = checks.gcs(place["bucket"], place["prefix"], key_file=key_file)
+        if place["project"] and place["dataset"]:
+            out += checks.bigquery(place["project"], place["dataset"], location, key_file=key_file)
+        if state_dir.is_dir() and all(c.status in (PASS, WARN) for c in out):
+            mark.write_text(json.dumps(place))
+            os.chmod(mark, 0o664)
         return out
+
+    def _baseline(self, binary: str, env: Mapping[str, str], state_dir: Path) -> Check:
+        """Before `init`: how the first run reads each baseline of the tables `rivet init --discover` finds."""
+        if not self.source_env:
+            return Check("baseline", SKIP, "no `source_env`, so `rivet init --discover` did not run")
+        argv = ["init", "--source-env", self.source_env, "--discover", *checks.discovery_args(self.init_args)]
+        if self._stop_requested:
+            raise Stopped(argv[0])
+        work = state_dir / ".init"
+        found, err = work / "discover.json", work / "discover.log"
+        try:
+            make_shared_folder(work)
+            with found.open("w") as out, err.open("w") as log:
+                code = spawn([binary, *argv], out, log, env, str(work), self._hold)
+            doc = _json_of(found.read_bytes()) if code == 0 else None
+            lines = err.read_text(errors="replace").splitlines()
+        except OSError as exc:
+            return Check(
+                "baseline", SKIP, f"{work} could not be used ({exc.strerror or exc}), so `rivet init --discover` did not run"
+            )
+        finally:
+            found.unlink(missing_ok=True)
+            err.unlink(missing_ok=True)
+        if not isinstance(doc, Mapping):
+            for line in lines[-20:]:
+                self.log.info("%s", line)
+            return Check(
+                "baseline",
+                WARN,
+                f"`rivet init --discover` exited {code}; its stderr is above",
+                f"run by hand: rivet {' '.join(argv)}",
+            )
+        return checks.baseline(doc, str(self.config))
 
     def _rivet_check(self, binary: str, env: Mapping[str, str], state_dir: Path) -> Check:
         """`rivet check` of the config, its output in the task log."""
@@ -1017,6 +1055,12 @@ class RivetPreflightOperator(_SourceTask):
         except _InitFailed as failure:
             return Check("rivet check", FAIL, str(failure), "its output is above")
         return Check("rivet check", PASS, f"{self.config} checks clean")
+
+
+def _place_text(place: Mapping[str, str]) -> str:
+    """The bucket prefix and dataset of a staging place, as the where-lines write them."""
+    out = f"gs://{place['bucket']}/{place['prefix']}"
+    return f"{out} and bigquery {place['project']}.{place['dataset']}" if place["dataset"] else out
 
 
 def _mapping_of(value: Any) -> Mapping[str, Any]:
