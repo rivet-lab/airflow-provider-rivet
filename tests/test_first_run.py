@@ -131,9 +131,6 @@ def init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Init:
     return Init(tmp_path, monkeypatch)
 
 
-# --- checks ---
-
-
 def test_a_check_line_names_the_fix_unless_it_passed() -> None:
     assert Check("x", FAIL, "is off", "turn it on").line() == "FAIL x: is off -> fix: turn it on"
     assert Check("x", PASS, "is on", "turn it on").line() == "PASS x: is on"
@@ -466,9 +463,6 @@ def test_a_key_file_google_auth_cannot_read_is_a_failed_check_not_a_crash(monkey
     assert (bucket.status, dataset.status, location) == (FAIL, FAIL, None)
     assert bucket.detail == "cannot use the key file /k.json (ValueError: missing fields token_uri, client_email)"
     assert "gcloud auth application-default login" in dataset.fix and libs.made == []
-
-
-# --- the preflight task ---
 
 
 class Caps:
