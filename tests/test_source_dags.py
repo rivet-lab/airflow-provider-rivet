@@ -449,7 +449,7 @@ def test_init_reports_each_export_as_rivet_reads_it(init: Init, logged: Any) -> 
 def test_places_reads_the_exports_as_rivet_reads_them() -> None:
     from airflow_provider_rivet.operators import places
 
-    assert places({"exports": ["not an export", {"destination": {"type": "gcs", "bucket": "b"}}]}) == {"gcs://b/"}
+    assert places({"exports": ["not an export", {"destination": {"type": "gcs", "bucket": "b"}}]}) == {"gs://b/"}
 
 
 def test_a_source_with_neither_connection_nor_data_source_fails_before_rivet(init: Init) -> None:
@@ -671,7 +671,7 @@ def test_a_stream_of_one_table_named_by_table(tmp_path: Path) -> None:
         (
             CDC_CONFIG.format(env="X").replace("dataset: shop", "dataset: other")
             + "    destination: {type: gcs, bucket: b, prefix: shop/cdc/}\n",
-            "gcs://b/shop/cdc/",
+            "gs://b/shop/cdc/",
         ),
     ],
 )
@@ -1167,7 +1167,7 @@ def test_every_shared_place_is_named(init: Init) -> None:
     init.spec(yaml=CDC_CONFIG.format(env="RIVET_SOURCE_URL") + GCS_DEST)
     init.config.parent.mkdir()
     (init.config.parent / "billing.yaml").write_text(CDC_CONFIG.format(env="X") + GCS_DEST)
-    assert "writes to bigquery p.shop, gcs://b/shop/cdc/, as" in str(init.run())
+    assert "writes to bigquery p.shop, gs://b/shop/cdc/, as" in str(init.run())
 
 
 def test_a_missing_binary_is_refused_with_the_payload_every_task_pushes(init: Init) -> None:

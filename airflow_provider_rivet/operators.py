@@ -573,13 +573,17 @@ def config_present(path: Path) -> bool:
     return True
 
 
+URL_SCHEMES = {"gcs": "gs"}
+
+
 def places(doc: Mapping[str, Any]) -> set[str]:
     """Where a config writes: each export's bucket prefix (`s3://b/p/`) and its warehouse dataset or database."""
     out = set()
     for export in entries_of(doc):
         dest = export.get("destination") or {}
         if dest.get("bucket"):
-            out.add(f"{dest.get('type')}://{dest['bucket']}/{dest.get('prefix') or ''}")
+            scheme = URL_SCHEMES.get(str(dest.get("type")), dest.get("type"))
+            out.add(f"{scheme}://{dest['bucket']}/{dest.get('prefix') or ''}")
     load = doc.get("load") or {}
     names = [load.get(k) for k in ("project", "dataset", "database", "schema") if load.get(k)]
     if names:
@@ -943,6 +947,7 @@ class RivetPreflightOperator(_SourceTask):
         refs = {name: database_ref(ref) for name, ref in (self.env_from_connections or {}).items()}
         if STATE_URL_ENV in refs:
             state = refs[STATE_URL_ENV]
+            out.append(checks.state_tls(self._server(state), state["conn_id"]))
             out += checks.state(self._server(state), state.get("database"), state["conn_id"])
         if self.mode == "cdc":
             out += self._source(doc, refs)

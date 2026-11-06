@@ -25,6 +25,9 @@ MYSQL_CDC_SETTINGS = (
 )
 MYSQL_GRANTS = ("REPLICATION SLAVE", "REPLICATION CLIENT", "SELECT")
 RIVET_DEFAULT_SERVER_ID = 4271
+STATE_SSLMODES = ("disable", "require", "verify-ca", "verify-full")
+LOOPBACK_HOSTS = ("localhost", "::1")
+GCP_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,25 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
             f'CREATE DATABASE "{target}"; or ALTER ROLE {server.login} CREATEDB;',
         )
     ]
+
+
+def state_tls(server: Any, conn_id: str) -> Check:
+    """Whether rivet will dial the state server: a remote host needs an `sslmode` rivet negotiates, or `disable`."""
+    extra = getattr(server, "extra_dejson", None) or {}
+    mode = str(extra.get("sslmode") or "")
+    host = str(server.host or "")
+    if mode in STATE_SSLMODES:
+        return Check("state database tls", PASS, f"Connection `{conn_id}` says sslmode={mode}")
+    if not mode and (host in LOOPBACK_HOSTS or host.startswith(("127.", "/"))):
+        return Check("state database tls", PASS, f"{host} is this machine, so no sslmode is needed")
+    asked = f"says sslmode={mode}, which rivet cannot negotiate" if mode else "names no sslmode"
+    return Check(
+        "state database tls",
+        FAIL,
+        f"Connection `{conn_id}` points at {host}, a remote host, and {asked}; rivet refuses it (RIVET_STATE_URL_TLS_REQUIRED)",
+        "set the Connection's extra sslmode: `require` (or `verify-ca`, `verify-full`) with TLS on the state server, "
+        "or `disable` for plaintext on a private network",
+    )
 
 
 def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], Any] | None = None) -> list[Check]:
@@ -297,16 +319,42 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
     ]
 
 
+def _google_client(module: str, key_file: str | None, project: str | None = None) -> Any:
+    """A client of `module` on the key file rivet gets, of any type google-auth reads, else on the default credentials;
+    None when `module` is not installed."""
+    lib = _optional(module)
+    if lib is None:
+        return None
+    if not key_file:
+        return lib.Client(project=project) if project else lib.Client()
+    credentials, own_project = _optional("google.auth").load_credentials_from_file(key_file, scopes=[GCP_SCOPE])
+    return lib.Client(credentials=credentials, project=project or own_project)
+
+
+def _credentials_failed(name: str, key_file: str | None, exc: Exception) -> Check:
+    """The check of a client that could not be made from the worker's credentials."""
+    source = f"the key file {key_file}" if key_file else "the default credentials"
+    return Check(
+        name,
+        FAIL,
+        f"cannot use {source} ({type(exc).__name__}: {exc})",
+        "GOOGLE_APPLICATION_CREDENTIALS names a file every worker can read: a service account key or the file of "
+        "`gcloud auth application-default login`",
+    )
+
+
 def gcs(bucket: str, prefix: str, client: Any = None, key_file: str | None = None) -> tuple[list[Check], str | None]:
     """Write, list and delete a small object under the stream's prefix, as rivet will; the bucket's location."""
     name = f"gcs gs://{bucket}/{prefix}"
     if client is None:
-        storage = _optional("google.cloud.storage")
-        if storage is None:
+        try:
+            client = _google_client("google.cloud.storage", key_file)
+        except Exception as exc:
+            return [_credentials_failed(name, key_file, exc)], None
+        if client is None:
             return [
                 Check(name, SKIP, "google-cloud-storage is not installed", f"run by hand: gcloud storage ls gs://{bucket}/")
             ], None
-        client = storage.Client.from_service_account_json(key_file) if key_file else storage.Client()
     try:
         handle = client.lookup_bucket(bucket)
     except Exception as exc:
@@ -348,10 +396,12 @@ def bigquery(
     MERGE do)."""
     name = f"bigquery {project}.{dataset}"
     if client is None:
-        bq = _optional("google.cloud.bigquery")
-        if bq is None:
+        try:
+            client = _google_client("google.cloud.bigquery", key_file, project)
+        except Exception as exc:
+            return [_credentials_failed(name, key_file, exc)]
+        if client is None:
             return [Check(name, SKIP, "google-cloud-bigquery is not installed", f"run by hand: bq show {project}:{dataset}")]
-        client = bq.Client.from_service_account_json(key_file, project=project) if key_file else bq.Client(project=project)
     try:
         ds = client.get_dataset(f"{project}.{dataset}")
     except Exception as exc:

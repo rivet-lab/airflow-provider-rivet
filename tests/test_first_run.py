@@ -19,7 +19,7 @@ from test_source_dags import Init, connection, lookup
 from airflow_provider_rivet import checks
 from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
 from airflow_provider_rivet.events import Event
-from airflow_provider_rivet.operators import RivetPreflightOperator, RivetRunOperator, make_shared_folder
+from airflow_provider_rivet.operators import RivetPreflightOperator, RivetRunOperator, make_shared_folder, places
 from airflow_provider_rivet.stderr import Follower
 from airflow_provider_rivet.tasklog import TaskLog
 
@@ -226,6 +226,31 @@ def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
     assert (found.status, found.fix) == (FAIL, "check Connection `rivet_state`") and "OSError: timeout" in found.detail
 
 
+@pytest.mark.parametrize(
+    ("host", "extra", "status"),
+    [
+        ("pg-state", {"sslmode": "disable"}, PASS),
+        ("pg-state", {"sslmode": "verify-full"}, PASS),
+        ("localhost", {}, PASS),
+        ("127.0.0.1", {}, PASS),
+        ("pg-state", {}, FAIL),
+        ("pg-state", {"sslmode": "prefer"}, FAIL),
+    ],
+)
+def test_a_remote_state_server_needs_an_sslmode_rivet_dials(host: str, extra: dict, status: str) -> None:
+    found = checks.state_tls(types.SimpleNamespace(host=host, extra_dejson=extra), "rivet_state")
+    assert (found.name, found.status) == ("state database tls", status)
+
+
+def test_a_remote_state_server_without_sslmode_names_the_refusal_and_both_ways_out() -> None:
+    found = checks.state_tls(types.SimpleNamespace(host="pg-state", extra_dejson={}), "rivet_state")
+    assert found.detail == (
+        "Connection `rivet_state` points at pg-state, a remote host, and names no sslmode; "
+        "rivet refuses it (RIVET_STATE_URL_TLS_REQUIRED)"
+    )
+    assert "`require`" in found.fix and "`disable`" in found.fix
+
+
 def test_without_psycopg2_the_state_database_is_a_skip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "psycopg2", None)
     (found,) = checks.state(SERVER, "d", "c")
@@ -399,6 +424,50 @@ def test_without_the_google_libraries_the_bucket_and_dataset_are_skips(monkeypat
     assert (bucket.status, dataset.status) == (SKIP, SKIP) and dataset.fix == "run by hand: bq show p:d"
 
 
+class GoogleLibs:
+    def __init__(self, key_error: Exception | None = None) -> None:
+        self.key_error, self.made, self.read = key_error, [], []
+        self.auth = types.SimpleNamespace(load_credentials_from_file=self.load)
+        self.storage = types.SimpleNamespace(Client=lambda **kw: self.client(Storage(Bucket("EU")), kw))
+        self.bigquery = types.SimpleNamespace(Client=lambda **kw: self.client(BigQuery("EU"), kw))
+
+    def load(self, path: str, scopes: list[str]) -> tuple[str, str | None]:
+        self.read.append((path, scopes))
+        if self.key_error:
+            raise self.key_error
+        return "user-credentials", None
+
+    def client(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        self.made.append(kwargs)
+        return client
+
+    def module(self, name: str) -> Any:
+        return {"google.auth": self.auth, "google.cloud.storage": self.storage, "google.cloud.bigquery": self.bigquery}[name]
+
+
+def test_a_users_key_file_reaches_both_clients_as_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    libs = GoogleLibs()
+    monkeypatch.setattr(checks, "_optional", libs.module)
+    found, location = checks.gcs("b", "p/", key_file="/opt/airflow/gcp.json")
+    assert [c.status for c in found] == [PASS] and location == "EU"
+    assert [c.status for c in checks.bigquery("proj", "d", location, key_file="/opt/airflow/gcp.json")] == [PASS]
+    assert libs.read == [("/opt/airflow/gcp.json", [checks.GCP_SCOPE])] * 2
+    assert libs.made == [
+        {"credentials": "user-credentials", "project": None},
+        {"credentials": "user-credentials", "project": "proj"},
+    ]
+
+
+def test_a_key_file_google_auth_cannot_read_is_a_failed_check_not_a_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    libs = GoogleLibs(key_error=ValueError("missing fields token_uri, client_email"))
+    monkeypatch.setattr(checks, "_optional", libs.module)
+    (bucket,), location = checks.gcs("b", "", key_file="/k.json")
+    (dataset,) = checks.bigquery("p", "d", None, key_file="/k.json")
+    assert (bucket.status, dataset.status, location) == (FAIL, FAIL, None)
+    assert bucket.detail == "cannot use the key file /k.json (ValueError: missing fields token_uri, client_email)"
+    assert "gcloud auth application-default login" in dataset.fix and libs.made == []
+
+
 # --- the preflight task ---
 
 
@@ -461,13 +530,25 @@ def test_a_failed_preflight_check_fails_the_task_without_a_retry_naming_each_che
 
 
 def test_preflight_checks_the_state_database_the_tasks_will_use(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
-    lookup(monkeypatch, {"rivet_state": connection("rivet_state", "postgres", schema="admin")})
+    lookup(monkeypatch, {"rivet_state": connection("rivet_state", "postgres", schema="admin", extra={"sslmode": "require"})})
     refs = {
         "RIVET_SOURCE_URL": {"conn_id": "shop", "odbc_ini": str(init.tmp / "odbc.ini")},
         "RIVET_STATE_URL": {"conn_id": "rivet_state", "database": "rivet_state_shop"},
     }
     out = preflight(init, monkeypatch, env_from_connections=refs)
+    assert "PASS state database tls: Connection `rivet_state` says sslmode=require" in out["checks"]
     assert (
         "SKIP state database: `rivet_state_shop` on rivet_state.host:5432 (Connection `rivet_state`); psycopg2 is not "
         "installed, so it was not reached -> fix: pip install psycopg2-binary"
     ) in out["checks"]
+
+
+def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:
+    doc = {
+        "exports": [
+            {"name": "a", "destination": {"type": "gcs", "bucket": "b", "prefix": "shop/cdc/"}},
+            {"name": "c", "destination": {"type": "s3", "bucket": "s", "prefix": "x/"}},
+        ],
+        "load": {"target": "bigquery", "project": "p", "dataset": "d"},
+    }
+    assert places(doc) == {"gs://b/shop/cdc/", "s3://s/x/", "bigquery p.d"}

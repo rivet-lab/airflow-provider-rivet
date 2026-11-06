@@ -200,6 +200,7 @@ line per check, PASS, WARN, SKIP or FAIL, with what to change. A FAIL fails it w
 PASS rivet binary: rivet 0.33.0 (5ee08c0a) at /home/airflow/.local/bin/rivet
 PASS config folder: /opt/airflow/dags/rivet is writable
 PASS state folder: /opt/airflow/rivet-state is writable; /opt/airflow/rivet-state/shop is created there
+FAIL state database tls: Connection `rivet_state` points at pg-state, a remote host, and names no sslmode; rivet refuses it (RIVET_STATE_URL_TLS_REQUIRED) -> fix: set the Connection's extra sslmode: `require` (or `verify-ca`, `verify-full`) with TLS on the state server, or `disable` for plaintext on a private network
 PASS state database: `rivet_state_shop` on pg-state:5432 (Connection `rivet_state`) does not exist yet; `init` creates it (the role may CREATEDB)
 FAIL mysql binlog_row_metadata: is MINIMAL -> fix: SET PERSIST binlog_row_metadata = 'FULL';
 PASS mysql grants: REPLICATION SLAVE, REPLICATION CLIENT, SELECT
@@ -208,7 +209,7 @@ SKIP bigquery my-project.rivet_shop: google-cloud-bigquery is not installed -> f
 ```
 
 It reaches each thing as the tasks will: the binary and its version, the config and state folders, the state
-database, the source's CDC settings (MySQL: `log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`,
+database (and whether rivet will dial it: a remote state server needs an `sslmode`), the source's CDC settings (MySQL: `log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`,
 `log_replica_updates` on a replica, the grants, a free `server_id`; PostgreSQL: `wal_level`, `REPLICATION`, a free
 slot), and the bucket and dataset until the stream has a checkpoint; once the config exists, `rivet check` of it. A
 check whose client library is not in the image (psycopg2, MySQLdb or pymysql, google-cloud-storage,
@@ -254,8 +255,10 @@ rivet run running for 1m 0s; stderr 14.2 KiB, last written 3 s ago; follow it: t
 rivet run running for 2m 0s; stderr 31.0 KiB, last written 1 s ago
 ```
 
-A heartbeat whose "last written" keeps growing is a step that waits (on a lock, on the source, on the warehouse), not
-one that writes. The path is on the worker: from the host, run `docker compose exec airflow-worker tail -f <path>`.
+rivet writes a stderr line when a table's snapshot ends and nothing while it reads one, so during the snapshot of a big
+table "last written" grows: the heartbeat says the step still runs, not how far it is (3,000,000 rows of MySQL took
+3.5 minutes and came as one line at the end). The path is on the worker: from the host, run
+`docker compose exec airflow-worker tail -f <path>`, or read it where the host mounts the state folder.
 
 ## Running it on Docker Compose
 
@@ -286,6 +289,7 @@ one that writes. The path is on the worker: from the host, run `docker compose e
 | `preflight` FAIL `config folder ... is not writable by this worker (uid 50000, gid 0 ...)` | the host folder belongs to your user | `sudo chown -R 50000:0 dags/rivet && sudo chmod -R g+w dags/rivet` |
 | `preflight` FAIL `gcs ...: the bucket does not exist` or `bigquery ...: the dataset does not exist` | neither is created for you | the command on the line, in one location for both |
 | The DAG of a source shows only `preflight` and `init` | its config does not exist yet | run it once; the next parse builds the stream's tasks from the config `init` wrote |
+| `***` in the task log where a word should be (`***_state_shop`) | Airflow masks every Connection password wherever it appears, and this password is also a word of a name | give the Connection a password that is no word of its names |
 | A run that seems stuck | a first CDC run copies every table first | read the heartbeat lines, or `tail -f` the stderr path the first one names |
 
 ## After a first run that failed

@@ -63,7 +63,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   what to change: the rivet binary and its version, the config and state folders, the state database, the source's
   CDC settings (MySQL binlog settings, grants, `server_id`; PostgreSQL `wal_level`, `REPLICATION`, slots), the GCS
   bucket and the BigQuery dataset (written to and in one location) until the stream has a checkpoint, and `rivet check`
-  once the config exists. A FAIL fails it with no retry. A check whose client library is not installed is a SKIP that
+  once the config exists. A remote state server whose Connection names no `sslmode` rivet dials fails it before `init`
+  meets `RIVET_STATE_URL_TLS_REQUIRED`. The GCP key file is read as google-auth reads it (a service account key or the
+  file of `gcloud auth application-default login`); one it cannot read is a FAIL line, not a crash. A FAIL fails it with no retry. A check whose client library is not installed is a SKIP that
   names the command to run by hand.
 - Every task logs where it reads and writes (`state    database ...`, `writes   bigquery ..., gcs ...`). While a rivet
   step runs, a heartbeat every `progress_every` seconds (default 60, `None` for none) says how long it has run, the size
@@ -89,6 +91,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
   schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.
 
+- The places a task writes are URLs to paste: `gs://bucket/prefix/`, not `gcs://`.
 - `examples/rivet_cdc_per_source.py` is deprecated in favour of `build_dags_from_file`.
 - The folders and the config a task creates are group-writable (`g+w`, the config `0o664`), never world-writable.
 
