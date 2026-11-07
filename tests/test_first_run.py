@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import stat
 import sys
 import time
@@ -19,6 +20,7 @@ from test_source_dags import Init, connection, lookup
 from airflow_provider_rivet import checks
 from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
 from airflow_provider_rivet.events import Event
+from airflow_provider_rivet.exports import slot_of
 from airflow_provider_rivet.operators import RivetPreflightOperator, RivetRunOperator, make_shared_folder, places
 from airflow_provider_rivet.stderr import Follower
 from airflow_provider_rivet.tasklog import TaskLog
@@ -333,6 +335,12 @@ def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
         "postgres replication slots": FAIL,
     }
     assert found["postgres wal_level"].fix == "ALTER SYSTEM SET wal_level = logical; then restart"
+    answers["SELECT array_agg(slot_name) FROM pg_replication_slots"] = (["rivet_shop"],)
+    own = checks.postgres_source(SERVER, "rivet_shop", connect=lambda _: db_of(answers))[-1]
+    assert own == Check("postgres replication slots", PASS, "the stream's slot `rivet_shop` exists")
+    assert checks.postgres_source(SERVER, "other", connect=lambda _: db_of(answers))[-1].status == FAIL
+    assert slot_of({"exports": [{"name": "a", "mode": "cdc", "cdc": {"slot": "rivet_shop"}}]}) == "rivet_shop"
+    assert slot_of({"exports": [{"name": "a", "mode": "cdc", "cdc": {}}]}) is None
 
 
 class Blob:
@@ -545,6 +553,18 @@ def test_preflight_checks_the_state_database_the_tasks_will_use(init: Init, monk
     ) in out["checks"]
 
 
+def test_preflight_reads_a_postgres_source_with_its_connection_and_the_slot_the_config_names(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup(monkeypatch, {"shop": connection("shop", "postgres")})
+    seen: list[tuple] = []
+    monkeypatch.setattr(checks, "postgres_source", lambda conn, slot: seen.append((conn.host, slot)) or [])
+    init.run(init_args=["--tls", "disable"])
+    init.config.write_text(init.config.read_text().replace("    cdc:\n", "    cdc:\n      slot: rivet_shop\n", 1))
+    preflight(init, monkeypatch, env_from_connections={"RIVET_SOURCE_URL": {"conn_id": "shop"}})
+    assert seen == [("shop.host", "rivet_shop")]
+
+
 def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:
     args = ["--gcs-bucket", "b", "--include", "a", "b*", "--bigquery-dataset=d", "--tls=disable", "--schema", "s"]
     assert checks.discovery_args(args) == ["--include", "a", "b*", "--tls=disable", "--schema", "s"]
@@ -613,6 +633,17 @@ def test_a_discovery_that_fails_is_a_warning_with_the_command_to_run_by_hand(ini
     ) in out["checks"]
 
 
+def test_a_state_root_that_is_not_there_stays_not_there(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = init.tmp / "state"
+    for written in (False, True):
+        if written:
+            init.run(init_args=["--tls", "disable"])
+        shutil.rmtree(root, ignore_errors=True)
+        refused = preflight(init, monkeypatch)
+        assert isinstance(refused, AirflowFailException) and "state folder" in str(refused)
+        assert not root.exists()
+
+
 def test_preflight_of_a_written_config_does_not_discover_again(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     init.run(init_args=["--tls", "disable"])
     preflight(init, monkeypatch)
@@ -670,6 +701,24 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     warned = preflight(init, monkeypatch, include=["orders"])
     line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
     assert f"{init.config} captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
+
+
+def test_a_stream_whose_config_names_no_checkpoint_only_warns_of_drift(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    staging_calls(monkeypatch)
+    init.run()
+    init.config.write_text(init.config.read_text().replace("      checkpoint: ./cdc/shop_cdc.ckpt\n", ""))
+    warned = preflight(init, monkeypatch, include=["orders"])
+    assert any(c.startswith("WARN include and exclude") for c in warned["checks"])
+
+
+def test_a_table_init_skipped_is_not_drift(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    staging_calls(monkeypatch)
+    init.run()
+    init.config.write_text(init.config.read_text() + "  # SKIPPED user-events: its name cannot be a `table:` shortcut\n")
+    out = preflight(init, monkeypatch, include=["orders", "customers", "user-events"])
+    assert "PASS include and exclude: the config captures what the sources file names" in out["checks"]
+    refused = preflight(init, monkeypatch, exclude=["customers"])
+    assert isinstance(refused, AirflowFailException) and "failed: include and exclude;" in str(refused)
 
 
 def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:

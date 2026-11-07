@@ -44,6 +44,15 @@ def server_id_of(config: Mapping[str, Any], default: int) -> int | None:
     return None
 
 
+def slot_of(config: Mapping[str, Any]) -> str | None:
+    """The PostgreSQL replication slot the config's first CDC export names (`cdc.slot`), or None."""
+    for entry in entries_of(config):
+        slot = _yaml.text_of(_mapping(entry.get("cdc")).get("slot"))
+        if slot:
+            return str(slot)
+    return None
+
+
 def mode_of(entry: Mapping[str, Any]) -> str:
     """The export's `mode`; rivet's default for an absent one is `full` (src/config/export.rs `default_mode`)."""
     return str(_yaml.text_of(entry.get("mode")) or "full")

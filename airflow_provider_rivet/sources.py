@@ -435,8 +435,10 @@ def read_sources_file(path: str | Path) -> SourcesFile:
         except (OSError, PreflightRefusal) as exc:
             template_missing = f"template `{template}`: its config {config} cannot be read yet ({exc})"
     for name in names:
-        layers = [template_layer if name != template else {}, doc.get("defaults"), doc["sources"][name]]
-        settings = _merged(layers, name)
+        own = _merged([doc.get("defaults"), doc["sources"][name]], name)
+        flags = {flag_of(a) for a in own.get("init_args") or ()}
+        inherited = {k: v for k, v in template_layer.items() if name != template and INIT_FLAGS[k] not in flags}
+        settings = _merged([inherited, doc.get("defaults"), doc["sources"][name]], name)
         line, column = _position(marks.get(("sources", name)))
         errors += _source_errors(path, name, settings, line, column)
         sources[name] = Source(name, settings)
@@ -493,7 +495,14 @@ class Drift:
         return "; ".join(parts)
 
 
-def drift(doc: Mapping[str, Any], mode: str, include: Sequence[str], exclude: Sequence[str]) -> Drift:
+def skipped_by_init(text: str) -> list[str]:
+    """The tables `rivet init` left out of the stream it wrote, from its `# SKIPPED <table>:` lines."""
+    return [m.strip("'\"") for m in re.findall(r"^\s*# SKIPPED (.+?): ", text, re.M)]
+
+
+def drift(
+    doc: Mapping[str, Any], mode: str, include: Sequence[str], exclude: Sequence[str], skipped: Sequence[str] = ()
+) -> Drift:
     """How the config `doc` of a source of `mode` differs from the include and exclude its sources file names. A table
     is compared by its name without the schema, as init matched it; an include glob that may match a table the
     source has and the config does not cannot be judged without the source, and is left alone."""
@@ -509,5 +518,5 @@ def drift(doc: Mapping[str, Any], mode: str, include: Sequence[str], exclude: Se
     bare = {table: table.rsplit(".", 1)[-1] for table in places}
     extra = [t for t in places if not kept(bare[t], include, exclude)]
     literal = [g for g in include if "*" not in g and "?" not in g and kept(g, (), exclude)]
-    missing = [g for g in literal if g not in bare.values() and g not in places]
+    missing = [g for g in literal if g not in bare.values() and g not in places and g not in skipped]
     return Drift(extra=extra, missing=missing, places=places)

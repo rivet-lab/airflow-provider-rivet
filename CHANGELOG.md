@@ -103,6 +103,19 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- `preflight` no longer makes a state folder whose parent is missing (an unmounted volume): `rivet init --discover`
+  and `rivet check` ran in `<state>/.init` and created the parents, so the next run passed with the state on the
+  worker's own disk. They now run only when the state folder check passes.
+- `preflight` treats a CDC export whose config names no `cdc.checkpoint` (a PostgreSQL stream over several tables keeps
+  its position in the slot) as possibly started: a config that differs from `include`/`exclude` is a WARN, not a FAIL
+  advising to move the config aside.
+- The free replication slot check passes when the stream's own `cdc.slot` exists: a running stream on a server whose
+  slots are all taken no longer fails every run.
+- A literal `include` of a table `rivet init` left out of the stream (a `# SKIPPED <table>:` line of the config: a
+  name that cannot be a `table:` shortcut) is not reported as missing; re-running init could never add it.
+- A source's own `init_args` flag (e.g. `--gcs-bucket`) wins over the value the `template:` gives: the sources file no
+  longer turns into an import error once the template's config is written.
+
 - `format_title` called as 0.3.0's `docs/slack.md` documents it (no `try_number`, `max_tries`) works again and reads
   final / retryable from the error object, as 0.3.0 did; it raised `TypeError` since the retry word followed Airflow's
   tries.
