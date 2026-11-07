@@ -627,7 +627,7 @@ def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[t
         return [Check(f"gcs gs://{bucket}/{prefix}", status, "probed")], "US"
 
     def bigquery(project: str, dataset: str, location: str, key_file: str | None = None) -> list[Check]:
-        calls.append(("bigquery", project, dataset))
+        calls.append(("bigquery", project, dataset, location))
         return [Check(f"bigquery {project}.{dataset}", PASS, "probed")]
 
     monkeypatch.setattr(checks, "gcs", gcs)
@@ -640,15 +640,15 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     assert "SKIP bucket: init_args name no GCS bucket" in preflight(init, monkeypatch)["checks"]
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
     preflight(init, monkeypatch, init_args=args)
-    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
+    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d", "US")]
     init.run(init_args=args)
     out = preflight(init, monkeypatch, init_args=args)
-    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
+    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d", "US")]
     assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
 
 
 def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_warns_after(
-    init: Init, monkeypatch: pytest.MonkeyPatch
+    init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture
 ) -> None:
     staging_calls(monkeypatch)
     init.run()
@@ -658,6 +658,8 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     )
     refused = preflight(init, monkeypatch, include=["orders"])
     assert isinstance(refused, AirflowFailException) and "include and exclude" in str(refused)
+    logged = capfd.readouterr().out
+    assert "include and exclude" in logged and "captures customers" in logged
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("pos")
