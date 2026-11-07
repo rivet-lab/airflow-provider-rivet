@@ -627,7 +627,7 @@ def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[t
         return [Check(f"gcs gs://{bucket}/{prefix}", status, "probed")], "US"
 
     def bigquery(project: str, dataset: str, location: str, key_file: str | None = None) -> list[Check]:
-        calls.append(("bigquery", project, dataset, location))
+        calls.append(("bigquery", project, dataset, location, key_file))
         return [Check(f"bigquery {project}.{dataset}", PASS, "probed")]
 
     monkeypatch.setattr(checks, "gcs", gcs)
@@ -641,10 +641,10 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
     probed = preflight(init, monkeypatch, init_args=args, env={"GOOGLE_APPLICATION_CREDENTIALS": "/k.json"})["checks"]
     assert {"PASS gcs gs://b/: probed", "PASS bigquery p.d: probed"} <= set(probed)
-    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US")]
+    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US", "/k.json")]
     init.run(init_args=args)
     out = preflight(init, monkeypatch, init_args=args)
-    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US")]
+    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US", "/k.json")]
     assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
 
 
@@ -669,7 +669,7 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     checkpoint.write_text("pos")
     warned = preflight(init, monkeypatch, include=["orders"])
     line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
-    assert "captures customers" in line and "edit the config at the places named" in line
+    assert "captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
 
 
 def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:
