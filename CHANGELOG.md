@@ -7,7 +7,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
-- **DAGs from one file**: `build_dags_from_file("rivet_sources.yaml")` builds one DAG per source of a YAML file, as
+- **DAGs from one file**: `build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml"))` builds one DAG per source of a YAML file, as
   `build_source_dags` builds each (same DAG ids, task ids, configs and state folders), so a new source is one line and
   no Python. Each source takes the template's settings (`template:`, the GCS bucket, BigQuery project and TLS mode of
   a source's existing config) under `defaults` under its own; `{name}` is replaced in every value. Typed settings for

@@ -37,12 +37,14 @@ sources:
 `dags/rivet_sources.py`:
 
 ```python
+from pathlib import Path
+
 from airflow_provider_rivet.dags import build_dags_from_file
 
-globals().update(build_dags_from_file("rivet_sources.yaml"))
+globals().update(build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml")))
 ```
 
-A relative path is read against the folder of the DAG file that calls `build_dags_from_file`. Both files are in
+The path is absolute: a relative one is refused, naming the form above. Both files are in
 [`examples/`](../examples/rivet_sources.yaml).
 
 Each source is built the way [`build_source_dags`](dag-builders.md#one-dag-per-database-build_source_dags) builds it:

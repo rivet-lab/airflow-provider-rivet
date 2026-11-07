@@ -15,7 +15,7 @@ from conftest import DagRig, FakeTI
 from test_source_dags import CDC_CONFIG, FAKE_RIVET, Init, connection, lookup
 
 from airflow_provider_rivet._compat import AirflowFailException, AirflowSkipException
-from airflow_provider_rivet.dags import DRIFT_GATE_ID, DRIFT_ID, build_cdc_dag, build_source_dags
+from airflow_provider_rivet.dags import DRIFT_GATE_ID, DRIFT_ID, build_cdc_dag, build_dags_from_file, build_source_dags
 from airflow_provider_rivet.operators import RivetCdcRunOperator, RivetSpecDriftOperator
 from airflow_provider_rivet.preflight import PreflightRefusal
 from airflow_provider_rivet.sources import SourcesFileError
@@ -66,7 +66,8 @@ def dags_folder(tmp_path: Path, spec: str = SOURCES_FILE, **configs: str) -> Pat
     for name, tables in configs.items():
         (folder / "rivet" / f"{name}.yaml").write_text(STREAM.format(name=name, tables=tables))
     (folder / "rivet_cdc.py").write_text(
-        'from airflow_provider_rivet.dags import build_dags_from_file; globals().update(build_dags_from_file("rivet_sources.yaml"))\n'
+        "from pathlib import Path\nfrom airflow_provider_rivet.dags import build_dags_from_file\n"
+        'globals().update(build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml")))\n'
     )
     return folder
 
@@ -129,6 +130,11 @@ def test_a_config_that_captures_a_table_the_file_leaves_out_gets_the_drift_check
     assert gate.trigger_rule == "none_skipped" and check.downstream_task_ids == {DRIFT_GATE_ID, "watcher"}
     assert gate.downstream_task_ids == {"run", "watcher"}
     assert dag.get_task("run").upstream_task_ids == {DRIFT_GATE_ID}
+
+
+def test_a_relative_sources_file_is_refused_naming_the_absolute_form(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"rivet_sources.yaml is relative; .*Path\(__file__\).with_name\('rivet_sources.yaml'\)"):
+        build_dags_from_file("rivet_sources.yaml")
 
 
 def test_a_source_with_no_config_waits_for_the_template_s_config(tmp_path: Path) -> None:

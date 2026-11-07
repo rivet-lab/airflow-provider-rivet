@@ -584,10 +584,10 @@ def build_dags_from_file(
     path: str | Path, *, operator_kwargs: Mapping[str, Any] | None = None, **dag_kwargs: Any
 ) -> dict[str, DAG]:
     """One DAG per source of a sources file (`airflow_provider_rivet.sources`), as `build_source_dags` builds each:
-    `rivet_<name>_<mode>`, paused at creation, that writes its config with `rivet init` and then runs it. A relative
-    `path` is read against the folder of the DAG file that calls this. Put the result in the DAG file's globals:
+    `rivet_<name>_<mode>`, paused at creation, that writes its config with `rivet init` and then runs it. `path` is
+    absolute; put the result in the DAG file's globals:
 
-        globals().update(build_dags_from_file("rivet_sources.yaml"))
+        globals().update(build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml")))
 
     Each source gets its own settings: the template's (`template:`) under `defaults` under its own. A file this reader
     refuses is an import error naming each line and column; a source that cannot be built is a DAG of one failing task,
@@ -596,7 +596,7 @@ def build_dags_from_file(
     source and are overridden by what the file says."""
     path = Path(path)
     if not path.is_absolute():
-        path = _caller_folder() / path
+        raise ValueError(f"{path} is relative; name the file from the DAG file: Path(__file__).with_name({path.name!r})")
     spec = read_sources_file(path)
     dags: dict[str, DAG] = {}
     for name, source in spec.sources.items():
@@ -608,12 +608,6 @@ def build_dags_from_file(
             common = {"config": str(spec.config_dir / f"{name}.yaml"), "is_paused_upon_creation": True, **dag_kwargs}
             dags[dag_id] = _refused_dag(dag_id, spec.mode, spec.config_dir / f"{name}.yaml", refusal, common)
     return dags
-
-
-def _caller_folder() -> Path:
-    """The folder of the file that called `build_dags_from_file`."""
-    frame = inspect.stack(context=0)[2]
-    return Path(frame.filename).resolve().parent
 
 
 def _source_dag(
