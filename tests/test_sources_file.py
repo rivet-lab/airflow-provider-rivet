@@ -94,6 +94,8 @@ def test_a_source_s_own_init_args_flag_wins_over_the_template_s_setting(tmp_path
     b = read_sources_file(write(tmp_path, text)).sources["b"]
     assert "gcs_bucket" not in b.settings and b.settings["bigquery_project"] == "my-project"
     assert b.init_args().count("--gcs-bucket") == 1 and "other" in b.init_args()
+    text = HEAD + "template: shop\ndefaults:\n  init_args: [--gcs-bucket, other]\nsources:\n  shop:\n  b: {}\n"
+    assert "gcs_bucket" not in read_sources_file(write(tmp_path, text)).sources["b"].settings
 
 
 def test_state_database_connection_names_the_connection_s_own(tmp_path: Path) -> None:

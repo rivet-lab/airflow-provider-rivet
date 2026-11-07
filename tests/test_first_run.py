@@ -20,6 +20,7 @@ from test_source_dags import Init, connection, lookup
 from airflow_provider_rivet import checks
 from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
 from airflow_provider_rivet.events import Event
+from airflow_provider_rivet.exports import slot_of
 from airflow_provider_rivet.operators import RivetPreflightOperator, RivetRunOperator, make_shared_folder, places
 from airflow_provider_rivet.stderr import Follower
 from airflow_provider_rivet.tasklog import TaskLog
@@ -338,6 +339,8 @@ def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
     own = checks.postgres_source(SERVER, "rivet_shop", connect=lambda _: db_of(answers))[-1]
     assert own == Check("postgres replication slots", PASS, "the stream's slot `rivet_shop` exists")
     assert checks.postgres_source(SERVER, "other", connect=lambda _: db_of(answers))[-1].status == FAIL
+    assert slot_of({"exports": [{"name": "a", "mode": "cdc", "cdc": {"slot": "rivet_shop"}}]}) == "rivet_shop"
+    assert slot_of({"exports": [{"name": "a", "mode": "cdc", "cdc": {}}]}) is None
 
 
 class Blob:
