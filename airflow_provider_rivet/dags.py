@@ -409,7 +409,7 @@ def _config_dag(
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
     dag = _dag_of_config(dag_id, mode == "cdc", config, doc, common)
     if globs is not None:
-        _with_preflight(dag, mode, [], {**common, "operator_kwargs": kwargs}, globs=globs)
+        _with_preflight(dag, mode, [], common, globs=globs)
     return dag
 
 
