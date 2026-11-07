@@ -663,6 +663,7 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     captured = capfd.readouterr()
     logged = captured.out + captured.err + caplog.text
     assert f"{init.config} captures customers" in logged
+    assert f"move {init.config} aside: the next run's `init` writes it again" in logged
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("pos")
