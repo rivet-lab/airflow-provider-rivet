@@ -560,7 +560,7 @@ def table(name: str, mode: str, rows: int | None = 3_000_000, schema: str = "") 
         ("mysql", [table("a", "chunked"), table("b", "full")], PASS, "2 tables in one stream; each baseline is read through"),
         ("postgres", [table("a", "chunked", schema="public"), table("b", "full", schema="public")], PASS, "2 tables in one"),
         ("mysql", [table("events", "full", rows=900)], PASS, "`events` (~900 rows) read in one SELECT each, as rivet"),
-        ("mysql", [table("events", "chunked")], WARN, "`events` (~3,000,000 rows) read in one SELECT each though rivet"),
+        ("mysql", [table("events", "chunked")], WARN, "`events` (~3,000,000 rows) read in one SELECT each on one connection"),
         (
             "postgres",
             [table("a", "full", schema="public"), table("b", "chunked", rows=None, schema="sales")],
@@ -577,10 +577,17 @@ def test_a_baseline_rivet_would_page_but_reads_in_one_select_is_a_warning(
     assert check.status == status and check.detail.startswith(said), check
 
 
-def test_the_baseline_warning_says_why_and_where_to_raise_the_timeout() -> None:
+BASELINE_FIX = (
+    "after `init`, in {config} replace `initial: snapshot` with `backfill: auto` and add a batch export of each of these "
+    "tables as its recipe (`mode: chunked`, `chunk_by_key: <key>`, `parallel: 4`); raising `tuning.statement_timeout_s` "
+    "instead keeps one SELECT (rivet-lab/rivet#878)"
+)
+
+
+def test_the_baseline_warning_says_why_and_how_to_page_the_baseline() -> None:
     check = checks.baseline({"source_type": "mysql", "tables": [table("events", "chunked")]}, "/cfg/shop.yaml")
     assert check.detail.endswith("`tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile)")
-    assert check.fix == "after `init`, set `tuning: { statement_timeout_s: 3600 }` under each of these exports in /cfg/shop.yaml"
+    assert check.fix == BASELINE_FIX.format(config="/cfg/shop.yaml")
 
 
 def test_preflight_before_init_warns_of_a_one_table_baseline_rivet_would_page(
@@ -590,9 +597,9 @@ def test_preflight_before_init_warns_of_a_one_table_baseline_rivet_would_page(
     out = preflight(init, monkeypatch)
     assert out["decision"] == "pass", out
     assert [line for line in out["checks"] if line.startswith("WARN baseline")] == [
-        f"WARN baseline: `events` (~3,000,000 rows) read in one SELECT each though rivet would page them, and "
-        f"`tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile) -> fix: after `init`, set "
-        f"`tuning: {{ statement_timeout_s: 3600 }}` under each of these exports in {init.config}"
+        "WARN baseline: `events` (~3,000,000 rows) read in one SELECT each on one connection though rivet would page them, "
+        "and `tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile) -> fix: "
+        + BASELINE_FIX.format(config=init.config)
     ]
 
 

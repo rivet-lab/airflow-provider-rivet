@@ -72,8 +72,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   of its stderr and when rivet last wrote; the first names `tail -f <stderr path>`. `stream_stderr=True` copies rivet's
   stderr lines into the task log as they come; DAGs built from the file set it (`stream_stderr: false` in the file).
 - `preflight` before `init` of a CDC source runs `rivet init --discover` with init's table arguments and WARNs of each
-  table rivet would page that the first run reads in one `SELECT` (a one-table source), naming the
-  `tuning.statement_timeout_s` to raise. The bucket and dataset checks write once per place: a pass is recorded in
+  table rivet would page that the first run reads in one `SELECT` (a one-table source), with the fix: a paged
+  `backfill: auto` recipe (`chunk_by_key`, `parallel`) in place of `initial: snapshot` (rivet-lab/rivet#878). The bucket and dataset checks write once per place: a pass is recorded in
   `<state_dir>/.preflight-staging.json` and checked again only when the bucket, prefix, project or dataset changes.
   The state TLS check counts a host as local as rivet does: `localhost`, any loopback address (`127.0.0.0/8`, `::1`,
   `[::1]`), a socket path, and every host of a comma list.

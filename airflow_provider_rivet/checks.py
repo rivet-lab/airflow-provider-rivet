@@ -473,9 +473,11 @@ def baseline(discovery: Mapping[str, Any], config: str) -> Check:
     return Check(
         name,
         WARN,
-        f"{_tables(paged)} read in one SELECT each though rivet would page them, and `tuning.statement_timeout_s` stops a "
-        "SELECT (300 s under the `balanced` profile)",
-        f"after `init`, set `tuning: {{ statement_timeout_s: 3600 }}` under each of these exports in {config}",
+        f"{_tables(paged)} read in one SELECT each on one connection though rivet would page them, and "
+        "`tuning.statement_timeout_s` stops a SELECT (300 s under the `balanced` profile)",
+        f"after `init`, in {config} replace `initial: snapshot` with `backfill: auto` and add a batch export of each of these "
+        "tables as its recipe (`mode: chunked`, `chunk_by_key: <key>`, `parallel: 4`); raising `tuning.statement_timeout_s` "
+        "instead keeps one SELECT (rivet-lab/rivet#878)",
     )
 
 
