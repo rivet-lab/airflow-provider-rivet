@@ -553,6 +553,18 @@ def test_preflight_checks_the_state_database_the_tasks_will_use(init: Init, monk
     ) in out["checks"]
 
 
+def test_preflight_reads_a_postgres_source_with_its_connection_and_the_slot_the_config_names(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup(monkeypatch, {"shop": connection("shop", "postgres")})
+    seen: list[tuple] = []
+    monkeypatch.setattr(checks, "postgres_source", lambda conn, slot: seen.append((conn.host, slot)) or [])
+    init.run(init_args=["--tls", "disable"])
+    init.config.write_text(init.config.read_text().replace("    cdc:\n", "    cdc:\n      slot: rivet_shop\n", 1))
+    preflight(init, monkeypatch, env_from_connections={"RIVET_SOURCE_URL": {"conn_id": "shop"}})
+    assert seen == [("shop.host", "rivet_shop")]
+
+
 def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:
     args = ["--gcs-bucket", "b", "--include", "a", "b*", "--bigquery-dataset=d", "--tls=disable", "--schema", "s"]
     assert checks.discovery_args(args) == ["--include", "a", "b*", "--tls=disable", "--schema", "s"]
