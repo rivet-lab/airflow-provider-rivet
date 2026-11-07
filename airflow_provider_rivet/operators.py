@@ -24,7 +24,7 @@ from ._compat import (
     executor_spreading_hosts,
     mask_secret,
 )
-from ._yaml import params_of
+from ._yaml import params_of, text_of
 from .capabilities import MIN_RIVET_VERSION, ProbeFailed, probe
 from .checks import FAIL, PASS, SKIP, WARN, Check, not_writable, write_probe
 from .codes import Code
@@ -489,7 +489,8 @@ class RivetCdcRunOperator(RivetBaseOperator):
         """Refuse a state database the task names in place of its Connection's own (`build_source_dags`'s
         `rivet_state_<name>`) when it holds no table while the stream's checkpoint exists: the stream ran on another
         state, most likely the Connection's own database (a DAG moved from `build_cdc_dag`), and rivet would start its
-        state over in the empty one."""
+        state over in the empty one. A stream whose config names no checkpoint (a PostgreSQL slot) has started when
+        the Connection's own database holds rivet's `export_state`."""
         ref = (self.env_from_connections or {}).get(STATE_URL_ENV)
         ref = database_ref(ref) if ref else {}
         database = ref.get("database")
@@ -500,7 +501,13 @@ class RivetCdcRunOperator(RivetBaseOperator):
         if not own or own == database:
             return
         checkpoint = checkpoints(self._config_doc(), Path(self.state_dir)).get(str(self.export))
-        if checkpoint is None or not checkpoint.is_file() or not checkpoint.stat().st_size:
+        if checkpoint is None:
+            if not self._table_count(conn, "export_state"):
+                return
+            evidence = f"the Connection's own database `{own}` holds rivet's state (`export_state`)"
+        elif checkpoint.is_file() and checkpoint.stat().st_size:
+            evidence = f"the stream's checkpoint {checkpoint} exists"
+        else:
             return
         tables = self._table_count(with_database(conn, database))
         if tables is None or tables:
@@ -508,16 +515,16 @@ class RivetCdcRunOperator(RivetBaseOperator):
         raise PreflightRefusal(
             Code.STATE_DATABASE_MISMATCH,
             f"the state database `{database}` this task names (on the server of Connection `{ref['conn_id']}`) has no "
-            f"table, while the stream's checkpoint {checkpoint} exists: the stream ran on another state, and the "
+            f"table, while {evidence}: the stream ran on another state, and the "
             f"Connection names the database `{own}`. rivet would start the state over in the empty one. If the state "
             f"is in `{own}` (a DAG moved from build_cdc_dag), use it: `state_database: connection` for this source in "
             f"the sources file, or build_source_dags(state_database=None); to keep `{database}`, copy the state into it "
             f"first (pg_dump {own} | psql {database}); see docs/dags-from-file.md",
         )
 
-    def _table_count(self, conn: Any) -> int | None:
-        """The number of tables of a PostgreSQL database outside the system schemas, or None when it cannot be read
-        (no psycopg2, no such database, no access): rivet then meets the database as it is."""
+    def _table_count(self, conn: Any, named: str = "%") -> int | None:
+        """The number of tables (named like `named`) of a PostgreSQL database outside the system schemas, or None when
+        it cannot be read (no psycopg2, no such database, no access): rivet then meets the database as it is."""
         try:
             import psycopg2
         except ImportError:
@@ -531,7 +538,8 @@ class RivetCdcRunOperator(RivetBaseOperator):
             with db.cursor() as cur:
                 cur.execute(
                     "SELECT count(*) FROM information_schema.tables "
-                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
+                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_name LIKE %s",
+                    (named,),
                 )
                 row = cur.fetchone()
                 return int(row[0]) if row else None
@@ -912,7 +920,9 @@ class RivetPreflightOperator(_SourceTask):
         conn = self._database(ref)
         kind = str(getattr(conn, "conn_type", "") or "")
         if kind == "mysql":
-            return checks.mysql_source(conn, server_id_of(doc, checks.RIVET_DEFAULT_SERVER_ID) if doc else None)
+            tls = _mapping_of(_mapping_of(doc.get("source")).get("tls"))
+            mode = str(text_of(tls.get("mode")) or "verify-full") if tls else _value_of(self.init_args, "--tls")
+            return checks.mysql_source(conn, server_id_of(doc, checks.RIVET_DEFAULT_SERVER_ID), tls=mode)
         if kind in ("postgres", "postgresql"):
             return checks.postgres_source(conn, slot_of(doc))
         return [

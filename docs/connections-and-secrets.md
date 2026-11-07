@@ -78,9 +78,10 @@ What reaches the rivet process, and how Airflow Connections become what rivet re
   progress, even an empty one, is never removed by a sibling task's cleanup), and so is a crashed ledger untouched for 24 h (a crash of that series
   more than 24 h after its last one starts a fresh budget). A ledger that is not the ledger's JSON
   is left for a person to delete.
-- `stream_stderr=True` copies stderr into the task log when each step ends. It is the one way
-  raw stderr reaches the task log, and it is for debugging: it puts possibly data-bearing text
-  into a store with wider access than the worker.
+- `stream_stderr=True` copies rivet's stderr into the task log as rivet writes it. With the preflight's
+  `rivet init --discover` (whose last lines it logs when discovery fails), it is how raw stderr reaches
+  the task log, and it is for debugging: it puts possibly data-bearing text into a store with wider
+  access than the worker.
 
 ## Storage and warehouse connections
 

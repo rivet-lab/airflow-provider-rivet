@@ -104,51 +104,113 @@ def test_state_database_connection_names_the_connection_s_own(tmp_path: Path) ->
     assert spec.sources["b"].state_database() == "rivet_state_b"
 
 
+def test_a_template_config_writing_to_two_buckets_names_both_and_asks_for_one(tmp_path: Path) -> None:
+    (tmp_path / "rivet").mkdir()
+    second = "  - name: shop_b\n    mode: cdc\n    tables: [c]\n    destination: {type: gcs, bucket: other, prefix: b/}\n"
+    (tmp_path / "rivet" / "shop.yaml").write_text(TEMPLATE_CONFIG + second)
+    config = tmp_path / "rivet" / "shop.yaml"
+    said = f"{config} writes to more than one GCS bucket (my-bucket, other): name `gcs_bucket` in `defaults`"
+    with pytest.raises(SourcesFileError, match=f"^{re.escape(said)}$"):
+        read_sources_file(write(tmp_path, HEAD + "template: shop\nsources:\n  shop:\n  b: {}\n"))
+
+
+def test_name_is_replaced_in_the_keys_of_a_mapping_too(tmp_path: Path) -> None:
+    text = HEAD + 'defaults:\n  env_from_variables:\n    "X_{name}": "v_{name}"\nsources:\n  shop: {}\n'
+    assert read_sources_file(write(tmp_path, text)).sources["shop"].settings == {"env_from_variables": {"X_shop": "v_shop"}}
+
+
+def test_a_byte_order_mark_at_the_start_is_read_past(tmp_path: Path) -> None:
+    spec = read_sources_file(write(tmp_path, "\ufeff" + HEAD + "mode: batch\nsources:\n  shop: {}\n"))
+    assert (spec.mode, list(spec.sources)) == ("batch", ["shop"])
+    text = "\ufeffversion: 2\nstate_root: /x\nstate_connection: s\nsources:\n  a: {}\n"
+    assert refusal(tmp_path, text) == "F:1:10: `version`: is 2; the only one is 1"
+
+
 def test_a_template_with_no_config_yet_is_reported_not_refused(tmp_path: Path) -> None:
     spec = read_sources_file(write(tmp_path, HEAD + "template: a\nsources:\n  a: {}\n  b: {}\n"))
     assert spec.template_missing and "template `a`" in spec.template_missing
 
 
+HEREDOC = (
+    "A heredoc (`cat <<EOF`) pasted together with the commands after it writes them into the file; "
+    "keep only the YAML here and run the commands in the shell"
+)
+ALIAS = 'starts with `*`, which YAML reads as an alias, not text: quote the glob, "*_tmp"'
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [
+        (HEAD + "sources:\n  a:\n    exclude: [*_tmp]\n", f"F:6:15: `*_tmp` {ALIAS}"),
+        (HEAD + "sources:\n  a:\n    exclude:\n      - *_tmp\n", f"F:7:9: `*_tmp` {ALIAS}"),
         (
-            HEAD + "sources:\n  a:\n    exclude: [*_tmp]\n",
-            'F:6:15: `*_tmp` starts with `*`, which YAML reads as an alias, not text: quote the glob, "*_tmp"',
+            HEAD + "defaults: &defs\n  tls: disable\nsources:\n  a: *defs\n",
+            "F:7:6: `*defs` is a YAML alias of the anchor `&defs`; a sources file reads no anchors or aliases: write the "
+            "value out",
         ),
-        (HEAD + "sources:\n  a:\n    exclude:\n      - *_tmp\n", "F:7:9: `*_tmp` starts with `*`"),
+        (
+            HEAD + "defaults: &d\n  tls: disable\nsources:\n  a: *d\n",
+            "F:7:6: `*d` is a YAML alias of the anchor `&d`; a sources file reads no anchors or aliases: write the value out",
+        ),
+        (
+            HEAD + "defaults: &d\n  tls: disable\nsources:\n  a:\n    exclude: [*]\n",
+            'F:8:15: `*` starts with `*`, which YAML reads as an alias, not text: quote the glob, "*"',
+        ),
         (HEAD + "sources:\n  a:\n    datset: x\n", "F:6:5: unknown key `datset`; did you mean `bigquery_dataset`?"),
         (HEAD + "sources:\n  a:\n    dataset: x\n", "F:6:5: unknown key `dataset`; did you mean `bigquery_dataset`?"),
+        (HEAD + "sources:\n  a:\n    tables: [x]\n", "F:6:5: unknown key `tables`; did you mean `include`?"),
+        (HEAD + "sources:\n  a:\n    bucket: x\n", "F:6:5: unknown key `bucket`; did you mean `gcs_bucket`?"),
         (
             HEAD + "sources:\n  a:\n    tls: off\n",
             "F:6:10: `sources.a.tls`: `off` is not one of disable, require, verify-ca, verify-full",
         ),
-        (HEAD + 'defaults:\n  bigquery_dataset: "rivet_{dsn}"\nsources:\n  a: {}\n', "F:5:21: `{dsn}` is no placeholder"),
-        (HEAD + "sources:\n  A-b: {}\n", "`sources`: `A-b` is not a name of lower-case letters, digits and `_`"),
+        (
+            HEAD + 'defaults:\n  bigquery_dataset: "rivet_{dsn}"\nsources:\n  a: {}\n',
+            "F:5:21: `{dsn}` is no placeholder of this file; the one placeholder is `{name}`, the source's name",
+        ),
+        (HEAD + "sources:\n  A-b: {}\n", "F:5:3: `sources`: `A-b` is not a name of lower-case letters, digits and `_`"),
         (
             "version: 1\nstate_root: \u201c/x\u201d\nstate_connection: s\nsources:\n  a: {}\n",
-            "F:2:13: `\u201c` is a typographic quote",
+            "F:2:13: `\u201c` is a typographic quote (copied from a messenger or a word processor); "
+            "YAML quotes with a straight \" or '",
         ),
-        (HEAD + "sources:\n  a:\u00a0{}\n", "F:5:5: a no-break space (U+00A0)"),
-        (HEAD + "sources:\n\ta: {}\n", "F:5:1: a tab in the indentation"),
-        (HEAD + "sources:\n  a: {}\nEOF\ndocker compose up -d\n", "F:6:1: this line looks like a shell command, not YAML: `EOF`"),
-        (HEAD + "sources:\n  a: {}\ncat <<EOF > dags/x.py\n", "F:6:1: this line looks like a shell command"),
-        (HEAD + "sources:\n  a: {}\n  a: {}\n", "F:6:3: `a` is written twice in one mapping"),
+        (
+            HEAD + "sources:\n  a:\u00a0{}\n",
+            "F:5:5: a no-break space (U+00A0), which a messenger or a word processor puts in copied text; "
+            "retype the line with plain spaces",
+        ),
+        (HEAD + "sources:\n\ta: {}\n", "F:5:1: a tab in the indentation; YAML indents with spaces only"),
+        (
+            HEAD + "sources:\n  a: {}\nEOF\ndocker compose up -d\n",
+            f"F:6:1: this line looks like a shell command, not YAML: `EOF`. {HEREDOC}\n"
+            f"F:7:1: this line looks like a shell command, not YAML: `docker compose up -d`. {HEREDOC}",
+        ),
+        (
+            HEAD + "sources:\n  a: {}\ncat <<EOF > dags/x.py\n",
+            f"F:6:1: this line looks like a shell command, not YAML: `cat <<EOF > dags/x.py`. {HEREDOC}",
+        ),
+        (
+            HEAD + "sources:\n  a: {}\n  a: {}\n",
+            "F:6:3: `a` is written twice in one mapping; YAML would keep only the last one silently; write it once",
+        ),
         (
             HEAD + "sources:\n  a:\n    include: orders\n",
-            "F:6:14: `sources.a.include`: is str 'orders', expected array: write [orders]",
+            "F:6:14: `sources.a.include`: is str 'orders', expected array: write [orders] or one `- orders` per line",
         ),
         ("version: 2\nstate_root: /x\nstate_connection: s\nsources:\n  a: {}\n", "F:1:10: `version`: is 2; the only one is 1"),
         ("version: 1\nstate_root: /x\nsources:\n  a: {}\n", "F:1:1: `(top)`: `state_connection` is required"),
-        (HEAD + "sources: {}\n", "`sources`: names no source"),
-        (HEAD + 'sources:\n  a:\n    tls: disable\n    init_args: ["--tls=require"]\n', "source `a`: init_args sets --tls"),
+        (HEAD + "sources: {}\n", "F:4:10: `sources`: names no source; add one under `sources:`"),
+        (
+            HEAD + 'sources:\n  a:\n    tls: disable\n    init_args: ["--tls=require"]\n',
+            "F:6:5: source `a`: init_args sets --tls, which its settings already set; keep one",
+        ),
         (HEAD + "template: z\nsources:\n  a: {}\n", "F:4:11: template `z` is not a source of this file (a)"),
-        (HEAD + "sources:\n  a: [\n", "F:6:1: not YAML"),
-        ("", "F: the file is empty"),
+        (HEAD + "sources:\n  a: [\n", "F:6:1: not YAML: expected the node content, but found '<stream end>'"),
+        ("", "F: the file is empty; see docs/dags-from-file.md for its shape"),
     ],
 )
 def test_a_refusal_names_the_line_the_column_and_what_was_meant(tmp_path: Path, text: str, said: str) -> None:
-    assert said in refusal(tmp_path, text)
+    assert refusal(tmp_path, text) == said
 
 
 def test_a_comment_may_hold_what_a_value_may_not(tmp_path: Path) -> None:
@@ -220,13 +282,18 @@ def test_drift_names_each_extra_table_and_where_it_is_written() -> None:
     found = drift(STREAM, "cdc", ["pageviews", "visitors", "sessions"], [])
     assert list(found.extra) == ["clicks"] and list(found.missing) == ["sessions"]
     assert found.places["clicks"] == ["`tables:` of export `analytics_cdc`", "`load.tables.clicks`"]
-    assert "captures clicks" in found.text(Path("/c/analytics.yaml"))
+    assert found.text(Path("/c/analytics.yaml")) == (
+        "/c/analytics.yaml captures clicks, which the sources file leaves out "
+        "(`clicks`: `tables:` of export `analytics_cdc`, `load.tables.clicks`); "
+        "the sources file includes sessions, which /c/analytics.yaml does not capture"
+    )
 
 
 def test_no_drift_when_the_config_captures_what_the_file_says() -> None:
     assert not drift(STREAM, "cdc", ["*"], [])
     assert not drift(STREAM, "cdc", [], ["*_old"])
     assert drift(STREAM, "cdc", [], ["clicks"]).extra == ["clicks"]
+    assert not drift(STREAM, "cdc", ["pageviews", "visitors", "clicks", "gone"], ["gone"])
 
 
 def test_a_table_init_left_out_of_the_stream_is_not_missing() -> None:
@@ -237,7 +304,19 @@ def test_a_table_init_left_out_of_the_stream_is_not_missing() -> None:
     assert list(found.missing) == ["sessions"]
 
 
+def test_a_table_named_with_its_database_and_schema_is_compared_by_its_last_part() -> None:
+    doc = {"exports": [{"name": "c", "mode": "cdc", "tables": ["shop.dbo.orders"]}]}
+    assert not drift(doc, "cdc", ["orders"], [])
+
+
+def test_a_mongo_collection_with_a_dot_is_compared_whole() -> None:
+    doc = {"source": {"type": "mongo"}, "exports": [{"name": "c", "mode": "cdc", "tables": ["events.2024"]}]}
+    assert not drift(doc, "cdc", ["events.2024"], []) and not drift(doc, "cdc", ["events.*"], [])
+    assert drift(doc, "cdc", ["2024"], []).extra == ["events.2024"]
+
+
 def test_a_batch_source_compares_its_batch_exports_by_schema_less_name() -> None:
     doc = {"exports": [{"name": "dbo_orders", "table": "dbo.orders"}, {"name": "dbo_users", "table": "dbo.users"}]}
     found = drift(doc, "batch", ["orders"], [])
     assert list(found.extra) == ["dbo.users"] and found.places["dbo.users"] == ["export `dbo_users`"]
+    assert list(found.missing) == []

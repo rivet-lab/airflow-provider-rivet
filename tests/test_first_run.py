@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
@@ -17,7 +18,7 @@ from airflow.exceptions import AirflowFailException
 from conftest import FakeTI, Rig
 from test_source_dags import Init, connection, lookup
 
-from airflow_provider_rivet import checks
+from airflow_provider_rivet import checks, invocation, stderr
 from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
 from airflow_provider_rivet.events import Event
 from airflow_provider_rivet.exports import slot_of
@@ -58,14 +59,27 @@ def test_the_follower_beats_with_the_time_run_the_size_and_the_time_since_the_fi
     follower, _, beats = follow(path, every=0.1)
     with follower:
         wait_for(lambda: len(beats) >= 2)
+        elapsed, size, idle = beats[-1]
+        assert size == 6 and elapsed >= idle > 0 and elapsed >= 0.1
+        time.sleep(0.3)
+        with open(path, "ab") as out:
+            out.write(b"678\n")
+        grown = len(beats)
+        wait_for(lambda: len(beats) >= grown + 2)
     elapsed, size, idle = beats[-1]
-    assert size == 6 and elapsed >= idle > 0 and elapsed >= 0.1
+    assert size == 10 and 0 < idle < elapsed - 0.25
 
 
-def test_without_lines_to_pass_the_follower_never_reads_the_file_only_its_size(tmp_path: Path) -> None:
+def test_without_lines_to_pass_the_follower_never_reads_the_file_only_its_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "err.log"
     path.write_bytes(b"secret-ish text\n")
-    path.chmod(0)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"opened {args}")
+
+    monkeypatch.setattr(stderr, "open", refuse, raising=False)
     follower, seen, beats = follow(path, every=0.1, lines=False)
     with follower:
         wait_for(lambda: beats)
@@ -93,6 +107,15 @@ def test_a_heartbeat_says_how_long_the_step_ran_and_only_the_first_says_how_to_f
         "rivet run running for 1m 1s; stderr 2.0 KiB, last written 4 s ago; follow it: tail -f /s/run.stderr.log",
         "rivet run running for 1h 2m; stderr 2.0 KiB, last written 2m 5s ago",
     ]
+    lines.clear()
+    unnamed = TaskLog("run", "orders", None, lambda level, text: lines.append((level, text)))
+    unnamed.record({"event": Event.START, "step": "run"})
+    unnamed.record({"event": Event.PROGRESS, "step": "run", "stderr_bytes": 0, "elapsed": 60.0, "idle": 3600.0})
+    unnamed.record({**beat, "elapsed": 59.9, "idle": 0.0})
+    assert [text for level, text in lines if level == logging.INFO] == [
+        "rivet run running for 1m 0s; stderr 0 B, last written 1h 0m ago",
+        "rivet run running for 59 s; stderr 2.0 KiB, last written 0 s ago; follow it: tail -f /s/run.stderr.log",
+    ]
 
 
 def test_a_long_rivet_step_writes_heartbeats_and_its_stderr_lines_into_the_task_log(rig: Rig, tmp_path: Path) -> None:
@@ -104,10 +127,21 @@ def test_a_long_rivet_step_writes_heartbeats_and_its_stderr_lines_into_the_task_
     assert any("connected to the source" in str(r) for r in rig.records)
 
 
-def test_progress_every_none_writes_no_heartbeat(rig: Rig, tmp_path: Path) -> None:
+def test_progress_every_none_writes_no_heartbeat(rig: Rig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rig.scenario(run={"sleep": 1.5, "started": str(tmp_path / "started")})
+    payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=0.5))
+    assert payload["decision"] == "success" and len(rig.events(Event.PROGRESS)) >= 1
+    rig.records.clear()
+    everies: list[float | None] = []
+
+    def spy(path: Path, on_line: Any, on_beat: Any, every: float | None) -> Follower:
+        everies.append(every)
+        return Follower(path, on_line, on_beat, every)
+
+    monkeypatch.setattr(invocation, "Follower", spy)
     payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=None))
     assert payload["decision"] == "success" and rig.events(Event.PROGRESS) == []
+    assert len(everies) >= 1 and set(everies) == {None}
 
 
 def test_a_shared_folder_and_its_missing_parents_are_group_writable_never_world_writable(tmp_path: Path) -> None:
@@ -217,6 +251,23 @@ def test_the_state_database_check_says_whether_it_exists_or_can_be_created(answe
         assert found.fix == 'CREATE DATABASE "rivet_state_shop"; or ALTER ROLE rivet CREATEDB;'
 
 
+def test_a_connection_with_no_schema_names_the_database_postgres_picks_for_its_login() -> None:
+    nameless = types.SimpleNamespace(host="pg", port=None, schema=None, login="rivet")
+    (found,) = checks.state(nameless, None, "rivet_state", connect=lambda _: db_of({EXISTS: None, CREATEDB: (False,)}))
+    assert found.detail.startswith("`rivet` on pg:5432") and found.fix.startswith('CREATE DATABASE "rivet";')
+
+
+def test_the_connection_s_own_database_missing_is_a_failure_even_for_a_role_that_may_create_databases() -> None:
+    answers = {EXISTS: None, CREATEDB: (True,)}
+    (found,) = checks.state(SERVER, None, "rivet_state", connect=lambda _: db_of(answers))
+    assert found == Check(
+        "state database",
+        FAIL,
+        "`admin` on pg:5432 (Connection `rivet_state`) does not exist; `init` creates only a state database it names",
+        'CREATE DATABASE "admin";',
+    )
+
+
 def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
     def refuse(_: Any) -> Any:
         raise OSError("timeout")
@@ -240,6 +291,9 @@ def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
         ("127.8.0.1", {}, PASS),
         ("127.0.0.1,pg-state", {}, FAIL),
         ("127.evil.com", {}, FAIL),
+        ("::ffff:127.0.0.1", {}, FAIL),
+        ("pg-state", {"rivet_params": "application_name=a&sslmode=require"}, PASS),
+        ("pg-state", {"sslmode": "require", "rivet_params": "sslmode=prefer"}, FAIL),
     ],
 )
 def test_a_remote_state_server_needs_an_sslmode_rivet_dials(host: str, extra: dict, status: str) -> None:
@@ -309,6 +363,35 @@ def test_a_missing_mysql_grant_is_named_with_its_grant_statement() -> None:
     found = mysql({"SHOW GRANTS": [("GRANT SELECT ON `shop`.* TO `reader`@`%`",)]})["mysql grants"]
     assert found.status == FAIL and found.fix == "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'reader'@'%';"
     assert mysql({"SHOW GRANTS": [("GRANT ALL PRIVILEGES ON *.* TO `reader`@`%`",)]})["mysql grants"].status == PASS
+    on_one = mysql({"SHOW GRANTS": [("GRANT ALL PRIVILEGES ON `shop`.* TO `reader`@`%`",)]})["mysql grants"]
+    assert on_one.detail == "missing REPLICATION SLAVE, REPLICATION CLIENT"
+    mariadb = [("GRANT BINLOG MONITOR, REPLICATION REPLICA ON *.* TO `reader`@`%`",), ("GRANT SELECT ON `shop`.* TO `r`",)]
+    assert mysql({"SHOW GRANTS": mariadb})["mysql grants"].status == PASS
+    two_ons = [("GRANT SELECT, REPLICATION SLAVE ON *.* TO `on ON on`@`%`",)]
+    assert mysql({"SHOW GRANTS": two_ons})["mysql grants"].detail == "missing REPLICATION CLIENT"
+
+
+@pytest.mark.parametrize(
+    ("driver", "tls", "asked"),
+    [
+        ("pymysql", "require", {"ssl": {"fake_flag_to_enable_tls": True}}),
+        ("MySQLdb", "verify-full", {"ssl_mode": "REQUIRED"}),
+        ("pymysql", "disable", {}),
+        ("pymysql", None, {}),
+    ],
+)
+def test_the_mysql_probe_dials_tls_as_the_stream_will(
+    monkeypatch: pytest.MonkeyPatch, driver: str, tls: str | None, asked: dict
+) -> None:
+    seen: list[dict] = []
+
+    def connect(**kwargs: Any) -> Any:
+        seen.append(kwargs)
+        raise OSError("no server")
+
+    monkeypatch.setattr(checks, "_optional", lambda *_: types.SimpleNamespace(__name__=driver, connect=connect))
+    checks.mysql_source(types.SimpleNamespace(host="my", port=3307, login="reader", password="pw"), None, tls=tls)
+    assert {k: v for k, v in seen[0].items() if k in ("ssl", "ssl_mode")} == asked
 
 
 def test_a_replica_id_another_replica_uses_is_a_warning_and_no_id_yet_is_a_skip() -> None:
@@ -320,6 +403,10 @@ def test_a_replica_id_another_replica_uses_is_a_warning_and_no_id_yet_is_a_skip(
 def test_a_mysql_replica_without_log_replica_updates_fails() -> None:
     found = mysql({"SHOW REPLICA STATUS": [("primary",)], "SELECT @@global.log_replica_updates": (0,)})
     assert found["mysql log_replica_updates"].status == FAIL
+    on = mysql({"SHOW REPLICA STATUS": [("primary",)], "SELECT @@global.log_replica_updates": (1,)})
+    assert on["mysql log_replica_updates"] == Check(
+        "mysql log_replica_updates", PASS, "this server is a replica and log_replica_updates is 1"
+    )
 
 
 def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
@@ -335,6 +422,12 @@ def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
         "postgres replication slots": FAIL,
     }
     assert found["postgres wal_level"].fix == "ALTER SYSTEM SET wal_level = logical; then restart"
+    other = {
+        "SHOW wal_level": ("logical",),
+        "SELECT rolreplication OR rolsuper FROM pg_roles WHERE rolname = current_user": (False,),
+        "SELECT current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots)": (3,),
+    }
+    assert [c.status for c in checks.postgres_source(SERVER, connect=lambda _: db_of(other))] == [PASS, FAIL, PASS]
     answers["SELECT array_agg(slot_name) FROM pg_replication_slots"] = (["rivet_shop"],)
     own = checks.postgres_source(SERVER, "rivet_shop", connect=lambda _: db_of(answers))[-1]
     assert own == Check("postgres replication slots", PASS, "the stream's slot `rivet_shop` exists")
@@ -417,6 +510,12 @@ def test_a_dataset_in_the_buckets_location_passes_after_a_table_is_created_and_d
     client = BigQuery("us")
     assert [c.status for c in checks.bigquery("p", "d", "US", client=client)] == [PASS]
     assert "CREATE TABLE `p.d._rivet_airflow_preflight_" in client.sql[0] and "DROP TABLE" in client.sql[0]
+
+
+def test_a_bucket_region_inside_the_dataset_s_multi_region_is_together() -> None:
+    assert [c.status for c in checks.bigquery("p", "d", "US-CENTRAL1", client=BigQuery("US"))] == [PASS]
+    assert [c.status for c in checks.bigquery("p", "d", "EU", client=BigQuery("europe-west1"))] == [PASS]
+    assert [c.status for c in checks.bigquery("p", "d", "US-CENTRAL1", client=BigQuery("EU"))] == [PASS, WARN]
 
 
 def test_a_dataset_away_from_the_bucket_is_a_warning_and_a_missing_one_says_how_to_make_it() -> None:
@@ -565,6 +664,20 @@ def test_preflight_reads_a_postgres_source_with_its_connection_and_the_slot_the_
     assert seen == [("shop.host", "rivet_shop")]
 
 
+def test_preflight_dials_a_mysql_source_with_the_tls_mode_the_stream_uses(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    lookup(monkeypatch, {"shop": connection("shop", "mysql")})
+    seen: list[tuple] = []
+    monkeypatch.setattr(checks, "mysql_source", lambda conn, server_id, tls=None: seen.append((conn.host, server_id, tls)) or [])
+    refs = {"RIVET_SOURCE_URL": {"conn_id": "shop"}}
+    preflight(init, monkeypatch, env_from_connections=refs, init_args=["--tls", "require"])
+    init.run()
+    text = init.config.read_text()
+    for tls in ("{mode: disable}", "{ca_file: /ca.pem}"):
+        init.config.write_text(text.replace("  url_env: RIVET_SOURCE_URL\n", f"  url_env: RIVET_SOURCE_URL\n  tls: {tls}\n", 1))
+        preflight(init, monkeypatch, env_from_connections=refs)
+    assert seen == [("shop.host", None, "require"), ("shop.host", 4271, "disable"), ("shop.host", 4271, "verify-full")]
+
+
 def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:
     args = ["--gcs-bucket", "b", "--include", "a", "b*", "--bigquery-dataset=d", "--tls=disable", "--schema", "s"]
     assert checks.discovery_args(args) == ["--include", "a", "b*", "--tls=disable", "--schema", "s"]
@@ -633,21 +746,35 @@ def test_a_discovery_that_fails_is_a_warning_with_the_command_to_run_by_hand(ini
     ) in out["checks"]
 
 
-def test_a_state_root_that_is_not_there_stays_not_there(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_state_root_that_is_not_there_stays_not_there(
+    init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     root = init.tmp / "state"
+    line = (
+        f"FAIL state folder: {root} does not exist on this worker -> fix: mount the volume at this path in every Airflow service"
+    )
     for written in (False, True):
         if written:
             init.run(init_args=["--tls", "disable"])
         shutil.rmtree(root, ignore_errors=True)
+        capfd.readouterr()
+        caplog.clear()
         refused = preflight(init, monkeypatch)
         assert isinstance(refused, AirflowFailException) and "state folder" in str(refused)
+        assert levels_of(line, capfd.readouterr(), caplog.records) == {"error"}
         assert not root.exists()
 
 
 def test_preflight_of_a_written_config_does_not_discover_again(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     init.run(init_args=["--tls", "disable"])
-    preflight(init, monkeypatch)
+    out = preflight(init, monkeypatch)
     assert [c["argv"][:4] for c in init.calls() if "--discover" in c["argv"]] == []
+    assert f"PASS rivet check: {init.config} checks clean" in out["checks"]
+    init.spec(check_exit=5)
+    refused = preflight(init, monkeypatch)
+    assert isinstance(refused, AirflowFailException)
+    assert "preflight: 1 check(s) failed: rivet check; each line above says what to change" in str(refused)
 
 
 def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[tuple]:
@@ -679,6 +806,12 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
 
 
+def levels_of(line: str, captured: Any, records: list[logging.LogRecord]) -> set[str]:
+    logged = captured.out + captured.err
+    found = {m.lower() for m in re.findall(rf"\[(\w+) *\] {re.escape(line)}", logged)}
+    return found | {r.levelname.lower() for r in records if r.getMessage().startswith(line)}
+
+
 def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_warns_after(
     init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -695,12 +828,16 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     logged = captured.out + captured.err + caplog.text
     assert f"{init.config} captures customers" in logged
     assert f"move {init.config} aside: the next run's `init` writes it again" in logged
+    assert levels_of("FAIL include and exclude", captured, caplog.records) == {"error"}
+    assert levels_of("PASS rivet binary", captured, caplog.records) == {"info"}
+    caplog.clear()
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("pos")
     warned = preflight(init, monkeypatch, include=["orders"])
     line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
     assert f"{init.config} captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
+    assert levels_of("WARN include and exclude", capfd.readouterr(), caplog.records) == {"warning"}
 
 
 def test_a_stream_whose_config_names_no_checkpoint_only_warns_of_drift(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:

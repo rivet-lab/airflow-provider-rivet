@@ -4,6 +4,7 @@ config-folder check; the state database a moved stream would open empty."""
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import sys
 import types
@@ -115,9 +116,16 @@ def test_the_one_line_dag_file_builds_a_dag_per_source_from_the_file_beside_it(t
         "database": "rivet_state_shop",
     }
     assert run.config == str(folder / "rivet" / "shop.yaml")
+    assert run.stream_stderr is True
     for dag in dags.values():
         assert getattr(dag, "is_paused_upon_creation", None) is True
-        assert dag.start_date.year == 2026 and dag.start_date.month == 10
+        assert (dag.start_date.year, dag.start_date.month, dag.start_date.day) == (2026, 10, 1)
+        assert (getattr(dag, "schedule", None) or getattr(dag, "schedule_interval", None)) == "0 4-18/2 * * *"
+    own = "  extra:\n    tags: [x]\n    preflight: false\n    stream_stderr: false\n"
+    other = dags_folder(tmp_path / "own", SOURCES_FILE + own, shop="a", extra="a")
+    extra = build_dags_from_file(other / "rivet_sources.yaml", operator_kwargs={"rivet_bin": "/x"})["rivet_extra_cdc"]
+    assert sorted(extra.tags) == ["cdc", "rivet", "x"] and "preflight" not in extra.task_ids
+    assert (extra.get_task("run").stream_stderr, extra.get_task("run").rivet_bin) == (False, "/x")
 
 
 def test_preflight_carries_the_include_and_exclude_it_compares_the_config_with(tmp_path: Path) -> None:
@@ -142,6 +150,24 @@ def test_a_source_with_no_config_waits_for_the_template_s_config(tmp_path: Path)
     refused = dags["rivet_analytics_cdc"].get_task("config")
     assert refused.code == "RIVET_AIRFLOW_SOURCES_FILE_REFUSED"
     assert "template `shop`" in refused.refusal and "run the DAG of `shop` first" in refused.refusal
+    built = parse(dags_folder(tmp_path / "own", billing="a"))
+    assert "run" in built["rivet_billing_cdc"].task_ids and "config" in built["rivet_analytics_cdc"].task_ids
+
+
+def test_a_source_that_cannot_be_built_is_one_refused_task_and_the_others_build(tmp_path: Path) -> None:
+    folder = dags_folder(tmp_path, shop="a", analytics="pageviews")
+    (folder / "rivet" / "billing.yaml").mkdir()
+    dags = parse(folder)
+    refused = dags["rivet_billing_cdc"].get_task("config")
+    assert (refused.code, sorted(dags["rivet_billing_cdc"].task_ids)) == ("RIVET_AIRFLOW_SOURCES_FILE_REFUSED", ["config"])
+    assert f"source `billing` of {folder / 'rivet_sources.yaml'}: IsADirectoryError: " in refused.refusal
+    assert "run" in dags["rivet_shop_cdc"].task_ids and "run" in dags["rivet_analytics_cdc"].task_ids
+
+
+def test_a_batch_sources_file_builds_batch_dags(tmp_path: Path) -> None:
+    dags = parse(dags_folder(tmp_path, "mode: batch\n" + SOURCES_FILE, shop="a"))
+    assert sorted(dags) == ["rivet_analytics_batch", "rivet_billing_batch", "rivet_shop_batch"]
+    assert dags["rivet_billing_batch"].get_task("init").mode == "batch"
 
 
 def test_a_file_this_reader_refuses_is_an_import_error_naming_the_line(tmp_path: Path) -> None:
@@ -215,17 +241,17 @@ def init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Init:
 class Tables:
     """A PostgreSQL server whose every database has `count` tables."""
 
-    def __init__(self, count: int) -> None:
-        self.count, self.dsn = count, []
+    def __init__(self, count: int, ran: int = 0) -> None:
+        self.count, self.ran, self.dsn = count, ran, []
 
     def connect(self, dsn: str) -> Any:
         self.dsn.append(dsn)
-        return types.SimpleNamespace(cursor=lambda: _Cursor(self.count), close=lambda: None)
+        return types.SimpleNamespace(cursor=lambda: _Cursor(self.count, self.ran), close=lambda: None)
 
 
 class _Cursor:
-    def __init__(self, count: int) -> None:
-        self.count = count
+    def __init__(self, count: int, ran: int = 0) -> None:
+        self.count, self.ran, self.found = count, ran, count
 
     def __enter__(self) -> _Cursor:
         return self
@@ -233,20 +259,33 @@ class _Cursor:
     def __exit__(self, *exc: Any) -> None:
         return None
 
-    def execute(self, sql: str) -> None:
-        assert "information_schema.tables" in sql
+    def execute(self, sql: str, params: tuple[str]) -> None:
+        assert sql == (
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_name LIKE %s"
+        )
+        self.found = self.ran if params == ("export_state",) else self.count
 
     def fetchone(self) -> tuple[int]:
-        return (self.count,)
+        return (self.found,)
 
 
-def cdc_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own: str | None, count: int, checkpoint: bool) -> Any:
-    tables = Tables(count)
+def cdc_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    own: str | None,
+    count: int,
+    checkpoint: bool,
+    slot: bool = False,
+    ran: int = 1,
+) -> Any:
+    tables = Tables(count, ran)
     monkeypatch.setitem(sys.modules, "psycopg2", types.SimpleNamespace(connect=tables.connect, Error=Exception))
     lookup(monkeypatch, {"rivet_state_aa": connection("rivet_state_aa", "postgres", schema=own)})
     config = tmp_path / "cfg" / "shop.yaml"
     config.parent.mkdir()
-    config.write_text(CDC_CONFIG.format(env="RIVET_SOURCE_URL"))
+    text = CDC_CONFIG.format(env="RIVET_SOURCE_URL")
+    config.write_text(re.sub(r"\n *checkpoint:[^\n]*", "", text) if slot else text)
     state = tmp_path / "state" / "shop"
     (state / "cdc").mkdir(parents=True)
     if checkpoint:
@@ -272,6 +311,7 @@ def test_an_empty_state_database_beside_a_started_stream_s_checkpoint_is_refused
     assert refusal is not None and refusal.code == "RIVET_AIRFLOW_STATE_DATABASE_MISMATCH"
     text = str(refusal)
     assert "`rivet_state_shop`" in text and "names the database `rivet_state_aa`" in text
+    assert "has no table, while the stream's checkpoint " in text and "shop_cdc.ckpt exists: the stream ran on" in text
     assert "state_database: connection" in text and "pg_dump rivet_state_aa | psql rivet_state_shop" in text
     assert tables.dsn == ["postgresql://u:pw@rivet_state_aa.host/rivet_state_shop"]
 
@@ -289,6 +329,20 @@ def test_a_state_database_with_tables_a_first_run_or_the_connection_s_own_passes
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own: str | None, count: int, checkpoint: bool
 ) -> None:
     assert cdc_run(tmp_path, monkeypatch, own, count, checkpoint)[0] is None
+
+
+def test_an_empty_state_database_beside_a_slot_stream_that_ran_on_the_connection_s_own_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refusal, tables = cdc_run(tmp_path, monkeypatch, own="rivet_state_aa", count=0, checkpoint=False, slot=True)
+    assert refusal is not None and "own database `rivet_state_aa` holds rivet's state (`export_state`)" in str(refusal)
+    assert tables.dsn == [
+        "postgresql://u:pw@rivet_state_aa.host/rivet_state_aa",
+        "postgresql://u:pw@rivet_state_aa.host/rivet_state_shop",
+    ]
+    (tmp_path / "fresh").mkdir()
+    fresh = cdc_run(tmp_path / "fresh", monkeypatch, own="rivet_state_aa", count=0, checkpoint=False, slot=True, ran=0)
+    assert fresh[0] is None
 
 
 def test_without_psycopg2_the_state_database_is_not_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
