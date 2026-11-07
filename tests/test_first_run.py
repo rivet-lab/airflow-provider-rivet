@@ -717,6 +717,8 @@ def test_a_table_init_skipped_is_not_drift(init: Init, monkeypatch: pytest.Monke
     init.config.write_text(init.config.read_text() + "  # SKIPPED user-events: its name cannot be a `table:` shortcut\n")
     out = preflight(init, monkeypatch, include=["orders", "customers", "user-events"])
     assert "PASS include and exclude: the config captures what the sources file names" in out["checks"]
+    refused = preflight(init, monkeypatch, exclude=["customers"])
+    assert isinstance(refused, AirflowFailException) and "failed: include and exclude;" in str(refused)
 
 
 def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:
