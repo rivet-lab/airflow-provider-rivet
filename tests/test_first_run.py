@@ -648,8 +648,9 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
 
 
 def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_warns_after(
-    init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture
+    init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     staging_calls(monkeypatch)
     init.run()
     assert (
@@ -658,7 +659,8 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     )
     refused = preflight(init, monkeypatch, include=["orders"])
     assert isinstance(refused, AirflowFailException) and "include and exclude" in str(refused)
-    logged = capfd.readouterr().out
+    captured = capfd.readouterr()
+    logged = captured.out + captured.err + caplog.text
     assert "include and exclude" in logged and "captures customers" in logged
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
