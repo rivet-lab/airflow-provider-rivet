@@ -276,7 +276,7 @@ def _rows(cur: Any, sql: str) -> list[Any]:
         return []
 
 
-def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) -> list[Check]:
+def postgres_source(source: Any, slot: str | None = None, connect: Callable[[Any], Any] | None = None) -> list[Check]:
     """What a PostgreSQL CDC stream needs: `wal_level = logical`, a role with REPLICATION, a free replication slot."""
     name = "postgres cdc"
     if connect is None:
@@ -302,6 +302,7 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
                 cur,
                 "SELECT current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots)",
             )
+            slots = _first(cur, "SELECT array_agg(slot_name) FROM pg_replication_slots") or []
     finally:
         db.close()
     return [
@@ -317,7 +318,9 @@ def postgres_source(source: Any, connect: Callable[[Any], Any] | None = None) ->
             "the role may replicate" if replication else "the role has no REPLICATION",
             f"ALTER ROLE {source.login} REPLICATION;",
         ),
-        Check(
+        Check("postgres replication slots", PASS, f"the stream's slot `{slot}` exists")
+        if slot in slots
+        else Check(
             "postgres replication slots",
             PASS if (free or 0) > 0 else FAIL,
             f"{free} free",

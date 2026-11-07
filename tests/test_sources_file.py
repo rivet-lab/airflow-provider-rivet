@@ -19,6 +19,7 @@ from airflow_provider_rivet.sources import (
     kept,
     read_sources_file,
     schema,
+    skipped_by_init,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +85,15 @@ def test_each_source_takes_the_template_under_the_defaults_under_its_own(tmp_pat
     ]
     assert spec.sources["shop"].settings == {"bigquery_dataset": "rivet_shop", "tls": "require"}
     assert analytics.state_database() == "rivet_state_analytics"
+
+
+def test_a_source_s_own_init_args_flag_wins_over_the_template_s_setting(tmp_path: Path) -> None:
+    (tmp_path / "rivet").mkdir()
+    (tmp_path / "rivet" / "shop.yaml").write_text(TEMPLATE_CONFIG)
+    text = HEAD + "template: shop\nsources:\n  shop:\n  b:\n    init_args: [--gcs-bucket, other]\n"
+    b = read_sources_file(write(tmp_path, text)).sources["b"]
+    assert "gcs_bucket" not in b.settings and b.settings["bigquery_project"] == "my-project"
+    assert b.init_args().count("--gcs-bucket") == 1 and "other" in b.init_args()
 
 
 def test_state_database_connection_names_the_connection_s_own(tmp_path: Path) -> None:
@@ -215,6 +225,13 @@ def test_no_drift_when_the_config_captures_what_the_file_says() -> None:
     assert not drift(STREAM, "cdc", ["*"], [])
     assert not drift(STREAM, "cdc", [], ["*_old"])
     assert drift(STREAM, "cdc", [], ["clicks"]).extra == ["clicks"]
+
+
+def test_a_table_init_left_out_of_the_stream_is_not_missing() -> None:
+    text = "exports:\n  # SKIPPED user-events: its name cannot be a `table:` shortcut\n  # SKIPPED 'Orders': its name\n"
+    assert skipped_by_init(text) == ["user-events", "Orders"]
+    found = drift(STREAM, "cdc", ["pageviews", "visitors", "clicks", "user-events", "sessions"], [], skipped_by_init(text))
+    assert list(found.missing) == ["sessions"]
 
 
 def test_a_batch_source_compares_its_batch_exports_by_schema_less_name() -> None:

@@ -38,7 +38,7 @@ from .connections import (
     with_database,
 )
 from .events import Event
-from .exports import checkpoints, entries_of, mode_of, name_of, server_id_of, tables_of
+from .exports import checkpoints, entries_of, mode_of, name_of, server_id_of, slot_of, tables_of
 from .invocation import (
     CLOUD_ENV,
     Busy,
@@ -55,7 +55,7 @@ from .invocation import (
 from .preflight import STATE_URL_ENV, PreflightRefusal, read_config, resolve_binary
 from .reading import _json_of
 from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
-from .sources import drift, flag_of
+from .sources import drift, flag_of, skipped_by_init
 from .tasklog import TaskLog
 
 T = TypeVar("T")
@@ -852,6 +852,7 @@ class RivetPreflightOperator(_SourceTask):
             out.append(checks.folder("state folder", state_dir))
         else:
             out.append(checks.folder("state folder", state_dir.parent, must_exist=True))
+        binary = binary if out[-1].status != FAIL else None
         refs = {name: database_ref(ref) for name, ref in (self.env_from_connections or {}).items()}
         if STATE_URL_ENV in refs:
             state = refs[STATE_URL_ENV]
@@ -861,7 +862,9 @@ class RivetPreflightOperator(_SourceTask):
             out += self._source(doc, refs)
             if not doc and binary:
                 out.append(self._baseline(binary, env, state_dir))
-        started = any(path.exists() for path in checkpoints(doc, state_dir).values())
+        marks = checkpoints(doc, state_dir)
+        unmarked = any(mode_of(e) == "cdc" and name_of(e) not in marks for e in entries_of(doc))
+        started = unmarked or any(path.exists() for path in marks.values())
         if doc:
             out.append(Check("bucket and dataset", SKIP, "the config exists; the preflight before `init` wrote to them"))
             out.append(self._drift(doc, started))
@@ -874,7 +877,8 @@ class RivetPreflightOperator(_SourceTask):
     def _drift(self, doc: Mapping[str, Any], started: bool) -> Check:
         """Whether the config captures the tables the include and exclude of the sources file name; `rivet init` applies
         them only when it writes the config. A FAIL while the stream has not started (nothing to lose), else a WARN."""
-        found = drift(doc, self.mode, self.include, self.exclude)
+        skipped = skipped_by_init(Path(self.config).read_text(errors="replace"))
+        found = drift(doc, self.mode, self.include, self.exclude, skipped)
         if not found:
             return Check("include and exclude", PASS, "the config captures what the sources file names")
         if started:
@@ -910,7 +914,7 @@ class RivetPreflightOperator(_SourceTask):
         if kind == "mysql":
             return checks.mysql_source(conn, server_id_of(doc, checks.RIVET_DEFAULT_SERVER_ID) if doc else None)
         if kind in ("postgres", "postgresql"):
-            return checks.postgres_source(conn)
+            return checks.postgres_source(conn, slot_of(doc))
         return [
             Check("source", SKIP, f"Connection `{ref['conn_id']}` is of type `{kind}`; only MySQL and PostgreSQL are checked")
         ]
