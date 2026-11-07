@@ -688,7 +688,7 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     checkpoint.write_text("pos")
     warned = preflight(init, monkeypatch, include=["orders"])
     line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
-    assert "captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
+    assert f"{init.config} captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
 
 
 def test_a_stream_whose_config_names_no_checkpoint_only_warns_of_drift(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
