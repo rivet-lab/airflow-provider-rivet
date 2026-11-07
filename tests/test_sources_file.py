@@ -232,6 +232,7 @@ def test_no_drift_when_the_config_captures_what_the_file_says() -> None:
 def test_a_table_init_left_out_of_the_stream_is_not_missing() -> None:
     text = "exports:\n  # SKIPPED user-events: its name cannot be a `table:` shortcut\n  # SKIPPED 'Orders': its name\n"
     assert skipped_by_init(text) == ["user-events", "Orders"]
+    assert skipped_by_init("  # SKIPPED 'Xmas-sales': its name\n") == ["Xmas-sales"]
     found = drift(STREAM, "cdc", ["pageviews", "visitors", "clicks", "user-events", "sessions"], [], skipped_by_init(text))
     assert list(found.missing) == ["sessions"]
 
