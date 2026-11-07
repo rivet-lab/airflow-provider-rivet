@@ -61,6 +61,13 @@ def test_the_title_says_retryable_only_when_airflow_runs_another_try(
     assert format_title(payload, dag_id="d", task_id="t", try_number=try_number, max_tries=1) == f"d.t — crashed ({word})"
 
 
+@pytest.mark.parametrize(("retryable", "word"), [(True, "retryable"), (False, "final")])
+def test_a_title_asked_as_0_3_0_asked_it_takes_the_error_s_own_retry_flag(retryable: bool, word: str) -> None:
+    payload = {"decision": "fail", "units": [failed("a", err("RIVET_X", "transient", retryable))]}
+    assert format_title(payload, dag_id="d", task_id="t") == f"d.t — RIVET_X ({word})"
+    assert format_title(payload, dag_id="d", task_id="t", try_number=1) == f"d.t — RIVET_X ({word})"
+
+
 # --- rivet's error line from the stderr file ------------------------------------------------------------------------
 
 

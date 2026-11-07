@@ -34,16 +34,25 @@ def _failed_units(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def format_title(
-    payload: Mapping[str, Any] | None, *, dag_id: str, task_id: str, try_number: int, max_tries: int, exception: Any = None
+    payload: Mapping[str, Any] | None,
+    *,
+    dag_id: str,
+    task_id: str,
+    try_number: int | None = None,
+    max_tries: int | None = None,
+    exception: Any = None,
 ) -> str:
-    """`dag.task — <error type>`: the rivet code and final / retryable, else the exception's class; no error text."""
+    """`dag.task — <error type>`: the rivet code and final / retryable, else the exception's class; no error text.
+    Without `try_number` and `max_tries` (a 0.3.0 call), retryable is the error's own flag."""
     payload = payload or {}
     if payload.get(REFUSED):
         kind = f"{payload[REFUSED]} (final)"
     elif failed := _failed_units(payload):
         error = payload.get("error") or failed[0]["error"]  # the error that decided the task, else the first failed unit's
         name = error.get("code") or error.get("class") or "rivet failed"
-        retry = airflow_retries(payload, try_number, max_tries)
+        retry = (
+            error.get("retryable") if try_number is None or max_tries is None else airflow_retries(payload, try_number, max_tries)
+        )
         kind = f"{name} ({'retryable' if retry else 'final'})"
         if len(failed) > 1:
             kind += f" +{len(failed) - 1} more"
