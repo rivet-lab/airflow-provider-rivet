@@ -639,7 +639,8 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     calls = staging_calls(monkeypatch)
     assert "SKIP bucket: init_args name no GCS bucket" in preflight(init, monkeypatch)["checks"]
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
-    preflight(init, monkeypatch, init_args=args, env={"GOOGLE_APPLICATION_CREDENTIALS": "/k.json"})
+    probed = preflight(init, monkeypatch, init_args=args, env={"GOOGLE_APPLICATION_CREDENTIALS": "/k.json"})["checks"]
+    assert {"PASS gcs gs://b/: probed", "PASS bigquery p.d: probed"} <= set(probed)
     assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US")]
     init.run(init_args=args)
     out = preflight(init, monkeypatch, init_args=args)
@@ -658,7 +659,7 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
         in preflight(init, monkeypatch, include=["orders", "customers"])["checks"]
     )
     refused = preflight(init, monkeypatch, include=["orders"])
-    assert isinstance(refused, AirflowFailException) and "include and exclude" in str(refused)
+    assert isinstance(refused, AirflowFailException) and "failed: include and exclude;" in str(refused)
     captured = capfd.readouterr()
     logged = captured.out + captured.err + caplog.text
     assert "include and exclude" in logged and "captures customers" in logged
