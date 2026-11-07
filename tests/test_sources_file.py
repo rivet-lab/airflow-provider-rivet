@@ -164,7 +164,12 @@ def test_the_schema_is_a_valid_json_schema_with_one_key_per_init_flag() -> None:
 
 def test_the_example_validates_against_the_schema_as_an_editor_reads_it() -> None:
     example = yaml.safe_load((ROOT / "examples" / "rivet_sources.yaml").read_text())
-    jsonschema.Draft202012Validator(schema()).validate(example)
+    validator = jsonschema.Draft202012Validator(schema())
+    assert [e.message for e in validator.iter_errors(example)] == []
+    assert sorted(example["sources"]) == ["analytics", "billing", "shop"]
+    example["sources"]["billing"]["datset"] = "x"
+    [error] = validator.iter_errors(example)
+    assert list(error.absolute_path) == ["sources", "billing"] and "'datset': 'x'" in error.message
 
 
 @pytest.mark.parametrize(

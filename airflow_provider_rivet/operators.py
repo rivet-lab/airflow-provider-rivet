@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -40,7 +38,7 @@ from .connections import (
     with_database,
 )
 from .events import Event
-from .exports import checkpoints, entries_of, mode_of, name_of, server_id_of, staging_of, tables_of
+from .exports import checkpoints, entries_of, mode_of, name_of, server_id_of, tables_of
 from .invocation import (
     CLOUD_ENV,
     Busy,
@@ -57,14 +55,13 @@ from .invocation import (
 from .preflight import STATE_URL_ENV, PreflightRefusal, read_config, resolve_binary
 from .reading import _json_of
 from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
-from .sources import drift
+from .sources import drift, flag_of
 from .tasklog import TaskLog
 
 T = TypeVar("T")
 MODES = ("cdc", "batch")
 
 XCOM_KEY = "return_value"
-STAGING_CHECKED = ".preflight-staging.json"
 
 
 def airflow_connection(conn_id: str) -> Any:
@@ -593,15 +590,6 @@ def places(doc: Mapping[str, Any]) -> set[str]:
     return out
 
 
-def _flag_of(arg: str) -> str:
-    """The flag a command-line token sets as clap reads it: `--output=x` is `--output`, `-oX` and `-o=X` are `-o`."""
-    if arg.startswith("--"):
-        return arg.partition("=")[0]
-    if arg.startswith("-"):
-        return arg[:2]
-    return arg
-
-
 def _asks_for_cdc(args: Sequence[str]) -> bool:
     """Whether `args` set `--mode` to `cdc` (`--mode cdc` or `--mode=cdc`); a value that reads `cdc` is only a value."""
     return "--mode=cdc" in args or any(a == "--mode" and b == "cdc" for a, b in pairwise(args))
@@ -655,7 +643,7 @@ class _SourceTask(_RivetTask):
         if source_env is not None and not (self.env_from_connections or {}).get(source_env):
             raise ValueError(f"env_from_connections names no `{source_env}`, the source `rivet init` reads")
         owned = {"--source", "--source-env", "--source-file", "-o", "--output"} | ({"--mode"} if mode == "cdc" else set())
-        taken = [a for a in init_args if _flag_of(a) in owned]
+        taken = [a for a in init_args if flag_of(a) in owned]
         if taken:
             raise ValueError(f"init_args may not set {taken}: the operator sets the source, the output and the CDC mode")
         if _asks_for_cdc(init_args):
@@ -817,93 +805,17 @@ class RivetInitOperator(_SourceTask):
         return {"config": str(target), "written": True, "exports": exports}
 
 
-class RivetSpecDriftOperator(RivetInitOperator):
-    """Compares a source's config with the include and exclude its sources file names. When they differ and the stream
-    has not started (no checkpoint file, no run in rivet's run ledger), it writes the config again with `rivet init`,
-    keeps the old one in `<config folder>/.replaced/`, and skips the rest of the run, so the next parse builds the DAG of
-    the new config. When it has started, it fails without a retry naming each place to edit, and the stream goes on."""
+class RivetPreflightOperator(_SourceTask):
+    """Checks, first in a source's DAG, what its tasks will need, one PASS / WARN / FAIL / SKIP line each."""
 
+    command = "preflight"
     template_fields: Sequence[str] = ("config", "state_dir", "init_args", "include", "exclude")
-    ui_color = "#fef7e0"
+    ui_color = "#e6f4ea"
 
     def __init__(self, *, include: Sequence[str] = (), exclude: Sequence[str] = (), **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.include = list(include)
         self.exclude = list(exclude)
-
-    def _run_with_secrets(self, ti: Any, run_id: str, task_part: str, secrets: Path) -> dict[str, Any]:
-        """Compare, then rewrite the config of a stream that has not started or name what to edit in one that has."""
-        target = Path(self.config)
-        doc = self._guarded(ti, lambda: read_config(str(target)))
-        found = drift(doc, self.mode, self.include, self.exclude)
-        if not found:
-            self.log.info("%s matches the include and exclude of the sources file", target)
-            return {"config": str(target), "drift": False}
-        self.log.warning("%s", found.text(target))
-        self._writable_or_failed(ti, target.parent)
-        env, binary = self._guarded(ti, lambda: self._prepared(secrets))
-        started = self._started(doc, env, binary)
-        if started:
-            self._failed(
-                ti,
-                _InitFailed(
-                    f"{found.text(target)}. The include and exclude of the sources file are applied by `rivet init`, and "
-                    f"the stream has started ({'; '.join(started)}), so the config is not written again: edit it at "
-                    "the places named (the DAG follows at the next parse; `rivet check` it first), or give the "
-                    "sources file the tables the config captures. The stream's other tasks run as before",
-                    _refusal(),
-                ),
-            )
-        aside = target.parent / ".replaced" / f"{target.stem}.{datetime.now(UTC):%Y%m%dT%H%M%SZ}.yaml"
-        aside.parent.mkdir(exist_ok=True)
-        os.replace(target, aside)
-        try:
-            out = self._guarded(ti, lambda: self._written(ti, target, env, binary))
-        except BaseException:
-            if not config_present(target):
-                os.replace(aside, target)
-            raise
-        tables = sorted({t for e in out.get("exports") or () for t in e["tables"]})
-        raise AirflowSkipException(
-            f"{target} written again by `rivet init` with the include and exclude of the sources file "
-            f"({', '.join(tables) or 'no table'}); the old config is {aside}. The rest of this run is skipped: the next "
-            "parse builds the DAG of the new config, and its next run starts the stream"
-        )
-
-    def _started(self, doc: Mapping[str, Any], env: Mapping[str, str], binary: str) -> list[str]:
-        """What says the stream has started: a checkpoint file of an export in the state folder, a run in rivet's run
-        ledger, or a ledger that could not be read."""
-        base = Path(self.state_dir or Path(self.config).parent)
-        out = [f"the checkpoint {path} exists" for path in checkpoints(doc, base).values() if path.exists()]
-        runs = self._runs(env, binary)
-        if runs is None:
-            out.append("rivet's run ledger could not be read (`rivet state runs`; its output is above)")
-        elif runs:
-            out.append(f"rivet's run ledger has a run ({runs[0].get('run_id') if isinstance(runs[0], dict) else runs[0]})")
-        return out
-
-    def _runs(self, env: Mapping[str, str], binary: str) -> list[Any] | None:
-        """The latest run of rivet's run ledger (`rivet state runs --json`), or None when rivet could not say."""
-        work = Path(self.state_dir or Path(self.config).parent) / ".init"
-        work.mkdir(parents=True, exist_ok=True)
-        stdout, stderr = work / "state-runs.json", work / "state-runs.log"
-        argv = [binary, "state", "runs", "--config", str(self.config), "--json", "--last", "1"]
-        with stdout.open("w") as out, stderr.open("w") as err:
-            code = spawn(argv, out, err, env, str(work), self._hold)
-        for line in stderr.read_text(errors="replace").splitlines():
-            self.log.info(
-                "%s", line
-            )  # pragma: no mutate - info(line) is the same line: a logger formats no message given no args
-        runs = _json_of(stdout.read_bytes()) if code == 0 else None
-        return runs if isinstance(runs, list) else None
-
-
-class RivetPreflightOperator(_SourceTask):
-    """Checks, first in a source's DAG, what its tasks will need, one PASS / WARN / FAIL / SKIP line each."""
-
-    command = "preflight"
-    template_fields: Sequence[str] = ("config", "state_dir", "init_args")
-    ui_color = "#e6f4ea"
 
     def _config_doc(self, variables: Mapping[str, str] | None = None) -> dict[str, Any]:
         """The source's config once `init` wrote it, else none."""
@@ -949,13 +861,26 @@ class RivetPreflightOperator(_SourceTask):
             out += self._source(doc, refs)
             if not doc and binary:
                 out.append(self._baseline(binary, env, state_dir))
-        if any(path.exists() for path in checkpoints(doc, state_dir).values()):
-            out.append(Check("bucket and dataset", SKIP, "the stream has a checkpoint, so its first run reached them"))
+        started = any(path.exists() for path in checkpoints(doc, state_dir).values())
+        if doc:
+            out.append(Check("bucket and dataset", SKIP, "the config exists; the preflight before `init` wrote to them"))
+            out.append(self._drift(doc, started))
         else:
-            out += self._staging(doc, env, state_dir)
+            out += self._staging(env)
         if doc and binary:
             out.append(self._rivet_check(binary, env, state_dir))
         return out
+
+    def _drift(self, doc: Mapping[str, Any], started: bool) -> Check:
+        """Whether the config captures the tables the include and exclude of the sources file name; `rivet init` applies
+        them only when it writes the config. A FAIL while the stream has not started (nothing to lose), else a WARN."""
+        found = drift(doc, self.mode, self.include, self.exclude)
+        if not found:
+            return Check("include and exclude", PASS, "the config captures what the sources file names")
+        if started:
+            return Check("include and exclude", WARN, found.text(Path(self.config)), "edit the config at the places named")
+        fix = f"move {self.config} aside: the next run's `init` writes it again with the include and exclude"
+        return Check("include and exclude", FAIL, found.text(Path(self.config)), fix)
 
     def _binary(self, env: Mapping[str, str]) -> tuple[str | None, list[Check]]:
         """The rivet binary the tasks will run, and whether it is new enough for this provider."""
@@ -990,25 +915,16 @@ class RivetPreflightOperator(_SourceTask):
             Check("source", SKIP, f"Connection `{ref['conn_id']}` is of type `{kind}`; only MySQL and PostgreSQL are checked")
         ]
 
-    def _staging(self, doc: Mapping[str, Any], env: Mapping[str, str], state_dir: Path) -> list[Check]:
-        """The bucket and dataset the tasks write, written to once per place: `STAGING_CHECKED` records the ones passed."""
-        staged = staging_of(doc) if doc else {}
-        if not doc:
-            flags = {"--gcs-bucket": "bucket", "--bigquery-project": "project", "--bigquery-dataset": "dataset"}
-            staged = {key: value for flag, key in flags.items() if (value := _value_of(self.init_args, flag))}
-        if not staged.get("bucket"):
-            return [Check("bucket", SKIP, "the config names no GCS bucket")]
-        place = {key: staged.get(key) or "" for key in ("bucket", "prefix", "project", "dataset")}
-        mark = state_dir / STAGING_CHECKED
-        if mark.is_file() and _json_of(mark.read_bytes()) == place:
-            return [Check("bucket and dataset", SKIP, f"an earlier preflight wrote to {_place_text(place)}; {mark} records it")]
+    def _staging(self, env: Mapping[str, str]) -> list[Check]:
+        """Before `init`: write to the bucket and dataset `init_args` name, as the first run will."""
+        flags = {"--gcs-bucket": "bucket", "--bigquery-project": "project", "--bigquery-dataset": "dataset"}
+        place = {key: _value_of(self.init_args, flag) or "" for flag, key in flags.items()}
+        if not place["bucket"]:
+            return [Check("bucket", SKIP, "init_args name no GCS bucket")]
         key_file = env.get("GOOGLE_APPLICATION_CREDENTIALS")
-        out, location = checks.gcs(place["bucket"], place["prefix"], key_file=key_file)
+        out, location = checks.gcs(place["bucket"], "", key_file=key_file)
         if place["project"] and place["dataset"]:
             out += checks.bigquery(place["project"], place["dataset"], location, key_file=key_file)
-        if state_dir.is_dir() and all(c.status in (PASS, WARN) for c in out):
-            mark.write_text(json.dumps(place))
-            os.chmod(mark, 0o664)
         return out
 
     def _baseline(self, binary: str, env: Mapping[str, str], state_dir: Path) -> Check:
@@ -1055,12 +971,6 @@ class RivetPreflightOperator(_SourceTask):
         except _InitFailed as failure:
             return Check("rivet check", FAIL, str(failure), "its output is above")
         return Check("rivet check", PASS, f"{self.config} checks clean")
-
-
-def _place_text(place: Mapping[str, str]) -> str:
-    """The bucket prefix and dataset of a staging place, as the where-lines write them."""
-    out = f"gs://{place['bucket']}/{place['prefix']}"
-    return f"{out} and bigquery {place['project']}.{place['dataset']}" if place["dataset"] else out
 
 
 def _mapping_of(value: Any) -> Mapping[str, Any]:

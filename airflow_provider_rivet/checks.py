@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .sources import flag_of
+
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 MYSQL_CDC_SETTINGS = (
     ("log_bin", ("1", "ON"), "enable the binary log: `log_bin` (and a `server_id`) under [mysqld], then restart"),
@@ -452,7 +454,7 @@ def discovery_args(init_args: Sequence[str]) -> list[str]:
     keep = False
     for arg in init_args:
         if arg.startswith("-"):
-            keep = arg.partition("=")[0] in DISCOVERY_FLAGS
+            keep = flag_of(arg) in DISCOVERY_FLAGS
         if keep:
             out.append(arg)
     return out

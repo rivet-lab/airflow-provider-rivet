@@ -1,4 +1,4 @@
-"""build_dags_from_file: one DAG per source of a sources file; the drift check of a config against it; the init's
+"""build_dags_from_file: one DAG per source of a sources file; the init's
 config-folder check; the state database a moved stream would open empty."""
 
 from __future__ import annotations
@@ -11,12 +11,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import DagRig, FakeTI
-from test_source_dags import CDC_CONFIG, FAKE_RIVET, Init, connection, lookup
+from test_source_dags import CDC_CONFIG, Init, connection, lookup
 
-from airflow_provider_rivet._compat import AirflowFailException, AirflowSkipException
-from airflow_provider_rivet.dags import DRIFT_GATE_ID, DRIFT_ID, build_cdc_dag, build_dags_from_file, build_source_dags
-from airflow_provider_rivet.operators import RivetCdcRunOperator, RivetSpecDriftOperator
+from airflow_provider_rivet._compat import AirflowFailException
+from airflow_provider_rivet.dags import build_cdc_dag, build_dags_from_file, build_source_dags
+from airflow_provider_rivet.operators import RivetCdcRunOperator
 from airflow_provider_rivet.preflight import PreflightRefusal
 from airflow_provider_rivet.sources import SourcesFileError
 
@@ -119,20 +118,16 @@ def test_the_one_line_dag_file_builds_a_dag_per_source_from_the_file_beside_it(t
     for dag in dags.values():
         assert getattr(dag, "is_paused_upon_creation", None) is True
         assert dag.start_date.year == 2026 and dag.start_date.month == 10
-    assert DRIFT_ID not in dags["rivet_analytics_cdc"].task_ids
 
 
-def test_a_config_that_captures_a_table_the_file_leaves_out_gets_the_drift_check(tmp_path: Path) -> None:
+def test_preflight_carries_the_include_and_exclude_it_compares_the_config_with(tmp_path: Path) -> None:
     folder = dags_folder(tmp_path, shop="a", analytics="pageviews, visitors, clicks")
-    dag = parse(folder)["rivet_analytics_cdc"]
-    check, gate = dag.get_task(DRIFT_ID), dag.get_task(DRIFT_GATE_ID)
-    assert isinstance(check, RivetSpecDriftOperator) and check.retries == 0
-    assert check.include == ["pageviews", "visitors"] and check.exclude == []
-    assert check.init_args[-3:] == ["--include", "pageviews", "visitors"]
-    assert check.env_from_connections["RIVET_SOURCE_URL"]["conn_id"] == "rivet_analytics"
-    assert gate.trigger_rule == "none_skipped" and check.downstream_task_ids == {DRIFT_GATE_ID, "watcher"}
-    assert gate.downstream_task_ids == {"run", "watcher"}
-    assert dag.get_task("run").upstream_task_ids == {DRIFT_GATE_ID}
+    check = parse(folder)["rivet_analytics_cdc"].get_task("preflight")
+    assert (check.include, check.exclude) == (["pageviews", "visitors"], [])
+    assert check.downstream_task_ids == {"run", "watcher"}
+    spec = SOURCES_FILE.replace("    include: [pageviews, visitors]", "    exclude: [clicks]")
+    check = parse(dags_folder(tmp_path / "x", spec, shop="a", analytics="pageviews"))["rivet_analytics_cdc"].get_task("preflight")
+    assert (check.include, check.exclude) == ([], ["clicks"])
 
 
 def test_a_relative_sources_file_is_refused_naming_the_absolute_form(tmp_path: Path) -> None:
@@ -197,99 +192,6 @@ def test_globs_are_given_once(tmp_path: Path) -> None:
             include=["a"],
             init_args=["--include=b"],
         )
-
-
-STATE_FAKE = FAKE_RIVET + (
-    'elif argv[0] == "state":\n'
-    '    print("ledger read", file=sys.stderr)\n'
-    '    print(json.dumps(spec.get("runs", [])))\n'
-    '    sys.exit(spec.get("state_exit", 0))\n'
-)
-OLD = CDC_CONFIG.format(env="RIVET_SOURCE_URL").replace("tables: [orders, customers]", "tables: [orders, customers, payments]")
-
-
-class Drift(Init):
-    """The init fake, which also answers `rivet state runs`, and a config that captures `payments` beside the two
-    tables the sources file includes."""
-
-    def __init__(self, tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        super().__init__(tmp, monkeypatch)
-        (tmp / "bin" / "rivet").write_text(f"#!{sys.executable}\n{STATE_FAKE}")
-        self.config.parent.mkdir(parents=True)
-        self.config.write_text(OLD)
-
-    def run(self, **kwargs: Any) -> Any:
-        op = RivetSpecDriftOperator(
-            task_id=DRIFT_ID,
-            mode="cdc",
-            source_env="RIVET_SOURCE_URL",
-            include=["orders", "customers"],
-            init_args=["--include", "orders", "customers"],
-            config=str(self.config),
-            state_dir=str(self.tmp / "state" / "shop"),
-            rivet_bin=str(self.tmp / "bin" / "rivet"),
-            env_from_connections={"RIVET_SOURCE_URL": {"conn_id": "shop", "odbc_ini": str(self.tmp / "odbc.ini")}},
-            **kwargs,
-        )
-        try:
-            return op.execute({"ti": FakeTI(task_id=DRIFT_ID), "run_id": "r"})
-        except Exception as exc:
-            return exc
-
-    def aside(self) -> list[Path]:
-        return sorted((self.config.parent / ".replaced").glob("*.yaml"))
-
-
-@pytest.fixture
-def drifted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Drift:
-    return Drift(tmp_path, monkeypatch)
-
-
-def test_a_stream_that_has_not_started_is_written_again_and_the_run_skipped(drifted: Drift) -> None:
-    out = drifted.run()
-    assert isinstance(out, AirflowSkipException), out
-    assert "written again by `rivet init`" in str(out) and "customers, orders" in str(out)
-    assert drifted.config.read_text() == CDC_CONFIG.format(env="RIVET_SOURCE_URL")
-    [aside] = drifted.aside()
-    assert aside.read_text() == OLD and aside.name.startswith("shop.") and str(aside) in str(out)
-    argv = [c["argv"] for c in drifted.calls()]
-    assert argv[0][:3] == ["state", "runs", "--config"] and argv[0][-3:] == ["--json", "--last", "1"]
-    assert argv[1][0] == "init" and argv[1][-3:] == ["--include", "orders", "customers"]
-    assert argv[2][0] == "check"
-
-
-@pytest.mark.parametrize(
-    ("setup", "said"),
-    [
-        ("checkpoint", "the checkpoint"),
-        ("runs", "rivet's run ledger has a run (r-1)"),
-        ("state_exit", "rivet's run ledger could not be read"),
-    ],
-)
-def test_a_stream_that_has_started_is_not_written_and_the_task_names_each_place(drifted: Drift, setup: str, said: str) -> None:
-    if setup == "checkpoint":
-        (drifted.tmp / "state" / "shop" / "cdc").mkdir(parents=True)
-        (drifted.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt").write_text("pos")
-    else:
-        drifted.spec(**({"runs": [{"run_id": "r-1"}]} if setup == "runs" else {"state_exit": 2}))
-    out = drifted.run()
-    assert isinstance(out, AirflowFailException), out
-    assert said in str(out) and "captures payments" in str(out) and "`tables:` of export `shop_cdc`" in str(out)
-    assert drifted.config.read_text() == OLD and not drifted.aside()
-    assert [c["argv"][0] for c in drifted.calls()] == ["state"]
-
-
-def test_a_failed_rewrite_puts_the_old_config_back(drifted: Drift) -> None:
-    drifted.spec(init_exit=1)
-    out = drifted.run()
-    assert isinstance(out, AirflowFailException) and "no config was written" in str(out)
-    assert drifted.config.read_text() == OLD
-
-
-def test_a_config_that_matches_runs_nothing(drifted: Drift) -> None:
-    drifted.config.write_text(CDC_CONFIG.format(env="RIVET_SOURCE_URL"))
-    assert drifted.run() == {"config": str(drifted.config), "drift": False}
-    assert drifted.calls() == []
 
 
 def test_init_refuses_a_config_folder_it_cannot_write_before_anything_runs(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -401,53 +303,6 @@ def test_without_psycopg2_the_state_database_is_not_checked(tmp_path: Path, monk
         env_from_connections={"RIVET_STATE_URL": {"conn_id": "rivet_state_aa", "database": "rivet_state_shop"}},
     )
     op._refuse_empty_state_of_a_started_stream()
-
-
-DRIFT_DAG = """\
-import os
-from airflow_provider_rivet.dags import _with_drift_check, build_cdc_dag
-kwargs = {kwargs!r}
-kwargs['operator_kwargs']['env'] = {{'RIVET_PG_URL': os.environ['RIVET_PG_URL']}}
-dag = build_cdc_dag({dag_id!r}, **kwargs)
-_with_drift_check(dag, 'cdc', (['orders'], [], []), {{
-    'config': kwargs['config'], 'state_dir': kwargs['state_dir'],
-    'operator_kwargs': {{'env_from_connections': {{'RIVET_SOURCE_URL': 'x'}}}},
-}})
-"""
-
-
-def drift_run(rig: DagRig, monkeypatch: pytest.MonkeyPatch, dag_id: str, outcome: type[Exception]) -> tuple[str, dict]:
-    def execute(self: Any, context: Any, **kwargs: Any) -> None:
-        (rig.home / "drift_ran").write_text("skip" if outcome is AirflowSkipException else "fail")
-        raise outcome("drift")
-
-    monkeypatch.setattr(RivetSpecDriftOperator, "execute", execute)
-    rig.config.write_text("source:\n  type: postgres\n  url_env: RIVET_PG_URL\nexports:\n  - {name: orders_cdc, mode: cdc}\n")
-    kwargs = {
-        "config": str(rig.config),
-        "state_dir": str(rig.state_dir),
-        "export": "orders_cdc",
-        "tables": ["orders"],
-        "default_args": {"retries": 0},
-        "operator_kwargs": {"rivet_bin": str(rig.bin / "rivet"), "deployment": "local"},
-    }
-    return rig.run_source(dag_id, DRIFT_DAG.format(kwargs=kwargs, dag_id=dag_id))
-
-
-def test_a_rewritten_config_skips_the_rest_of_the_run(dag_rig: DagRig, monkeypatch: pytest.MonkeyPatch) -> None:
-    state, tasks = drift_run(dag_rig, monkeypatch, "drift_rewritten", AirflowSkipException)
-    assert tasks == {t: "skipped" for t in tasks} and state == "success", tasks
-    assert dag_rig.ran() == []
-
-
-def test_a_drift_that_cannot_be_fixed_fails_the_run_and_the_stream_goes_on(
-    dag_rig: DagRig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state, tasks = drift_run(dag_rig, monkeypatch, "drift_started", AirflowFailException)
-    assert tasks[DRIFT_ID] == "failed" and tasks[DRIFT_GATE_ID] == "success"
-    assert (dag_rig.home / "drift_ran").read_text() == "fail"
-    assert (tasks["run"], tasks["load.orders"]) == ("success", "success")
-    assert tasks["watcher"] == "failed" and state == "failed"
 
 
 def test_build_cdc_dag_and_the_source_builder_keep_one_task_id_per_table(tmp_path: Path) -> None:

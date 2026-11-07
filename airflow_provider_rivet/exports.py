@@ -44,20 +44,6 @@ def server_id_of(config: Mapping[str, Any], default: int) -> int | None:
     return None
 
 
-def staging_of(config: Mapping[str, Any]) -> dict[str, str]:
-    """The `bucket`, `prefix`, `project` and `dataset` of the config's first export that stages in GCS."""
-    out: dict[str, str] = {}
-    for entry in entries_of(config):
-        dest = _mapping(entry.get("destination"))
-        if _yaml.text_of(dest.get("type")) == "gcs" and dest.get("bucket"):
-            out = {"bucket": str(_yaml.text_of(dest["bucket"])), "prefix": str(_yaml.text_of(dest.get("prefix")) or "")}
-            break
-    load = _mapping(config.get("load"))
-    if _yaml.text_of(load.get("target")) == "bigquery":
-        out.update({k: str(_yaml.text_of(load[k])) for k in ("project", "dataset") if load.get(k)})
-    return out
-
-
 def mode_of(entry: Mapping[str, Any]) -> str:
     """The export's `mode`; rivet's default for an absent one is `full` (src/config/export.rs `default_mode`)."""
     return str(_yaml.text_of(entry.get("mode")) or "full")
