@@ -149,6 +149,10 @@ ALIAS = 'starts with `*`, which YAML reads as an alias, not text: quote the glob
             "value out",
         ),
         (
+            HEAD + "defaults: &d\n  tls: disable\nsources:\n  a: *d\n",
+            "F:7:6: `*d` is a YAML alias of the anchor `&d`; a sources file reads no anchors or aliases: write the value out",
+        ),
+        (
             HEAD + "defaults: &d\n  tls: disable\nsources:\n  a:\n    exclude: [*]\n",
             'F:8:15: `*` starts with `*`, which YAML reads as an alias, not text: quote the glob, "*"',
         ),
