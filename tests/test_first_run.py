@@ -637,6 +637,7 @@ def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[t
 
 def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = staging_calls(monkeypatch)
+    assert "SKIP bucket: init_args name no GCS bucket" in preflight(init, monkeypatch)["checks"]
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
     preflight(init, monkeypatch, init_args=args)
     assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
