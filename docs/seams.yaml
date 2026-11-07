@@ -44,10 +44,15 @@ rules:
         date: 2026-11-02
         reason: "the probe's own `exited N` text for a failed `rivet --version`"
         closes: "one describe_exit text for every exit (message-truth-3)"
-      - at: airflow_provider_rivet/operators.py::RivetInitOperator._rivet
+      - at: airflow_provider_rivet/operators.py::_SourceTask._rivet
         count: 1
         date: 2026-11-02
         reason: "the init's `exited N` text, which prints `exited -9` for a signal"
+        closes: "one describe_exit text for every exit (message-truth-3)"
+      - at: airflow_provider_rivet/operators.py::RivetPreflightOperator._baseline
+        count: 1
+        date: 2026-11-06
+        reason: "the preflight WARN's `exited N` text for a failed `rivet init --discover`"
         closes: "one describe_exit text for every exit (message-truth-3)"
   - id: export-entry
     owner: airflow_provider_rivet/exports.py::name_of
@@ -66,6 +71,11 @@ rules:
         date: 2026-11-02
         reason: "reads an export entry's name in the checkpoint refusal beside exports.py"
         closes: "`exports.name_of` (seams-6)"
+      - at: airflow_provider_rivet/checks.py::baseline
+        count: 1
+        date: 2026-11-06
+        reason: "reads `tables` of `rivet init --discover` JSON, not of an export entry"
+        closes: "a rule keyed by the document read, not by the key's name"
   - id: rivet-event
     owner: null
     kind: text

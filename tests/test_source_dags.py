@@ -98,6 +98,12 @@ if argv[0] == "init":
     if spec.get("init_exit"):
         print("error: cannot connect", file=sys.stderr)
         sys.exit(spec["init_exit"])
+    if "--discover" in argv:
+        if spec.get("discover_exit"):
+            print("error: access denied", file=sys.stderr)
+            sys.exit(spec["discover_exit"])
+        print(json.dumps(spec.get("discover", {"source_type": "mysql", "tables": [{"table": "orders"}, {"table": "customers"}]})))
+        sys.exit(0)
     Path(argv[argv.index("-o") + 1]).write_text(spec["yaml"])
     print("wrote config, 100% %s of it")
 elif argv[0] == "check":
@@ -449,7 +455,7 @@ def test_init_reports_each_export_as_rivet_reads_it(init: Init, logged: Any) -> 
 def test_places_reads_the_exports_as_rivet_reads_them() -> None:
     from airflow_provider_rivet.operators import places
 
-    assert places({"exports": ["not an export", {"destination": {"type": "gcs", "bucket": "b"}}]}) == {"gcs://b/"}
+    assert places({"exports": ["not an export", {"destination": {"type": "gcs", "bucket": "b"}}]}) == {"gs://b/"}
 
 
 def test_a_source_with_neither_connection_nor_data_source_fails_before_rivet(init: Init) -> None:
@@ -671,7 +677,7 @@ def test_a_stream_of_one_table_named_by_table(tmp_path: Path) -> None:
         (
             CDC_CONFIG.format(env="X").replace("dataset: shop", "dataset: other")
             + "    destination: {type: gcs, bucket: b, prefix: shop/cdc/}\n",
-            "gcs://b/shop/cdc/",
+            "gs://b/shop/cdc/",
         ),
     ],
 )
@@ -1093,7 +1099,7 @@ def test_the_state_database_sql_word_for_word(init: Init, monkeypatch: pytest.Mo
     init.run(env_from_connections=state_refs(init, 'we"ird'))
     assert server.dsn == ["postgresql://u:pw@rivet_state.host/admin"]
     assert server.sql == [("SELECT 1 FROM pg_database WHERE datname = %s", ('we"ird',)), ('CREATE DATABASE "we""ird"', ())]
-    assert said(logged(), 'state database `we"ird` created on rivet_state.host')
+    assert said(logged(), 'state database `we"ird` created on rivet_state.host:5432 (Connection `rivet_state`)')
 
 
 def test_without_psycopg2_the_state_database_is_refused(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1167,7 +1173,7 @@ def test_every_shared_place_is_named(init: Init) -> None:
     init.spec(yaml=CDC_CONFIG.format(env="RIVET_SOURCE_URL") + GCS_DEST)
     init.config.parent.mkdir()
     (init.config.parent / "billing.yaml").write_text(CDC_CONFIG.format(env="X") + GCS_DEST)
-    assert "writes to bigquery p.shop, gcs://b/shop/cdc/, as" in str(init.run())
+    assert "writes to bigquery p.shop, gs://b/shop/cdc/, as" in str(init.run())
 
 
 def test_a_missing_binary_is_refused_with_the_payload_every_task_pushes(init: Init) -> None:

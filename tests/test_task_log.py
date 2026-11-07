@@ -477,6 +477,7 @@ def test_the_readable_lines_hold_no_secret_and_rivet_says_why(rig: Rig, log: Rec
 
 
 LOAD_BLOCK = "load:\n  target: bigquery\n  project: rivet-data-tool\n  dataset: demo_cdc\n"
+WRITES = "INFO writes   bigquery rivet-data-tool.demo_cdc"
 
 
 def test_golden_load_names_the_warehouse_table_rivet_wrote(rig: Rig, log: Recorder) -> None:
@@ -485,7 +486,10 @@ def test_golden_load_names_the_warehouse_table_rivet_wrote(rig: Rig, log: Record
     row = load_row("orders", "t", rows=50, target="rivet-data-tool.demo_cdc_1432.t")
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
     rig.run(rig.operator(RivetLoadOperator, export="orders", table="t"))
-    assert log.shown()[0] == "INFO rivet load orders table t → rivet-data-tool.demo_cdc_1432.t: OK: 50 rows in 3.0 s (run l1)"
+    assert log.shown()[:2] == [
+        WRITES,
+        "INFO rivet load orders table t → rivet-data-tool.demo_cdc_1432.t: OK: 50 rows in 3.0 s (run l1)",
+    ]
     unit = next(json.loads(t) for lvl, t in log.lines if lvl == "DEBUG" and '"rivet.unit"' in t)
     assert (unit["target"], unit["buffer"], unit["target_from"]) == ("rivet-data-tool.demo_cdc_1432.t", None, "rivet")
 
@@ -503,9 +507,10 @@ def test_golden_incremental_load_names_the_log_the_config_names(rig: Rig, log: R
     rig.config.write_text(CONFIG + LOAD_BLOCK)
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": []}})
     rig.run(rig.operator(RivetLoadOperator, export="users", table="users"))
-    assert log.shown()[0] == (
-        "INFO rivet load users table users → rivet-data-tool.demo_cdc.users__changes (from config): OK in 3.0 s"
-    )
+    assert log.shown()[:2] == [
+        WRITES,
+        "INFO rivet load users table users → rivet-data-tool.demo_cdc.users__changes (from config): OK in 3.0 s",
+    ]
 
 
 def test_golden_compact_names_the_buffer_and_base_the_config_names(rig: Rig, log: Recorder) -> None:
@@ -513,10 +518,13 @@ def test_golden_compact_names_the_buffer_and_base_the_config_names(rig: Rig, log
     rig.config.write_text(CONFIG + LOAD_BLOCK)
     rig.scenario(compact={"summary": {"run_id": "c1", "per_table": []}})
     rig.run(rig.operator(RivetCompactOperator, export="orders", table="t"))
-    assert log.shown()[0] == (
-        "INFO rivet compact orders table t → rivet-data-tool.demo_cdc.t__changes into rivet-data-tool.demo_cdc.t "
-        "(from config): OK in 3.0 s"
-    )
+    assert log.shown()[:2] == [
+        WRITES,
+        (
+            "INFO rivet compact orders table t → rivet-data-tool.demo_cdc.t__changes into rivet-data-tool.demo_cdc.t "
+            "(from config): OK in 3.0 s"
+        ),
+    ]
 
 
 def test_golden_compact_says_what_the_merge_did_from_rivets_digest(rig: Rig, log: Recorder) -> None:
@@ -708,4 +716,4 @@ def test_golden_load_of_a_schema_qualified_table_names_the_table_rivet_loads(rig
     row = load_row("orders", "dbo_orders", rows=5, target="p.d.dbo_orders")
     rig.scenario(load={"summary": {"run_id": "l1", "per_table": [row]}})
     rig.run(rig.operator(RivetLoadOperator, export="orders", table="dbo.orders"))
-    assert log.shown()[0] == "INFO rivet load orders table dbo_orders → p.d.dbo_orders: OK: 5 rows in 3.0 s (run l1)"
+    assert log.shown()[:2] == [WRITES, "INFO rivet load orders table dbo_orders → p.d.dbo_orders: OK: 5 rows in 3.0 s (run l1)"]

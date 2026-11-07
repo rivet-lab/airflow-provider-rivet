@@ -1,13 +1,13 @@
 diff --git a/airflow_provider_rivet/tasklog.py b/airflow_provider_rivet/tasklog.py
-index 3bf81b2..5b5821c 100644
+index ed9e0f8..9999b2e 100644
 --- a/airflow_provider_rivet/tasklog.py
 +++ b/airflow_provider_rivet/tasklog.py
-@@ -140,7 +140,7 @@ class TaskLog:
+@@ -150,7 +150,7 @@ class TaskLog:
          self.write(logging.DEBUG, json.dumps(record, sort_keys=True, default=str))
          self.events.append(record)
          event = record.get("event")
 -        if event == Event.START:
 +        if event == "rivet.start":
              self.steps.append({"step": record.get("step"), "start": clock()})
-         elif event == Event.STEP and self.steps:
-             self.steps[-1].update(end=clock(), exit_status=record.get("exit_status"), signal=record.get("signal"))
+         elif event == Event.PROGRESS:
+             self.write(logging.INFO, self._beat(record))

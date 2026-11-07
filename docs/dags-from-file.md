@@ -81,6 +81,8 @@ Settings (in `defaults` and under a source; a source's own win, and `defaults` w
 | `schedule`, `start_date` (`YYYY-MM-DD`, in the past), `catchup`, `tags` | the DAG's own |
 | `cloud_credentials` | `[gcp]`, `[aws]`, `[azure]`: the worker's credentials rivet receives |
 | `env_from_variables` | `{ENV_NAME: "<variable key>"}`, `{name}` replaced in the key ([Connections and secrets](connections-and-secrets.md#one-variable-per-source-the-secret-name-at-task-run-time)) |
+| `preflight` | `false` leaves out the `preflight` task that runs first in the DAG ([below](#before-the-first-run)); default `true` |
+| `stream_stderr` | `false` stops copying rivet's stderr lines into the task log as they come; default `true` |
 
 `{name}` is the one placeholder, in any text value. Callbacks and other Python values are given to every source as
 arguments: `build_dags_from_file(path, operator_kwargs={"rivet_bin": ...}, on_failure_callback=...)`;
@@ -157,7 +159,7 @@ up unloaded.
 
 ## Moving from `build_cdc_dag`
 
-A DAG built per source with `build_cdc_dag` ([`examples/rivet_cdc_per_source.py`](../examples/rivet_cdc_per_source.py),
+A DAG built per source with `build_cdc_dag` ([`examples/rivet_cdc_per_source.py`](../examples/rivet_cdc_per_source.py), deprecated,
 the layout of [the cron recipe](cron-to-airflow-cdc.md)) keeps its DAG id, its state folder and its task ids when the
 same source is built from the file: `rivet_<src>_cdc`, `<state_root>/<src>`, `run`, `load.<table>`,
 `compact.<table>` (a test holds this). What changes is where the state database's name comes from:
@@ -193,12 +195,41 @@ The way back is the old DAG file: nothing in the state folder or database is cha
 
 ## Before the first run
 
+Each DAG starts with a `preflight` task (`RivetPreflightOperator`): it checks what the next tasks need and writes one
+line per check, PASS, WARN, SKIP or FAIL, with what to change. A FAIL fails it with no retry, and nothing else runs:
+
+```
+PASS rivet binary: rivet 0.33.0 (5ee08c0a) at /home/airflow/.local/bin/rivet
+PASS config folder: /opt/airflow/dags/rivet is writable
+PASS state folder: /opt/airflow/rivet-state is writable; /opt/airflow/rivet-state/shop is created there
+FAIL state database tls: Connection `rivet_state` points at pg-state, a remote host, and names no sslmode; rivet refuses it (RIVET_STATE_URL_TLS_REQUIRED) -> fix: set the Connection's extra sslmode: `require` (or `verify-ca`, `verify-full`) with TLS on the state server, or `disable` for plaintext on a private network
+PASS state database: `rivet_state_shop` on pg-state:5432 (Connection `rivet_state`) does not exist yet; `init` creates it (the role may CREATEDB)
+FAIL mysql binlog_row_metadata: is MINIMAL -> fix: SET PERSIST binlog_row_metadata = 'FULL';
+PASS mysql grants: REPLICATION SLAVE, REPLICATION CLIENT, SELECT
+FAIL gcs gs://my-bucket/rivet/shop/: the bucket does not exist -> fix: gcloud storage buckets create gs://my-bucket --location=<the dataset's>
+SKIP bigquery my-project.rivet_shop: google-cloud-bigquery is not installed -> fix: run by hand: bq show my-project:rivet_shop
+```
+
+It reaches each thing as the tasks will: the binary and its version, the config and state folders, the state
+database (and whether rivet will dial it: a remote state server needs an `sslmode`), the source's CDC settings (MySQL: `log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`,
+`log_replica_updates` on a replica, the grants, a free `server_id`; PostgreSQL: `wal_level`, `REPLICATION`, a free
+slot), and the bucket and dataset until the stream has a checkpoint; once the config exists, `rivet check` of it. A
+check whose client library is not in the image (psycopg2, MySQLdb or pymysql, google-cloud-storage,
+google-cloud-bigquery) is a SKIP naming the command to run by hand. `preflight: false` leaves the task out.
+
 - **The config folder must be writable by the worker.** `init` writes `<config_dir>/<name>.yaml`; it checks the folder
   before it creates anything, and a folder it cannot write fails the task naming the worker's uid and gid and the
   folder's owner and mode. On the host: `sudo chown -R <AIRFLOW_UID>:0 dags/rivet && sudo chmod -R g+w dags/rivet`
   (the official image runs as `AIRFLOW_UID`, 50000 by default, in group 0); a world-writable folder is not needed.
-- **MySQL CDC prerequisites are checked by rivet when the stream runs, not by `init`.** Check them on the server the
-  source Connection names (on a replica, the replica) before the first run:
+  The folders and the config a task creates are group-writable (`g+w`), never world-writable, so the scheduler, the
+  dag-processor and a person in the group can all edit them.
+- **The bucket and the dataset are not created for you.** Neither `rivet init` nor a task creates the GCS bucket or the
+  BigQuery dataset the config names; `preflight` says when one is missing and the command that creates it. Create the
+  dataset in the bucket's location (or a region inside its multi-region): a load reads a bucket in the dataset's
+  location only. The state database is the one thing `init` creates, when the state Connection's role may.
+- **MySQL CDC prerequisites are checked by `preflight`, and by rivet when the stream runs, not by `init`.** Without
+  `preflight` (or without a MySQL driver in the image), check them by hand on the server the source Connection names
+  (on a replica, the replica):
 
   ```sql
   SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata, @@log_replica_updates;
@@ -207,6 +238,64 @@ The way back is the old DAG file: nothing in the state folder or database is cha
 
   and the grants `REPLICATION SLAVE`, `REPLICATION CLIENT`, `SELECT`. A server that misses one fails the first `run`
   with `RIVET_SOURCE_CDC_PREREQUISITE` and rivet's remedy.
+
+## What the task log says while it runs
+
+Every task first says where it reads and writes:
+
+```
+state    database `rivet_state_shop` on pg-state:5432 (Connection `rivet_state`)
+writes   bigquery my-project.rivet_shop, gcs gs://my-bucket/rivet/shop/
+```
+
+A first CDC run copies every table before it streams, which can take hours. While a rivet step runs, its stderr lines
+come into the task log as rivet writes them (`stream_stderr`), and every minute (`progress_every`, seconds) a heartbeat
+says how long it has run, how big its stderr is and when rivet last wrote; the first one says how to follow it:
+
+```
+rivet run running for 1m 0s; stderr 14.2 KiB, last written 3 s ago; follow it: tail -f /opt/airflow/rivet-state/shop/logs/...run.stderr.log
+rivet run running for 2m 0s; stderr 31.0 KiB, last written 1 s ago
+```
+
+rivet writes a stderr line when a table's snapshot ends and nothing while it reads one, so during the snapshot of a big
+table "last written" grows: the heartbeat says the step still runs, not how far it is (3,000,000 rows of MySQL took
+3.5 minutes and came as one line at the end). The path is on the worker: from the host, run
+`docker compose exec airflow-worker tail -f <path>`, or read it where the host mounts the state folder.
+
+## Running it on Docker Compose
+
+- **Two paths for one folder.** A config, a state folder and a log path are named as the containers see them
+  (`/opt/airflow/dags/rivet/shop.yaml`); on the host the same file is where the compose file mounts it from
+  (`./dags/rivet/shop.yaml`). Edit on the host and name the container path in the sources file and in Connections.
+- **Two compose files and an env file.** With Airflow's `docker-compose.yaml` and your own override, name both, and the
+  env file, on every command, or one service runs with other settings than the rest:
+  `docker compose -f docker-compose.yaml -f docker-compose.override.yaml --env-file .env up -d --build`.
+- **`up -d --build` after a change to the image** (a new `airflow-provider-rivet` or `rivet-cli` in the Dockerfile):
+  without `--build` the services keep the old image. Check every service runs the same versions:
+  `docker compose exec airflow-worker pip show airflow-provider-rivet rivet-cli` and the same in the scheduler and
+  (Airflow 3) the dag-processor.
+- **A grey task "waiting" (queued, no log) is no worker taking it**: the worker is not running, or listens to another
+  queue. `docker compose ps` and `docker compose logs airflow-worker`.
+- **The config is a working copy.** A task runs `<state_dir>/<hash>.yaml`, a copy of `<config_dir>/<name>.yaml` made
+  when it starts. Edit `<config_dir>/<name>.yaml`; an edit of the hashed copy is lost on the next task.
+- **Restarting a source** that never anchored (no checkpoint): delete its config, its state folder
+  `<state_root>/<name>` and its state database, and trigger the DAG; `init` writes the config again. A stream that has
+  run keeps its checkpoint: see [After a first run that failed](#after-a-first-run-that-failed) before deleting
+  anything.
+
+## Troubleshooting
+
+| What you see | Why | What to do |
+|---|---|---|
+| The task log in the UI: `Could not read served logs: 403 Client Error: FORBIDDEN` | the webserver (Airflow 3: the api-server) signs its request for a log with its secret key, and the worker checks it with its own; they differ | give every service the same `AIRFLOW__WEBSERVER__SECRET_KEY` (Airflow 3: also `AIRFLOW__API_AUTH__JWT_SECRET`), e.g. once in `.env`, then `up -d` |
+| `preflight` FAIL `config folder ... is not writable by this worker (uid 50000, gid 0 ...)` | the host folder belongs to your user | `sudo chown -R 50000:0 dags/rivet && sudo chmod -R g+w dags/rivet` |
+| `preflight` FAIL `gcs ...: the bucket does not exist` or `bigquery ...: the dataset does not exist` | neither is created for you | the command on the line, in one location for both |
+| The DAG of a source shows only `preflight` and `init` | its config does not exist yet | run it once; the next parse builds the stream's tasks from the config `init` wrote |
+| `***` in the task log where a word should be (`***_state_shop`) | Airflow masks every Connection password wherever it appears, and this password is also a word of a name | give the Connection a password that is no word of its names |
+| `init` below `watcher` in the grid, after `init` has written the config | the grid keeps the tasks of every version of the DAG; `init` is a task of version 1, built before the config existed | nothing: the current version has `preflight`, `run`, `load.*`, `compact.*` and `watcher` |
+| A run that seems stuck | a first CDC run copies every table first | read the heartbeat lines, or `tail -f` the stderr path the first one names |
+| `preflight` WARN `baseline: ... read in one SELECT each though rivet would page them` | the same one-`SELECT` baseline, found before `init` from `rivet init --discover` | after `init`, page the baseline: in `<config_dir>/<source>.yaml` replace `initial: snapshot` with `backfill: auto` and add a batch export of the table as its recipe (`mode: chunked`, `chunk_by_key: <key>`, `parallel: 4`), shaped as `init` writes one for two tables |
+| `run` fails after about 5 minutes: `[RIVET_SOURCE_STATEMENT_TIMEOUT] mysql: statement timeout after 300s` | a source of one table gets a baseline of one `SELECT` of the whole table (two or more tables are paged), and the `balanced` profile stops a statement at 300 s; 3,000,000 rows of MySQL took 3.5 minutes | page the baseline as in the row above (rivet-lab/rivet#878: `init` writes the one `SELECT` for one table), or raise `tuning: { statement_timeout_s: 3600 }` under the export, which keeps one `SELECT` on one connection; then run again: a first run that failed reads the table again from the start |
 
 ## After a first run that failed
 

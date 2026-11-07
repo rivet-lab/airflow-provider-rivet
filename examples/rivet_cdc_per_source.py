@@ -1,4 +1,7 @@
-"""Example: one MySQL CDC stream per source database, every DAG built from that source's own rivet config.
+"""Deprecated example: one MySQL CDC stream per source database, every DAG built from that source's own rivet config.
+
+Deprecated: build these DAGs from one file with `build_dags_from_file` instead (examples/rivet_sources.yaml,
+docs/dags-from-file.md#moving-from-build_cdc_dag); a source moved there keeps its DAG id, state folder and task ids.
 
 The layout of docs/cron-to-airflow-cdc.md: for a source `<src>`, the config `<configs>/<src>.yaml` (one export with
 `mode: cdc`), the state directory `<state root>/<src>`, the state database behind the Connection `rivet_state_<src>`,

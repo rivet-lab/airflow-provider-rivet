@@ -1,8 +1,8 @@
 diff --git a/airflow_provider_rivet/operators.py b/airflow_provider_rivet/operators.py
-index 902e6d6..102978c 100644
+index 31558f1..0774cca 100644
 --- a/airflow_provider_rivet/operators.py
 +++ b/airflow_provider_rivet/operators.py
-@@ -465,7 +465,7 @@ def config_present(path: Path) -> bool:
+@@ -579,7 +579,7 @@ URL_SCHEMES = {"gcs": "gs"}
  def places(doc: Mapping[str, Any]) -> set[str]:
      """Where a config writes: each export's bucket prefix (`s3://b/p/`) and its warehouse dataset or database."""
      out = set()
@@ -10,8 +10,8 @@ index 902e6d6..102978c 100644
 +    for export in doc.get("exports") or []:
          dest = export.get("destination") or {}
          if dest.get("bucket"):
-             out.add(f"{dest.get('type')}://{dest['bucket']}/{dest.get('prefix') or ''}")
-@@ -653,7 +653,7 @@ class RivetInitOperator(_RivetTask):
+             scheme = URL_SCHEMES.get(str(dest.get("type")), dest.get("type"))
+@@ -812,7 +812,7 @@ class RivetInitOperator(_SourceTask):
              return {"config": str(target), "written": False}
          finally:
              staged.unlink()

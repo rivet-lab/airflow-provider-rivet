@@ -1,10 +1,13 @@
 diff --git a/airflow_provider_rivet/stderr.py b/airflow_provider_rivet/stderr.py
-index 3f23532..8cce33d 100644
+index a2bf358..e13b74c 100644
 --- a/airflow_provider_rivet/stderr.py
 +++ b/airflow_provider_rivet/stderr.py
-@@ -31,4 +31,4 @@ def tail_lines(path: Path) -> tuple[list[str], bool]:
+@@ -36,7 +36,7 @@ def tail_lines(path: Path) -> tuple[list[str], bool]:
      if cut:
          newline = body.find(b"\n")
          body = body[newline + 1 :] if newline >= 0 else b""
 -    return lines_of(body.decode(errors="replace")), cut and not body.strip()
 +    return lines_of(body.decode(errors="replace")), False
+ 
+ 
+ class Follower:

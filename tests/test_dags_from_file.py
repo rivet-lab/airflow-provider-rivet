@@ -88,9 +88,12 @@ def test_the_one_line_dag_file_builds_a_dag_per_source_from_the_file_beside_it(t
         "compact.b",
         "load.a",
         "load.b",
+        "preflight",
         "run",
         "watcher",
     ]
+    preflight = dags["rivet_shop_cdc"].get_task("preflight")
+    assert preflight.downstream_task_ids == {"run", "watcher"} and preflight.retries == 0
     init = dags["rivet_billing_cdc"].get_task("init")
     assert init.init_args == [
         "--tls",
@@ -139,7 +142,8 @@ def test_a_relative_sources_file_is_refused_naming_the_absolute_form(tmp_path: P
 
 def test_a_source_with_no_config_waits_for_the_template_s_config(tmp_path: Path) -> None:
     dags = parse(dags_folder(tmp_path))
-    assert [t.task_id for t in dags["rivet_shop_cdc"].tasks] == ["init"]
+    dag = dags["rivet_shop_cdc"]
+    assert sorted(dag.task_ids) == ["init", "preflight"] and dag.get_task("init").upstream_task_ids == {"preflight"}
     refused = dags["rivet_analytics_cdc"].get_task("config")
     assert refused.code == "RIVET_AIRFLOW_SOURCES_FILE_REFUSED"
     assert "template `shop`" in refused.refusal and "run the DAG of `shop` first" in refused.refusal

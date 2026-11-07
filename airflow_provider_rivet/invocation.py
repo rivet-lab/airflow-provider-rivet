@@ -31,7 +31,7 @@ from .events import Event
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
-from .stderr import lines_of, tail_lines
+from .stderr import Follower, lines_of, tail_lines
 
 Emit = Callable[[dict[str, Any]], None]
 ENV_ALLOWLIST = (
@@ -151,6 +151,7 @@ class Request:
     cwd: str | None = None
     stderr_dir: str | None = None
     stream_stderr: bool = False
+    progress_every: float | None = 60
     log_keep: int | None = 10
     label: Sequence[Any] = ("dag", "run", "task", 1)
     series: int | None = None
@@ -341,7 +342,7 @@ class _Session:
         stdout_path = stdout_to or self.logs / f"{self.log_name}.{name}.stdout.log"
         self.emit({"event": Event.START, "step": name, "argv": _yaml.redacted_argv(argv), "stderr_path": str(stderr_path)})
         cwd = self.req.cwd or str(Path(self.req.config).resolve().parent)
-        with _open_private(stdout_path) as out, _open_private(stderr_path) as err:
+        with _open_private(stdout_path) as out, _open_private(stderr_path) as err, self._follow(name, stderr_path):
             code = spawn(argv, out, err, self.req.env, cwd, self.on_process, self.lock_fds)
         self.emit(
             {
@@ -353,11 +354,28 @@ class _Session:
         )
         self.stderr_path = str(stderr_path)
         lines, truncated = tail_lines(stderr_path)
-        if self.req.stream_stderr:
-            for raw in lines:
-                self.emit({"event": Event.STDERR, "step": name, "line": raw})
         signal = -code if code < 0 else None
         return _Step(None if signal else code, signal, _error_line(lines), truncated or _has_broken_object(lines))
+
+    def _follow(self, name: str, stderr_path: Path) -> Follower:
+        """The follower of a step's stderr: its lines when the task streams them, and a heartbeat every `progress_every` s."""
+
+        def line(raw: str) -> None:
+            self.emit({"event": Event.STDERR, "step": name, "line": raw})
+
+        def beat(elapsed: float, size: int, idle: float) -> None:
+            self.emit(
+                {
+                    "event": Event.PROGRESS,
+                    "step": name,
+                    "elapsed": elapsed,
+                    "stderr_bytes": size,
+                    "idle": idle,
+                    "stderr_path": str(stderr_path),
+                }
+            )
+
+        return Follower(stderr_path, line if self.req.stream_stderr else None, beat, self.req.progress_every)
 
     def step_with_result(self, name: str, argv: list[str], result: Path) -> tuple[_Step, ErrorObject | None, Any]:
         """Run a step asked to write `result`, classify its exit, read and remove the file."""
