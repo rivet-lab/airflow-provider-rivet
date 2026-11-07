@@ -83,7 +83,7 @@ Settings (in `defaults` and under a source; a source's own win, and `defaults` w
 | `env_from_variables` | `{ENV_NAME: "<variable key>"}`, `{name}` replaced in the key ([Connections and secrets](connections-and-secrets.md#one-variable-per-source-the-secret-name-at-task-run-time)) |
 
 `{name}` is the one placeholder, in any text value. Callbacks and other Python values are given to every source as
-arguments: `build_dags_from_file("rivet_sources.yaml", operator_kwargs={"rivet_bin": ...}, on_failure_callback=...)`;
+arguments: `build_dags_from_file(path, operator_kwargs={"rivet_bin": ...}, on_failure_callback=...)`;
 what the file says wins over them.
 
 **`template`.** A new source usually writes to the same bucket and project, and reaches its server the same way, as a
