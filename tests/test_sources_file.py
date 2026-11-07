@@ -1,0 +1,218 @@
+"""The sources file: read strictly, with the file, line and column of every refusal, and the drift of a config from it."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import jsonschema
+import pytest
+import yaml
+
+from airflow_provider_rivet.sources import (
+    INIT_FLAGS,
+    SCHEMA_FILE,
+    SourcesFileError,
+    drift,
+    glob_matches,
+    kept,
+    read_sources_file,
+    schema,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+HEAD = "version: 1\nstate_root: /opt/airflow/rivet-state\nstate_connection: rivet_state\n"
+TEMPLATE_CONFIG = """\
+source:
+  type: mysql
+  url_env: RIVET_SOURCE_URL
+  tls: {mode: disable}
+load:
+  target: bigquery
+  project: my-project
+  dataset: rivet_shop
+exports:
+  - name: shop_cdc
+    mode: cdc
+    tables: [a, b]
+    destination: {type: gcs, bucket: my-bucket, prefix: shop/cdc/}
+"""
+
+
+def write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "rivet_sources.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def refusal(tmp_path: Path, text: str) -> str:
+    with pytest.raises(SourcesFileError, match=re.escape(str(tmp_path / "rivet_sources.yaml"))) as caught:
+        read_sources_file(write(tmp_path, text))
+    return str(caught.value).replace(str(tmp_path / "rivet_sources.yaml"), "F")
+
+
+def test_each_source_takes_the_template_under_the_defaults_under_its_own(tmp_path: Path) -> None:
+    (tmp_path / "rivet").mkdir()
+    (tmp_path / "rivet" / "shop.yaml").write_text(TEMPLATE_CONFIG)
+    spec = read_sources_file(
+        write(
+            tmp_path,
+            HEAD
+            + 'template: shop\ndefaults:\n  bigquery_dataset: "rivet_{name}"\n  tls: require\n'
+            + "sources:\n  shop:\n  analytics:\n    tls: disable\n    include: [visitors]\n",
+        )
+    )
+    assert spec.config_dir == tmp_path / "rivet" and spec.mode == "cdc" and spec.source_connection == "{name}"
+    analytics = spec.sources["analytics"]
+    assert analytics.settings == {
+        "gcs_bucket": "my-bucket",
+        "bigquery_project": "my-project",
+        "tls": "disable",
+        "bigquery_dataset": "rivet_analytics",
+        "include": ["visitors"],
+    }
+    assert analytics.init_args() == [
+        "--tls",
+        "disable",
+        "--gcs-bucket",
+        "my-bucket",
+        "--bigquery-project",
+        "my-project",
+        "--bigquery-dataset",
+        "rivet_analytics",
+    ]
+    assert spec.sources["shop"].settings == {"bigquery_dataset": "rivet_shop", "tls": "require"}
+    assert analytics.state_database() == "rivet_state_analytics"
+
+
+def test_state_database_connection_names_the_connection_s_own(tmp_path: Path) -> None:
+    spec = read_sources_file(write(tmp_path, HEAD + "sources:\n  shop:\n    state_database: connection\n  b: {}\n"))
+    assert spec.sources["shop"].state_database() is None
+    assert spec.sources["b"].state_database() == "rivet_state_b"
+
+
+def test_a_template_with_no_config_yet_is_reported_not_refused(tmp_path: Path) -> None:
+    spec = read_sources_file(write(tmp_path, HEAD + "template: a\nsources:\n  a: {}\n  b: {}\n"))
+    assert spec.template_missing and "template `a`" in spec.template_missing
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        (
+            HEAD + "sources:\n  a:\n    exclude: [*_tmp]\n",
+            'F:6:15: `*_tmp` starts with `*`, which YAML reads as an alias, not text: quote the glob, "*_tmp"',
+        ),
+        (HEAD + "sources:\n  a:\n    exclude:\n      - *_tmp\n", "F:7:9: `*_tmp` starts with `*`"),
+        (HEAD + "sources:\n  a:\n    datset: x\n", "F:6:5: unknown key `datset`; did you mean `bigquery_dataset`?"),
+        (HEAD + "sources:\n  a:\n    dataset: x\n", "F:6:5: unknown key `dataset`; did you mean `bigquery_dataset`?"),
+        (
+            HEAD + "sources:\n  a:\n    tls: off\n",
+            "F:6:10: `sources.a.tls`: `off` is not one of disable, require, verify-ca, verify-full",
+        ),
+        (HEAD + 'defaults:\n  bigquery_dataset: "rivet_{dsn}"\nsources:\n  a: {}\n', "F:5:21: `{dsn}` is no placeholder"),
+        (HEAD + "sources:\n  A-b: {}\n", "`sources`: `A-b` is not a name of lower-case letters, digits and `_`"),
+        (
+            "version: 1\nstate_root: \u201c/x\u201d\nstate_connection: s\nsources:\n  a: {}\n",
+            "F:2:13: `\u201c` is a typographic quote",
+        ),
+        (HEAD + "sources:\n  a:\u00a0{}\n", "F:5:5: a no-break space (U+00A0)"),
+        (HEAD + "sources:\n\ta: {}\n", "F:5:1: a tab in the indentation"),
+        (HEAD + "sources:\n  a: {}\nEOF\ndocker compose up -d\n", "F:6:1: this line looks like a shell command, not YAML: `EOF`"),
+        (HEAD + "sources:\n  a: {}\ncat <<EOF > dags/x.py\n", "F:6:1: this line looks like a shell command"),
+        (HEAD + "sources:\n  a: {}\n  a: {}\n", "F:6:3: `a` is written twice in one mapping"),
+        (
+            HEAD + "sources:\n  a:\n    include: orders\n",
+            "F:6:14: `sources.a.include`: is str 'orders', expected array: write [orders]",
+        ),
+        ("version: 2\nstate_root: /x\nstate_connection: s\nsources:\n  a: {}\n", "F:1:10: `version`: is 2; the only one is 1"),
+        ("version: 1\nstate_root: /x\nsources:\n  a: {}\n", "F:1:1: `(top)`: `state_connection` is required"),
+        (HEAD + "sources: {}\n", "`sources`: names no source"),
+        (HEAD + 'sources:\n  a:\n    tls: disable\n    init_args: ["--tls=require"]\n', "source `a`: init_args sets --tls"),
+        (HEAD + "template: z\nsources:\n  a: {}\n", "F:4:11: template `z` is not a source of this file (a)"),
+        (HEAD + "sources:\n  a: [\n", "F:6:1: not YAML"),
+        ("", "F: the file is empty"),
+    ],
+)
+def test_a_refusal_names_the_line_the_column_and_what_was_meant(tmp_path: Path, text: str, said: str) -> None:
+    assert said in refusal(tmp_path, text)
+
+
+def test_a_comment_may_hold_what_a_value_may_not(tmp_path: Path) -> None:
+    text = HEAD + '# docker compose up -d, \u201cquoted\u201d, [*_tmp]\nsources:\n  a:\n    exclude: ["*_tmp"]  # *_old\n'
+    assert read_sources_file(write(tmp_path, text)).sources["a"].settings == {"exclude": ["*_tmp"]}
+
+
+def test_a_cron_schedule_with_stars_reads_unquoted_and_quoted(tmp_path: Path) -> None:
+    text = HEAD + 'defaults:\n  schedule: 0 4-18/2 * * *\nsources:\n  a:\n    schedule: "*/30 * * * *"\n  b: {}\n'
+    spec = read_sources_file(write(tmp_path, text))
+    assert spec.sources["a"].settings["schedule"] == "*/30 * * * *" and spec.sources["b"].settings["schedule"] == "0 4-18/2 * * *"
+
+
+def test_every_error_of_a_file_is_reported_at_once(tmp_path: Path) -> None:
+    said = refusal(tmp_path, HEAD + 'defaults:\n  bigquery_dataset: "{dsn}"\nsources:\n  a:\n    datset: x\n    tls: off\n')
+    assert said.count("\n") == 2 and "{dsn}" in said and "datset" in said and "`off`" in said
+
+
+def test_the_schema_is_a_valid_json_schema_with_one_key_per_init_flag() -> None:
+    doc = json.loads(SCHEMA_FILE.read_text())
+    jsonschema.Draft202012Validator.check_schema(doc)
+    assert set(INIT_FLAGS) <= set(doc["$defs"]["settings"]["properties"])
+    assert schema() == doc
+
+
+def test_the_example_validates_against_the_schema_as_an_editor_reads_it() -> None:
+    example = yaml.safe_load((ROOT / "examples" / "rivet_sources.yaml").read_text())
+    jsonschema.Draft202012Validator(schema()).validate(example)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "name", "matches"),
+    [
+        ("orders", "orders", True),
+        ("orders", "orders2", False),
+        ("ord*", "orders", True),
+        ("*_tmp", "x_tmp", True),
+        ("*_tmp", "x_tmp_old", False),
+        ("ord?rs", "orders", True),
+        ("Orders", "orders", False),
+        ("a[1]", "a[1]", True),
+        ("a.b", "axb", False),
+        ("*", "", True),
+    ],
+)
+def test_a_glob_matches_as_rivet_init_matches_it(pattern: str, name: str, matches: bool) -> None:
+    assert glob_matches(pattern, name) is matches
+
+
+def test_exclude_wins_and_no_include_keeps_all() -> None:
+    assert kept("orders", (), ()) and not kept("orders", ("orders",), ("ord*",)) and not kept("users", ("orders",), ())
+
+
+STREAM = {
+    "load": {"target": "bigquery", "tables": {"clicks": {"layout": "base_buffer"}}},
+    "exports": [
+        {"name": "analytics_cdc", "mode": "cdc", "tables": ["pageviews", "visitors", "clicks"]},
+        {"name": "snap", "table": "snapshots", "mode": "full"},
+    ],
+}
+
+
+def test_drift_names_each_extra_table_and_where_it_is_written() -> None:
+    found = drift(STREAM, "cdc", ["pageviews", "visitors", "sessions"], [])
+    assert list(found.extra) == ["clicks"] and list(found.missing) == ["sessions"]
+    assert found.places["clicks"] == ["`tables:` of export `analytics_cdc`", "`load.tables.clicks`"]
+    assert "captures clicks" in found.text(Path("/c/analytics.yaml"))
+
+
+def test_no_drift_when_the_config_captures_what_the_file_says() -> None:
+    assert not drift(STREAM, "cdc", ["*"], [])
+    assert not drift(STREAM, "cdc", [], ["*_old"])
+    assert drift(STREAM, "cdc", [], ["clicks"]).extra == ["clicks"]
+
+
+def test_a_batch_source_compares_its_batch_exports_by_schema_less_name() -> None:
+    doc = {"exports": [{"name": "dbo_orders", "table": "dbo.orders"}, {"name": "dbo_users", "table": "dbo.users"}]}
+    found = drift(doc, "batch", ["orders"], [])
+    assert list(found.extra) == ["dbo.users"] and found.places["dbo.users"] == ["export `dbo_users`"]

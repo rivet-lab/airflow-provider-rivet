@@ -187,6 +187,9 @@ $DC exec -T airflow-scheduler airflow dags unpause "rivet_${name}_cdc"  # until:
 $DC exec -T airflow-scheduler airflow dags list-import-errors          # then: No data found
 ```
 
+Once the streams run, the DAG file can become [one YAML file](dags-from-file.md) with the same DAG ids, state folders and
+task ids; see [Moving from `build_cdc_dag`](dags-from-file.md#moving-from-build_cdc_dag) for the state database's name.
+
 ## 6. The first run
 
 Unpause one DAG at a time (step 5). Unpausing starts the latest interval at once, so do not also press Trigger.

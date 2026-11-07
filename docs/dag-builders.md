@@ -1,6 +1,7 @@
 # DAG builders
 
-`build_batch_dag`, `build_cdc_dag` and `build_config_dag` build whole DAGs from the operators.
+`build_batch_dag`, `build_cdc_dag` and `build_config_dag` build whole DAGs from the operators; `build_source_dags` builds
+one DAG per source database, and [`build_dags_from_file`](dags-from-file.md) builds them from one YAML file.
 
 ## DAG builders
 
@@ -216,7 +217,7 @@ the streams running side by side. A batch DAG takes init's suggested mode per ta
 two names, or a `config_dir` and `state_root` per mode, and a batch DAG over a config that has a `mode: cdc` export is
 refused (below). Oracle CDC signs in as a common user (`c##…`) that LogMiner
 lets mine, with `--schema` naming the tables' owner. `init_args` are one list for every name of a call: sources that need other flags
-(`--tls require` for SQL Server, `--schema`) go in a call of their own. So
+(`--tls require` for SQL Server, `--schema`) go in a call of their own, or in [one file](dags-from-file.md). So
 unpausing runs `init` at once, and the stream starts at the next scheduled run (or trigger one).
 
 - The config folder must be one the scheduler (Airflow 3: the dag-processor) and every worker read, as the DAGs
@@ -243,3 +244,12 @@ unpausing runs `init` at once, and the stream starts at the next scheduled run (
   comparison with Airflow's Secret Manager backend are in
   [Connections and secrets](connections-and-secrets.md#one-variable-per-source-the-secret-name-at-task-run-time).
 - The DAG file reads only files: no database is reached while the scheduler parses it.
+- `state_database` (default `"rivet_state_{name}"`) names each source's state database on the server of
+  `state_connection`; `None` uses the database the Connection names itself, as `build_cdc_dag` did. A `run` task whose
+  named database holds no table while the stream's checkpoint exists is refused with
+  `RIVET_AIRFLOW_STATE_DATABASE_MISMATCH` ([Moving from `build_cdc_dag`](dags-from-file.md#moving-from-build_cdc_dag)).
+- `include` and `exclude` are `rivet init`'s table globs (`--include` / `--exclude`, refused in `init_args` beside them);
+  once the config exists, a config that differs from them gets the `spec_drift` and `spec_checked` tasks
+  ([Changing include and exclude](dags-from-file.md#changing-include-and-exclude-after-the-config-exists)).
+- Different settings per source (a dataset, globs, TLS, a schedule) are one call per source; the
+  [sources file](dags-from-file.md) does that for you.

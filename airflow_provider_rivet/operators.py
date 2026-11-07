@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -50,7 +51,9 @@ from .invocation import (
     worker_environment,
 )
 from .preflight import PreflightRefusal, read_config, resolve_binary
+from .reading import _json_of
 from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
+from .sources import drift
 from .tasklog import TaskLog
 
 T = TypeVar("T")
@@ -439,6 +442,72 @@ class RivetCdcRunOperator(RivetBaseOperator):
     needs_export = True
     ui_color = "#e6f4ea"
 
+    def _environment(self, secrets: Path) -> dict[str, str]:
+        """The subprocess environment, once the state database the task names is known to be the stream's own."""
+        env = super()._environment(secrets)
+        self._refuse_empty_state_of_a_started_stream()
+        return env
+
+    def _refuse_empty_state_of_a_started_stream(self) -> None:
+        """Refuse a state database the task names in place of its Connection's own (`build_source_dags`'s
+        `rivet_state_<name>`) when it holds no table while the stream's checkpoint exists: the stream ran on another
+        state, most likely the Connection's own database (a DAG moved from `build_cdc_dag`), and rivet would start its
+        state over in the empty one."""
+        ref = (self.env_from_connections or {}).get("RIVET_STATE_URL")
+        ref = database_ref(ref) if ref else {}
+        database = ref.get("database")
+        if not database or not self.state_dir:
+            return
+        conn = self._database({**ref, "database": None})
+        own = conn.schema
+        if not own or own == database:
+            return
+        doc = self._config_doc()
+        entry = next((e for e in entries_of(doc) if name_of(e) == self.export), None)
+        cdc = entry.get("cdc") if entry else None
+        ref_path = cdc.get("checkpoint") if isinstance(cdc, Mapping) else None
+        if not ref_path:
+            return
+        checkpoint = Path(str(ref_path))
+        checkpoint = checkpoint if checkpoint.is_absolute() else Path(self.state_dir) / checkpoint
+        if not checkpoint.is_file() or not checkpoint.stat().st_size:
+            return
+        tables = self._table_count(with_database(conn, database))
+        if tables is None or tables:
+            return
+        raise PreflightRefusal(
+            Code.STATE_DATABASE_MISMATCH,
+            f"the state database `{database}` this task names (on the server of Connection `{ref['conn_id']}`) has no "
+            f"table, while the stream's checkpoint {checkpoint} exists: the stream ran on another state, and the "
+            f"Connection names the database `{own}`. rivet would start the state over in the empty one. If the state "
+            f"is in `{own}` (a DAG moved from build_cdc_dag), use it: `state_database: connection` for this source in "
+            f"the sources file, or build_source_dags(state_database=None); to keep `{database}`, copy the state into it "
+            f"first (pg_dump {own} | psql {database}); see docs/dags-from-file.md",
+        )
+
+    def _table_count(self, conn: Any) -> int | None:
+        """The number of tables of a PostgreSQL database outside the system schemas, or None when it cannot be read
+        (no psycopg2, no such database, no access): rivet then meets the database as it is."""
+        try:
+            import psycopg2
+        except ImportError:
+            self.log.warning("psycopg2 is not installed: the state database `%s` was not checked for tables", conn.schema)
+            return None
+        try:
+            db = psycopg2.connect(connection_url(conn))
+        except psycopg2.Error:
+            return None
+        try:
+            with db.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else None
+        finally:
+            db.close()
+
 
 class RivetLoadOperator(RivetBaseOperator):
     """`rivet load` for one export, and one table when asked."""
@@ -507,6 +576,27 @@ def check_mode(mode: str) -> None:
         raise ValueError("`mode` is 'cdc' or 'batch'")
 
 
+def check_writable(folder: Path) -> None:
+    """Raise `_InitFailed` naming the remedy when this process cannot create a file in `folder` (made if missing)."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        handle, probe = tempfile.mkstemp(dir=folder, prefix=".rivet-airflow-probe-")
+        os.close(handle)
+        os.unlink(probe)
+    except OSError as exc:
+        owner = next(p for p in (folder, *folder.parents) if p.exists())
+        st = owner.stat()
+        uid, gid = os.getuid(), os.getgid()
+        raise _InitFailed(
+            f"{folder} is not writable by this worker (uid {uid}, gid {gid}: {exc.strerror or exc}), so `rivet init` "
+            f"could not write the config there; {owner} is owned by uid {st.st_uid}, gid {st.st_gid}, mode "
+            f"{st.st_mode & 0o7777:o}. On the host, give the worker's user or its group write access, e.g. "
+            f"`sudo chown -R {uid}:0 <folder> && sudo chmod -R g+w <folder>` (the official Airflow image runs as "
+            "AIRFLOW_UID, 50000 by default, in group 0), not a world-writable folder; nothing was written",
+            _refusal(),
+        ) from None
+
+
 def _refusal() -> ErrorObject:
     """The error object of a refusal the init makes itself: rivet's `refusal` class, never retried."""
     return ErrorObject(code=None, kind=None, class_="refusal", exit_code=None, retryable=False, action=None)
@@ -554,8 +644,16 @@ class RivetInitOperator(_RivetTask):
                 target,
             )
             return {"config": str(target), "written": False}
+        self._writable_or_failed(ti, target.parent)
         env, binary = self._guarded(ti, lambda: self._prepared(secrets))
         return self._guarded(ti, lambda: self._written(ti, target, env, binary))
+
+    def _writable_or_failed(self, ti: Any, folder: Path) -> None:
+        """Fail without a retry, before the state database or rivet, when this worker cannot write the config's folder."""
+        try:
+            check_writable(folder)
+        except _InitFailed as failure:
+            self._failed(ti, failure)
 
     def _prepared(self, secrets: Path) -> tuple[dict[str, str], str]:
         """The environment and the rivet binary `init` runs with, the state database created first."""
@@ -674,6 +772,94 @@ class RivetInitOperator(_RivetTask):
             self.log.info("export %s (%s)%s", e["name"], e["mode"], f": {', '.join(e['tables'])}" if e["tables"] else "")
         self.log.info("%s written; the next DAG parse replaces this task with the rivet tasks it describes", target)
         return {"config": str(target), "written": True, "exports": exports}
+
+
+class RivetSpecDriftOperator(RivetInitOperator):
+    """Compares a source's config with the include and exclude its sources file names. When they differ and the stream
+    has not started (no checkpoint file, no run in rivet's run ledger), it writes the config again with `rivet init`,
+    keeps the old one in `<config folder>/.replaced/`, and skips the rest of the run, so the next parse builds the DAG of
+    the new config. When it has started, it fails without a retry naming each place to edit, and the stream goes on."""
+
+    template_fields: Sequence[str] = ("config", "state_dir", "init_args", "include", "exclude")
+    ui_color = "#fef7e0"
+
+    def __init__(self, *, include: Sequence[str] = (), exclude: Sequence[str] = (), **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.include = list(include)
+        self.exclude = list(exclude)
+
+    def _run_with_secrets(self, ti: Any, run_id: str, task_part: str, secrets: Path) -> dict[str, Any]:
+        """Compare, then rewrite the config of a stream that has not started or name what to edit in one that has."""
+        target = Path(self.config)
+        doc = self._guarded(ti, lambda: read_config(str(target)))
+        found = drift(doc, self.mode, self.include, self.exclude)
+        if not found:
+            self.log.info("%s matches the include and exclude of the sources file", target)
+            return {"config": str(target), "drift": False}
+        self.log.warning("%s", found.text(target))
+        self._writable_or_failed(ti, target.parent)
+        env, binary = self._guarded(ti, lambda: self._prepared(secrets))
+        started = self._started(doc, env, binary)
+        if started:
+            self._failed(
+                ti,
+                _InitFailed(
+                    f"{found.text(target)}. The include and exclude of the sources file are applied by `rivet init`, and "
+                    f"the stream has started ({'; '.join(started)}), so the config is not written again: edit it at "
+                    "the places named (the DAG follows at the next parse; `rivet check` it first), or give the "
+                    "sources file the tables the config captures. The stream's other tasks run as before",
+                    _refusal(),
+                ),
+            )
+        aside = target.parent / ".replaced" / f"{target.stem}.{datetime.now(UTC):%Y%m%dT%H%M%SZ}.yaml"
+        aside.parent.mkdir(exist_ok=True)
+        os.replace(target, aside)
+        try:
+            out = self._guarded(ti, lambda: self._written(ti, target, env, binary))
+        except BaseException:
+            if not config_present(target):
+                os.replace(aside, target)
+            raise
+        tables = sorted({t for e in out.get("exports") or () for t in e["tables"]})
+        raise AirflowSkipException(
+            f"{target} written again by `rivet init` with the include and exclude of the sources file "
+            f"({', '.join(tables) or 'no table'}); the old config is {aside}. The rest of this run is skipped: the next "
+            "parse builds the DAG of the new config, and its next run starts the stream"
+        )
+
+    def _started(self, doc: Mapping[str, Any], env: Mapping[str, str], binary: str) -> list[str]:
+        """What says the stream has started: a checkpoint file of an export in the state folder, a run in rivet's run
+        ledger, or a ledger that could not be read."""
+        out = []
+        for entry in entries_of(doc):
+            cdc = entry.get("cdc")
+            ref = cdc.get("checkpoint") if isinstance(cdc, Mapping) else None
+            if ref:
+                path = Path(str(ref))
+                path = path if path.is_absolute() else Path(self.state_dir or Path(self.config).parent) / path
+                if path.exists():
+                    out.append(f"the checkpoint {path} exists")
+        runs = self._runs(env, binary)
+        if runs is None:
+            out.append("rivet's run ledger could not be read (`rivet state runs`; its output is above)")
+        elif runs:
+            out.append(f"rivet's run ledger has a run ({runs[0].get('run_id') if isinstance(runs[0], dict) else runs[0]})")
+        return out
+
+    def _runs(self, env: Mapping[str, str], binary: str) -> list[Any] | None:
+        """The latest run of rivet's run ledger (`rivet state runs --json`), or None when rivet could not say."""
+        work = Path(self.state_dir or Path(self.config).parent) / ".init"
+        work.mkdir(parents=True, exist_ok=True)
+        stdout, stderr = work / "state-runs.json", work / "state-runs.log"
+        argv = [binary, "state", "runs", "--config", str(self.config), "--json", "--last", "1"]
+        with stdout.open("w") as out, stderr.open("w") as err:
+            code = spawn(argv, out, err, env, str(work), self._hold)
+        for line in stderr.read_text(errors="replace").splitlines():
+            self.log.info(
+                "%s", line
+            )  # pragma: no mutate - info(line) is the same line: a logger formats no message given no args
+        runs = _json_of(stdout.read_bytes()) if code == 0 else None
+        return runs if isinstance(runs, list) else None
 
 
 class RivetWaveBarrier(BaseOperator):

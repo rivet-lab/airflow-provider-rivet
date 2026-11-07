@@ -7,6 +7,31 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Added
 
+- **DAGs from one file**: `build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml"))` builds one DAG per source of a YAML file, as
+  `build_source_dags` builds each (same DAG ids, task ids, configs and state folders), so a new source is one line and
+  no Python. Each source takes the template's settings (`template:`, the GCS bucket, BigQuery project and TLS mode of
+  a source's existing config) under `defaults` under its own; `{name}` is replaced in every value. Typed settings for
+  `rivet init` (`include`, `exclude`, `tls`, `tls_ca`, `schema`, `gcs_bucket`, `bigquery_project`, `bigquery_dataset`,
+  plus `init_args`), `state_database`, the DAG's `schedule` / `start_date` / `catchup` / `tags`, `cloud_credentials`,
+  `env_from_variables`. The file is read strictly: every refusal names `file:line:column` and what was meant (an unknown
+  key with the closest one, a placeholder other than `{name}`, a glob starting with `*` that YAML reads as an alias,
+  typographic quotes, no-break spaces, tabs, a key written twice, shell lines a heredoc swallowed). A source that
+  cannot be built is a DAG of one failing task, `RIVET_AIRFLOW_SOURCES_FILE_REFUSED`, and the others are built. JSON
+  Schema for editors: `airflow_provider_rivet/schemas/rivet-sources.schema.json`. Guide: `docs/dags-from-file.md`
+  (with moving from `build_cdc_dag`, the leftovers of a failed first run, and the version of each function); example:
+  `examples/rivet_sources.yaml` and `examples/rivet_sources.py`.
+- `build_source_dags(state_database=..., include=..., exclude=...)`: the state database's name (`None`: the Connection's
+  own, as `build_cdc_dag`), and `rivet init`'s table globs. Once the config exists, a config that captures a table the
+  globs leave out (or misses one an include names literally) gets `spec_drift` -> `spec_checked` before the stream:
+  while the stream has not started (no checkpoint file, no run in `rivet state runs`), `spec_drift` writes the config
+  again with `rivet init` (the old one kept in `<config_dir>/.replaced/`) and skips the rest of the run; once it has,
+  it fails without a retry naming each place the config writes the table, and the stream goes on.
+- A CDC `run` task refuses a state database it names in place of its Connection's own (`rivet_state_<name>`) that has
+  no table while the stream's checkpoint exists (`RIVET_AIRFLOW_STATE_DATABASE_MISMATCH`): a stream moved from
+  `build_cdc_dag` whose Connection names another database would otherwise start its state over.
+- `init` checks that it can write the config folder before it creates the state database or runs rivet, and names the
+  worker's uid and gid, the folder's owner and mode, and the `chown` / `chmod g+w` remedy.
+
 - Guard: seeded-defect recall. `dev/seeded/seeds.yaml` holds one seed per confirmed bug whose fix is merged (the fix's product diff inverted, its tests left out); `python -m dev.seeded` reports each seed CAUGHT, MISSED or STALE, and the `seeded` CI job runs it on pull requests that touch `airflow_provider_rivet/`, `tests/` or `gate/`. Bugs with no seed are in `dev/seeded/unseeded.yaml`. Two tests were strengthened or added for seeds the first run missed (the refusal's remedy names its source; a config written meanwhile is reported as not written). No product code changes.
 - Repo guards: `dev/pr_ready.py` (the PR rules, run by the `PR rules` workflow and by the pre-push hook) refuses a commit or PR with an attribution trailer, a prose comment on an added line under the package, tests, `dev/` or `gate/`, more than 50 deleted files without a `push-guard: allow-deletes N` declaration, a raised `.mutmut-ratchet` without a dated entry and a `Ratchets raised` line in the PR body, and a package change without a CHANGELOG entry. The deletion ceiling moved there from `dev/push_guard.py`, which is gone. `tests/test_mutmut_shape.py` runs the source-reading guards on a mutmut-shaped copy of the package, so a mutant run cannot red them. No product code changes.
 

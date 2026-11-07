@@ -139,6 +139,12 @@ RIVET_AIRFLOW_QUERY_FILE:
   slack: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   xcom: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   retry: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+RIVET_AIRFLOW_SOURCES_FILE_REFUSED:
+  exception: 'test: tests/test_failure_surfaces.py::test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry'
+  task_log: 'test: tests/test_failure_surfaces.py::test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry'
+  slack: 'test: tests/test_failure_surfaces.py::test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry'
+  xcom: 'test: tests/test_failure_surfaces.py::test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry'
+  retry: 'test: tests/test_failure_surfaces.py::test_a_config_refused_dag_publishes_its_refusal_and_fails_without_retry'
 RIVET_AIRFLOW_STATE_BESIDE_CONFIG:
   exception: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   task_log: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
@@ -146,6 +152,12 @@ RIVET_AIRFLOW_STATE_BESIDE_CONFIG:
   xcom: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   retry: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
 RIVET_AIRFLOW_STATE_DATABASE:
+  exception: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+  task_log: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+  slack: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+  xcom: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+  retry: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
+RIVET_AIRFLOW_STATE_DATABASE_MISMATCH:
   exception: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   task_log: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'
   slack: 'test: tests/test_failure_surfaces.py::test_a_refusal_before_rivet_is_on_every_surface'

@@ -37,6 +37,18 @@ def tables_of(entry: Mapping[str, Any]) -> list[str]:
     return [str(_yaml.text_of(t)) for t in named]
 
 
+def lists_tables(entry: Mapping[str, Any]) -> bool:
+    """Whether the export names its tables as a `tables:` list (a stream of several), not one `table:`."""
+    return bool(entry.get("tables"))
+
+
+def load_tables(config: Mapping[str, Any]) -> list[str]:
+    """The tables the `load:` section configures one by one (`load.tables.<table>`), by name."""
+    load = config.get("load")
+    tables = load.get("tables") if isinstance(load, Mapping) else None
+    return [str(_yaml.text_of(t)) for t in tables] if isinstance(tables, Mapping) else []
+
+
 def entry_named(config: Mapping[str, Any], export: str | None) -> Mapping[str, Any] | None:
     """The export entry with this name, or None."""
     return next((e for e in entries_of(config) if name_of(e) == export), None)
