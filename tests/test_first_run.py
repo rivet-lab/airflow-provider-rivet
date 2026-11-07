@@ -662,7 +662,7 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     assert isinstance(refused, AirflowFailException) and "failed: include and exclude;" in str(refused)
     captured = capfd.readouterr()
     logged = captured.out + captured.err + caplog.text
-    assert "include and exclude" in logged and "captures customers" in logged
+    assert f"{init.config} captures customers" in logged
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("pos")
