@@ -877,7 +877,7 @@ class RivetPreflightOperator(_SourceTask):
     def _drift(self, doc: Mapping[str, Any], started: bool) -> Check:
         """Whether the config captures the tables the include and exclude of the sources file name; `rivet init` applies
         them only when it writes the config. A FAIL while the stream has not started (nothing to lose), else a WARN."""
-        skipped = skipped_by_init(Path(self.config).read_text(errors="replace"))
+        skipped = skipped_by_init(Path(self.config).read_text())
         found = drift(doc, self.mode, self.include, self.exclude, skipped)
         if not found:
             return Check("include and exclude", PASS, "the config captures what the sources file names")
