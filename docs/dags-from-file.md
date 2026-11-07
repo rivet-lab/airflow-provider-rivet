@@ -85,7 +85,7 @@ Settings (in `defaults` and under a source; a source's own win, and `defaults` w
 | `stream_stderr` | `false` stops copying rivet's stderr lines into the task log as they come; default `true` |
 
 `{name}` is the one placeholder, in any text value. Callbacks and other Python values are given to every source as
-arguments: `build_dags_from_file("rivet_sources.yaml", operator_kwargs={"rivet_bin": ...}, on_failure_callback=...)`;
+arguments: `build_dags_from_file(path, operator_kwargs={"rivet_bin": ...}, on_failure_callback=...)`;
 what the file says wins over them.
 
 **`template`.** A new source usually writes to the same bucket and project, and reaches its server the same way, as a
