@@ -5,6 +5,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ## Unreleased
 
+## 0.4.0 (2026-11-07)
+
 ### Added
 
 - **DAGs from one file**: `build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml"))` builds one DAG per source of a YAML file, as
@@ -81,27 +83,19 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   statement timeout of a one-table source's baseline (one `SELECT` of the whole table, stopped at 300 s), and `init`
   left in the grid below `watcher` (a task of the DAG's first version).
 
-### Changed (behaviour change)
-
-- Preflight: the state database, PostgreSQL and MySQL probes try to connect three times, 1s then 2s apart, before they
-  fail; a failure says `cannot connect after 3 tries`.
-- Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
-  `_RivetTask._guarded`; the busy-lock retry of the ADR-0039 tasks and the init failure of `RivetInitOperator` stay with
-  their own task. No output changes.
-- DAG builders: the batch DAG and each CDC stream build their `load` and `compact` groups through one helper; the DAG's
-  own settings, the refused DAG of a config that cannot be built, and the `mode` check are one function each. No DAG
-  shape changes.
-- Refusal codes and task-log event names are the members of `airflow_provider_rivet.codes.Code` and
-  `airflow_provider_rivet.events.Event` (a `StrEnum`, so their text and JSON are unchanged). No output changes.
-
-- A release publishes to PyPI only after the live gate passes on its tag: `release.yml` calls `gate.yml`, and `publish` needs both the build and the gate.
-- `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
-  `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
-  schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.
-
-- The places a task writes are URLs to paste: `gs://bucket/prefix/`, not `gcs://`.
-- `examples/rivet_cdc_per_source.py` is deprecated in favour of `build_dags_from_file`.
-- The folders and the config a task creates are group-writable (`g+w`, the config `0o664`), never world-writable.
+- A source can name its URL or password by a Google Secret Manager secret: `url_secret` (in place of `url`, `url_env`
+  or `url_file`) and `password_secret` (in place of `password` or `password_env`), read by rivet with the credential the
+  GCS and BigQuery legs use. A DAG built from such a config reads no source Connection. A task whose rivet is older than
+  0.33.0, the release that ships these keys, is refused before it starts, naming the version needed
+  (`RIVET_AIRFLOW_BINARY_TOO_OLD`). The guide is
+  "Source credentials from Google Secret Manager" in `docs/connections-and-secrets.md`.
+- `password_secret` without `url_env` (the host, user and database written in the config) reads no source Connection either,
+  as `url_secret` does; with `url_env` the Connection still supplies the URL.
+- `env_from_variables` on every rivet task (`_RivetTask`) and on `build_source_dags`: an environment variable filled from an
+  Airflow Variable, read when the task runs and never at parse, so a source's secret name lives in its own Variable
+  (`rivet_{name}_url_secret`) and `url_secret: ${RIVET_SOURCE_URL_SECRET}` names it. A Variable no backend defines is refused
+  with `RIVET_AIRFLOW_VARIABLE_MISSING` for that source's tasks only. The flow, the IAM grant per secret and the comparison
+  with Airflow's `CloudSecretManagerBackend` are in `docs/connections-and-secrets.md`.
 
 ### Fixed
 
@@ -182,26 +176,6 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 - A Connection host that holds `@`, `/`, `?`, `#`, `\` or whitespace (outside an IPv6 literal) rewrote the URL and
   could drop its `sslmode` or send the password to another host; it is now refused `RIVET_AIRFLOW_CONNECTION_UNSUPPORTED`,
   as a host holding `:` is, and the refusal does not show the host.
-
-## 0.4.0 (2026-10-30)
-
-### Added
-
-- A source can name its URL or password by a Google Secret Manager secret: `url_secret` (in place of `url`, `url_env`
-  or `url_file`) and `password_secret` (in place of `password` or `password_env`), read by rivet with the credential the
-  GCS and BigQuery legs use. A DAG built from such a config reads no source Connection. A task whose rivet is older than
-  0.33.0, the release that ships these keys, is refused before it starts, naming the version needed
-  (`RIVET_AIRFLOW_BINARY_TOO_OLD`). The guide is
-  "Source credentials from Google Secret Manager" in `docs/connections-and-secrets.md`.
-- `password_secret` without `url_env` (the host, user and database written in the config) reads no source Connection either,
-  as `url_secret` does; with `url_env` the Connection still supplies the URL.
-- `env_from_variables` on every rivet task (`_RivetTask`) and on `build_source_dags`: an environment variable filled from an
-  Airflow Variable, read when the task runs and never at parse, so a source's secret name lives in its own Variable
-  (`rivet_{name}_url_secret`) and `url_secret: ${RIVET_SOURCE_URL_SECRET}` names it. A Variable no backend defines is refused
-  with `RIVET_AIRFLOW_VARIABLE_MISSING` for that source's tasks only. The flow, the IAM grant per secret and the comparison
-  with Airflow's `CloudSecretManagerBackend` are in `docs/connections-and-secrets.md`.
-
-### Fixed
 
 - A batch DAG of `build_source_dags` or `build_config_dag` over a config with an export whose
   `mode: ${VAR}` may resolve to `cdc` was built, though preflight already treated that export as CDC; it is now
@@ -287,6 +261,26 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   now cut by bytes, and the hash keeps two long names apart. Names under the limit are unchanged.
 
 ### Changed (behaviour change)
+
+- Preflight: the state database, PostgreSQL and MySQL probes try to connect three times, 1s then 2s apart, before they
+  fail; a failure says `cannot connect after 3 tries`.
+- Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
+  `_RivetTask._guarded`; the busy-lock retry of the ADR-0039 tasks and the init failure of `RivetInitOperator` stay with
+  their own task. No output changes.
+- DAG builders: the batch DAG and each CDC stream build their `load` and `compact` groups through one helper; the DAG's
+  own settings, the refused DAG of a config that cannot be built, and the `mode` check are one function each. No DAG
+  shape changes.
+- Refusal codes and task-log event names are the members of `airflow_provider_rivet.codes.Code` and
+  `airflow_provider_rivet.events.Event` (a `StrEnum`, so their text and JSON are unchanged). No output changes.
+
+- A release publishes to PyPI only after the live gate passes on its tag: `release.yml` calls `gate.yml`, and `publish` needs both the build and the gate.
+- `build_cdc_dag` names a table's load and compact tasks by the warehouse table, as `build_config_dag` does:
+  `load.dbo.orders` is now `load.dbo_orders` (`compact.dbo_orders` likewise). A DAG built with `build_cdc_dag` over a
+  schema-qualified table has new task ids: clear its history or rename the tasks before it runs again.
+
+- The places a task writes are URLs to paste: `gs://bucket/prefix/`, not `gcs://`.
+- `examples/rivet_cdc_per_source.py` is deprecated in favour of `build_dags_from_file`.
+- The folders and the config a task creates are group-writable (`g+w`, the config `0o664`), never world-writable.
 
 - **Behaviour change.** The quickstart's DAG file refused a pipeline whose config has more than one `mode: cdc` stream
   (#98, because it built only the first). It now builds every stream: one DAG per pipeline with a group per stream
