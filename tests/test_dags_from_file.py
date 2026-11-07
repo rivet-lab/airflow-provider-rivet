@@ -125,6 +125,9 @@ def test_preflight_carries_the_include_and_exclude_it_compares_the_config_with(t
     check = parse(folder)["rivet_analytics_cdc"].get_task("preflight")
     assert (check.include, check.exclude) == (["pageviews", "visitors"], [])
     assert check.downstream_task_ids == {"run", "watcher"}
+    spec = SOURCES_FILE.replace("    include: [pageviews, visitors]", "    exclude: [clicks]")
+    check = parse(dags_folder(tmp_path / "x", spec, shop="a", analytics="pageviews"))["rivet_analytics_cdc"].get_task("preflight")
+    assert (check.include, check.exclude) == ([], ["clicks"])
 
 
 def test_a_relative_sources_file_is_refused_naming_the_absolute_form(tmp_path: Path) -> None:
