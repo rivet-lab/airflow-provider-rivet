@@ -417,7 +417,7 @@ def read_sources_file(path: str | Path) -> SourcesFile:
     pasted = list(_pasted(path, text))
     if pasted:
         raise SourcesFileError("\n".join(pasted))
-    doc, marks = _composed(path, text.lstrip("﻿"))
+    doc, marks = _composed(path, text)
     errors = _schema_errors(path, doc, marks) + _placeholders(path, doc, marks)
     if errors:
         raise SourcesFileError("\n".join(errors))

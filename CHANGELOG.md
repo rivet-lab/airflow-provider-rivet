@@ -127,6 +127,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   when the Connection's own database holds rivet's `export_state` (`RIVET_AIRFLOW_STATE_DATABASE_MISMATCH`).
 - A bucket in a region inside the dataset's multi-region (or the reverse) is no longer a location warning.
 - A YAML alias of an anchor in a sources file is refused as one, not as an unquoted glob.
+- A missing state database the Connection names itself no longer suggests `ALTER ROLE … CREATEDB` to a role that has
+  it: `init` creates only a state database it names.
 
 - `format_title` called as 0.3.0's `docs/slack.md` documents it (no `try_number`, `max_tries`) works again and reads
   final / retryable from the error object, as 0.3.0 did; it raised `TypeError` since the retry word followed Airflow's

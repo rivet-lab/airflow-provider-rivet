@@ -125,6 +125,15 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
         return [Check(name, PASS, f"{where} exists; every task of this source reads and writes its state there")]
     if database and can_create:
         return [Check(name, PASS, f"{where} does not exist yet; `init` creates it (the role may CREATEDB)")]
+    if can_create:
+        return [
+            Check(
+                name,
+                FAIL,
+                f"{where} does not exist; `init` creates only a state database it names",
+                f'CREATE DATABASE "{target}";',
+            )
+        ]
     return [
         Check(
             name,

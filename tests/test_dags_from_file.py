@@ -116,9 +116,16 @@ def test_the_one_line_dag_file_builds_a_dag_per_source_from_the_file_beside_it(t
         "database": "rivet_state_shop",
     }
     assert run.config == str(folder / "rivet" / "shop.yaml")
+    assert run.stream_stderr is True
     for dag in dags.values():
         assert getattr(dag, "is_paused_upon_creation", None) is True
-        assert dag.start_date.year == 2026 and dag.start_date.month == 10
+        assert (dag.start_date.year, dag.start_date.month, dag.start_date.day) == (2026, 10, 1)
+        assert (getattr(dag, "schedule", None) or getattr(dag, "schedule_interval", None)) == "0 4-18/2 * * *"
+    own = "  extra:\n    tags: [x]\n    preflight: false\n    stream_stderr: false\n"
+    other = dags_folder(tmp_path / "own", SOURCES_FILE + own, shop="a", extra="a")
+    extra = build_dags_from_file(other / "rivet_sources.yaml", operator_kwargs={"rivet_bin": "/x"})["rivet_extra_cdc"]
+    assert sorted(extra.tags) == ["cdc", "rivet", "x"] and "preflight" not in extra.task_ids
+    assert (extra.get_task("run").stream_stderr, extra.get_task("run").rivet_bin) == (False, "/x")
 
 
 def test_preflight_carries_the_include_and_exclude_it_compares_the_config_with(tmp_path: Path) -> None:
@@ -143,6 +150,24 @@ def test_a_source_with_no_config_waits_for_the_template_s_config(tmp_path: Path)
     refused = dags["rivet_analytics_cdc"].get_task("config")
     assert refused.code == "RIVET_AIRFLOW_SOURCES_FILE_REFUSED"
     assert "template `shop`" in refused.refusal and "run the DAG of `shop` first" in refused.refusal
+    built = parse(dags_folder(tmp_path / "own", billing="a"))
+    assert "run" in built["rivet_billing_cdc"].task_ids and "config" in built["rivet_analytics_cdc"].task_ids
+
+
+def test_a_source_that_cannot_be_built_is_one_refused_task_and_the_others_build(tmp_path: Path) -> None:
+    folder = dags_folder(tmp_path, shop="a", analytics="pageviews")
+    (folder / "rivet" / "billing.yaml").mkdir()
+    dags = parse(folder)
+    refused = dags["rivet_billing_cdc"].get_task("config")
+    assert (refused.code, sorted(dags["rivet_billing_cdc"].task_ids)) == ("RIVET_AIRFLOW_SOURCES_FILE_REFUSED", ["config"])
+    assert f"source `billing` of {folder / 'rivet_sources.yaml'}: IsADirectoryError: " in refused.refusal
+    assert "run" in dags["rivet_shop_cdc"].task_ids and "run" in dags["rivet_analytics_cdc"].task_ids
+
+
+def test_a_batch_sources_file_builds_batch_dags(tmp_path: Path) -> None:
+    dags = parse(dags_folder(tmp_path, "mode: batch\n" + SOURCES_FILE, shop="a"))
+    assert sorted(dags) == ["rivet_analytics_batch", "rivet_billing_batch", "rivet_shop_batch"]
+    assert dags["rivet_billing_batch"].get_task("init").mode == "batch"
 
 
 def test_a_file_this_reader_refuses_is_an_import_error_naming_the_line(tmp_path: Path) -> None:
