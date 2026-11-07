@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
@@ -17,7 +18,7 @@ from airflow.exceptions import AirflowFailException
 from conftest import FakeTI, Rig
 from test_source_dags import Init, connection, lookup
 
-from airflow_provider_rivet import checks
+from airflow_provider_rivet import checks, invocation, stderr
 from airflow_provider_rivet.checks import FAIL, PASS, SKIP, WARN, Check
 from airflow_provider_rivet.events import Event
 from airflow_provider_rivet.exports import slot_of
@@ -58,14 +59,27 @@ def test_the_follower_beats_with_the_time_run_the_size_and_the_time_since_the_fi
     follower, _, beats = follow(path, every=0.1)
     with follower:
         wait_for(lambda: len(beats) >= 2)
+        elapsed, size, idle = beats[-1]
+        assert size == 6 and elapsed >= idle > 0 and elapsed >= 0.1
+        time.sleep(0.3)
+        with open(path, "ab") as out:
+            out.write(b"678\n")
+        grown = len(beats)
+        wait_for(lambda: len(beats) >= grown + 2)
     elapsed, size, idle = beats[-1]
-    assert size == 6 and elapsed >= idle > 0 and elapsed >= 0.1
+    assert size == 10 and 0 < idle < elapsed - 0.25
 
 
-def test_without_lines_to_pass_the_follower_never_reads_the_file_only_its_size(tmp_path: Path) -> None:
+def test_without_lines_to_pass_the_follower_never_reads_the_file_only_its_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "err.log"
     path.write_bytes(b"secret-ish text\n")
-    path.chmod(0)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"opened {args}")
+
+    monkeypatch.setattr(stderr, "open", refuse, raising=False)
     follower, seen, beats = follow(path, every=0.1, lines=False)
     with follower:
         wait_for(lambda: beats)
@@ -93,6 +107,15 @@ def test_a_heartbeat_says_how_long_the_step_ran_and_only_the_first_says_how_to_f
         "rivet run running for 1m 1s; stderr 2.0 KiB, last written 4 s ago; follow it: tail -f /s/run.stderr.log",
         "rivet run running for 1h 2m; stderr 2.0 KiB, last written 2m 5s ago",
     ]
+    lines.clear()
+    unnamed = TaskLog("run", "orders", None, lambda level, text: lines.append((level, text)))
+    unnamed.record({"event": Event.START, "step": "run"})
+    unnamed.record({"event": Event.PROGRESS, "step": "run", "stderr_bytes": 0, "elapsed": 60.0, "idle": 3600.0})
+    unnamed.record({**beat, "elapsed": 59.9, "idle": 0.0})
+    assert [text for level, text in lines if level == logging.INFO] == [
+        "rivet run running for 1m 0s; stderr 0 B, last written 1h 0m ago",
+        "rivet run running for 59 s; stderr 2.0 KiB, last written 0 s ago; follow it: tail -f /s/run.stderr.log",
+    ]
 
 
 def test_a_long_rivet_step_writes_heartbeats_and_its_stderr_lines_into_the_task_log(rig: Rig, tmp_path: Path) -> None:
@@ -104,10 +127,21 @@ def test_a_long_rivet_step_writes_heartbeats_and_its_stderr_lines_into_the_task_
     assert any("connected to the source" in str(r) for r in rig.records)
 
 
-def test_progress_every_none_writes_no_heartbeat(rig: Rig, tmp_path: Path) -> None:
+def test_progress_every_none_writes_no_heartbeat(rig: Rig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rig.scenario(run={"sleep": 1.5, "started": str(tmp_path / "started")})
+    payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=0.5))
+    assert payload["decision"] == "success" and len(rig.events(Event.PROGRESS)) >= 1
+    rig.records.clear()
+    everies: list[float | None] = []
+
+    def spy(path: Path, on_line: Any, on_beat: Any, every: float | None) -> Follower:
+        everies.append(every)
+        return Follower(path, on_line, on_beat, every)
+
+    monkeypatch.setattr(invocation, "Follower", spy)
     payload, _ = rig.run(rig.operator(RivetRunOperator, export="users", progress_every=None))
     assert payload["decision"] == "success" and rig.events(Event.PROGRESS) == []
+    assert len(everies) >= 1 and set(everies) == {None}
 
 
 def test_a_shared_folder_and_its_missing_parents_are_group_writable_never_world_writable(tmp_path: Path) -> None:
@@ -217,6 +251,12 @@ def test_the_state_database_check_says_whether_it_exists_or_can_be_created(answe
         assert found.fix == 'CREATE DATABASE "rivet_state_shop"; or ALTER ROLE rivet CREATEDB;'
 
 
+def test_the_connection_s_own_database_missing_is_a_failure_even_for_a_role_that_may_create_databases() -> None:
+    answers = {EXISTS: None, CREATEDB: (True,)}
+    (found,) = checks.state(SERVER, None, "rivet_state", connect=lambda _: db_of(answers))
+    assert found.status == FAIL and found.fix.startswith('CREATE DATABASE "admin";')
+
+
 def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
     def refuse(_: Any) -> Any:
         raise OSError("timeout")
@@ -320,6 +360,10 @@ def test_a_replica_id_another_replica_uses_is_a_warning_and_no_id_yet_is_a_skip(
 def test_a_mysql_replica_without_log_replica_updates_fails() -> None:
     found = mysql({"SHOW REPLICA STATUS": [("primary",)], "SELECT @@global.log_replica_updates": (0,)})
     assert found["mysql log_replica_updates"].status == FAIL
+    on = mysql({"SHOW REPLICA STATUS": [("primary",)], "SELECT @@global.log_replica_updates": (1,)})
+    assert on["mysql log_replica_updates"] == Check(
+        "mysql log_replica_updates", PASS, "this server is a replica and log_replica_updates is 1"
+    )
 
 
 def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
@@ -335,6 +379,12 @@ def test_a_postgres_source_reports_wal_level_role_and_free_slots() -> None:
         "postgres replication slots": FAIL,
     }
     assert found["postgres wal_level"].fix == "ALTER SYSTEM SET wal_level = logical; then restart"
+    other = {
+        "SHOW wal_level": ("logical",),
+        "SELECT rolreplication OR rolsuper FROM pg_roles WHERE rolname = current_user": (False,),
+        "SELECT current_setting('max_replication_slots')::int - (SELECT count(*) FROM pg_replication_slots)": (3,),
+    }
+    assert [c.status for c in checks.postgres_source(SERVER, connect=lambda _: db_of(other))] == [PASS, FAIL, PASS]
     answers["SELECT array_agg(slot_name) FROM pg_replication_slots"] = (["rivet_shop"],)
     own = checks.postgres_source(SERVER, "rivet_shop", connect=lambda _: db_of(answers))[-1]
     assert own == Check("postgres replication slots", PASS, "the stream's slot `rivet_shop` exists")
@@ -633,21 +683,35 @@ def test_a_discovery_that_fails_is_a_warning_with_the_command_to_run_by_hand(ini
     ) in out["checks"]
 
 
-def test_a_state_root_that_is_not_there_stays_not_there(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_state_root_that_is_not_there_stays_not_there(
+    init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     root = init.tmp / "state"
+    line = (
+        f"FAIL state folder: {root} does not exist on this worker -> fix: mount the volume at this path in every Airflow service"
+    )
     for written in (False, True):
         if written:
             init.run(init_args=["--tls", "disable"])
         shutil.rmtree(root, ignore_errors=True)
+        capfd.readouterr()
+        caplog.clear()
         refused = preflight(init, monkeypatch)
         assert isinstance(refused, AirflowFailException) and "state folder" in str(refused)
+        assert levels_of(line, capfd.readouterr(), caplog.records) == {"error"}
         assert not root.exists()
 
 
 def test_preflight_of_a_written_config_does_not_discover_again(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     init.run(init_args=["--tls", "disable"])
-    preflight(init, monkeypatch)
+    out = preflight(init, monkeypatch)
     assert [c["argv"][:4] for c in init.calls() if "--discover" in c["argv"]] == []
+    assert f"PASS rivet check: {init.config} checks clean" in out["checks"]
+    init.spec(check_exit=5)
+    refused = preflight(init, monkeypatch)
+    assert isinstance(refused, AirflowFailException)
+    assert "preflight: 1 check(s) failed: rivet check; each line above says what to change" in str(refused)
 
 
 def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[tuple]:
@@ -679,6 +743,12 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
 
 
+def levels_of(line: str, captured: Any, records: list[logging.LogRecord]) -> set[str]:
+    logged = captured.out + captured.err
+    found = {m.lower() for m in re.findall(rf"\[(\w+) *\] {re.escape(line)}", logged)}
+    return found | {r.levelname.lower() for r in records if r.getMessage().startswith(line)}
+
+
 def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_warns_after(
     init: Init, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -695,12 +765,16 @@ def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_w
     logged = captured.out + captured.err + caplog.text
     assert f"{init.config} captures customers" in logged
     assert f"move {init.config} aside: the next run's `init` writes it again" in logged
+    assert levels_of("FAIL include and exclude", captured, caplog.records) == {"error"}
+    assert levels_of("PASS rivet binary", captured, caplog.records) == {"info"}
+    caplog.clear()
     checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("pos")
     warned = preflight(init, monkeypatch, include=["orders"])
     line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
     assert f"{init.config} captures customers" in line and line.endswith(" -> fix: edit the config at the places named")
+    assert levels_of("WARN include and exclude", capfd.readouterr(), caplog.records) == {"warning"}
 
 
 def test_a_stream_whose_config_names_no_checkpoint_only_warns_of_drift(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
