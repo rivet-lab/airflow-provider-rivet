@@ -3,6 +3,8 @@
 Put both files in the DAGs folder; adding a source is one line in the YAML file, no Python.
 """
 
+from pathlib import Path
+
 from airflow_provider_rivet.dags import build_dags_from_file
 
-globals().update(build_dags_from_file("rivet_sources.yaml"))
+globals().update(build_dags_from_file(Path(__file__).with_name("rivet_sources.yaml")))
