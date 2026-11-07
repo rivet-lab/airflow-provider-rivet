@@ -581,6 +581,11 @@ def test_batch_runs_and_loads_every_export(tmp_path: Path) -> None:
     (tmp_path / "shop.yaml").write_text(BATCH_CONFIG)
     dag = build(tmp_path, mode="batch")["rivet_shop_batch"]
     assert {t.task_id for t in dag.tasks} == {"apply.orders", "apply.customers", "load.orders", "load.customers", "watcher"}
+    checked = build(tmp_path, mode="batch", preflight=True)["rivet_shop_batch"]
+    check = checked.get_task("preflight")
+    assert (check.mode, check.retries) == ("batch", 0)
+    assert check.downstream_task_ids == {"apply.orders", "apply.customers", "watcher"}
+    assert {t.task_id for t in checked.tasks if not t.upstream_task_ids} == {"preflight"}
 
 
 def batch_tasks(tmp_path: Path, text: str) -> set[str]:
