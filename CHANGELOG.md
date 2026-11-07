@@ -115,6 +115,18 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   name that cannot be a `table:` shortcut) is not reported as missing; re-running init could never add it.
 - A source's own `init_args` flag (e.g. `--gcs-bucket`) wins over the value the `template:` gives: the sources file no
   longer turns into an import error once the template's config is written.
+- The preflight's MySQL probe dials TLS when the stream does (the config's `source.tls`, else `init_args --tls`): a
+  server that requires TLS no longer fails the probe with "cannot connect".
+- The MySQL grants check reads replication privileges only from grants `ON *.*` (`ALL PRIVILEGES` on one database no
+  longer passes) and knows MariaDB's names (`BINLOG MONITOR`, `REPLICATION REPLICA`).
+- The state TLS check reads `sslmode` from `rivet_params` too, as the URL rivet reads does; a state Connection with no
+  schema names the database PostgreSQL picks for its login instead of `None`; `::ffff:127.0.0.1` is remote, as rivet
+  reads it.
+- A MongoDB collection with a dot in its name is compared whole with `include`/`exclude`.
+- A `run` task of a stream whose config names no checkpoint (a PostgreSQL slot) refuses an empty state database too
+  when the Connection's own database holds rivet's `export_state` (`RIVET_AIRFLOW_STATE_DATABASE_MISMATCH`).
+- A bucket in a region inside the dataset's multi-region (or the reverse) is no longer a location warning.
+- A YAML alias of an anchor in a sources file is refused as one, not as an unquoted glob.
 
 - `format_title` called as 0.3.0's `docs/slack.md` documents it (no `try_number`, `max_tries`) works again and reads
   final / retryable from the error object, as 0.3.0 did; it raised `TypeError` since the retry word followed Airflow's

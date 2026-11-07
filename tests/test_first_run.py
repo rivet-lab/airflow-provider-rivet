@@ -217,6 +217,12 @@ def test_the_state_database_check_says_whether_it_exists_or_can_be_created(answe
         assert found.fix == 'CREATE DATABASE "rivet_state_shop"; or ALTER ROLE rivet CREATEDB;'
 
 
+def test_a_connection_with_no_schema_names_the_database_postgres_picks_for_its_login() -> None:
+    nameless = types.SimpleNamespace(host="pg", port=None, schema=None, login="rivet")
+    (found,) = checks.state(nameless, None, "rivet_state", connect=lambda _: db_of({EXISTS: None, CREATEDB: (False,)}))
+    assert found.detail.startswith("`rivet` on pg:5432") and found.fix.startswith('CREATE DATABASE "rivet";')
+
+
 def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
     def refuse(_: Any) -> Any:
         raise OSError("timeout")
@@ -240,6 +246,9 @@ def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
         ("127.8.0.1", {}, PASS),
         ("127.0.0.1,pg-state", {}, FAIL),
         ("127.evil.com", {}, FAIL),
+        ("::ffff:127.0.0.1", {}, FAIL),
+        ("pg-state", {"rivet_params": "application_name=a&sslmode=require"}, PASS),
+        ("pg-state", {"sslmode": "require", "rivet_params": "sslmode=prefer"}, FAIL),
     ],
 )
 def test_a_remote_state_server_needs_an_sslmode_rivet_dials(host: str, extra: dict, status: str) -> None:
@@ -309,6 +318,33 @@ def test_a_missing_mysql_grant_is_named_with_its_grant_statement() -> None:
     found = mysql({"SHOW GRANTS": [("GRANT SELECT ON `shop`.* TO `reader`@`%`",)]})["mysql grants"]
     assert found.status == FAIL and found.fix == "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'reader'@'%';"
     assert mysql({"SHOW GRANTS": [("GRANT ALL PRIVILEGES ON *.* TO `reader`@`%`",)]})["mysql grants"].status == PASS
+    on_one = mysql({"SHOW GRANTS": [("GRANT ALL PRIVILEGES ON `shop`.* TO `reader`@`%`",)]})["mysql grants"]
+    assert on_one.detail == "missing REPLICATION SLAVE, REPLICATION CLIENT"
+    mariadb = [("GRANT BINLOG MONITOR, REPLICATION REPLICA ON *.* TO `reader`@`%`",), ("GRANT SELECT ON `shop`.* TO `r`",)]
+    assert mysql({"SHOW GRANTS": mariadb})["mysql grants"].status == PASS
+
+
+@pytest.mark.parametrize(
+    ("driver", "tls", "asked"),
+    [
+        ("pymysql", "require", {"ssl": {"fake_flag_to_enable_tls": True}}),
+        ("MySQLdb", "verify-full", {"ssl_mode": "REQUIRED"}),
+        ("pymysql", "disable", {}),
+        ("pymysql", None, {}),
+    ],
+)
+def test_the_mysql_probe_dials_tls_as_the_stream_will(
+    monkeypatch: pytest.MonkeyPatch, driver: str, tls: str | None, asked: dict
+) -> None:
+    seen: list[dict] = []
+
+    def connect(**kwargs: Any) -> Any:
+        seen.append(kwargs)
+        raise OSError("no server")
+
+    monkeypatch.setattr(checks, "_optional", lambda *_: types.SimpleNamespace(__name__=driver, connect=connect))
+    checks.mysql_source(types.SimpleNamespace(host="my", port=3307, login="reader", password="pw"), None, tls=tls)
+    assert {k: v for k, v in seen[0].items() if k in ("ssl", "ssl_mode")} == asked
 
 
 def test_a_replica_id_another_replica_uses_is_a_warning_and_no_id_yet_is_a_skip() -> None:
@@ -417,6 +453,12 @@ def test_a_dataset_in_the_buckets_location_passes_after_a_table_is_created_and_d
     client = BigQuery("us")
     assert [c.status for c in checks.bigquery("p", "d", "US", client=client)] == [PASS]
     assert "CREATE TABLE `p.d._rivet_airflow_preflight_" in client.sql[0] and "DROP TABLE" in client.sql[0]
+
+
+def test_a_bucket_region_inside_the_dataset_s_multi_region_is_together() -> None:
+    assert [c.status for c in checks.bigquery("p", "d", "US-CENTRAL1", client=BigQuery("US"))] == [PASS]
+    assert [c.status for c in checks.bigquery("p", "d", "EU", client=BigQuery("europe-west1"))] == [PASS]
+    assert [c.status for c in checks.bigquery("p", "d", "US-CENTRAL1", client=BigQuery("EU"))] == [PASS, WARN]
 
 
 def test_a_dataset_away_from_the_bucket_is_a_warning_and_a_missing_one_says_how_to_make_it() -> None:
@@ -563,6 +605,20 @@ def test_preflight_reads_a_postgres_source_with_its_connection_and_the_slot_the_
     init.config.write_text(init.config.read_text().replace("    cdc:\n", "    cdc:\n      slot: rivet_shop\n", 1))
     preflight(init, monkeypatch, env_from_connections={"RIVET_SOURCE_URL": {"conn_id": "shop"}})
     assert seen == [("shop.host", "rivet_shop")]
+
+
+def test_preflight_dials_a_mysql_source_with_the_tls_mode_the_stream_uses(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+    lookup(monkeypatch, {"shop": connection("shop", "mysql")})
+    seen: list[str | None] = []
+    monkeypatch.setattr(checks, "mysql_source", lambda conn, server_id, tls=None: seen.append(tls) or [])
+    refs = {"RIVET_SOURCE_URL": {"conn_id": "shop"}}
+    preflight(init, monkeypatch, env_from_connections=refs, init_args=["--tls", "require"])
+    init.run()
+    text = init.config.read_text()
+    for tls in ("{mode: disable}", "{ca_file: /ca.pem}"):
+        init.config.write_text(text.replace("  url_env: RIVET_SOURCE_URL\n", f"  url_env: RIVET_SOURCE_URL\n  tls: {tls}\n", 1))
+        preflight(init, monkeypatch, env_from_connections=refs)
+    assert seen == ["require", "disable", "verify-full"]
 
 
 def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:

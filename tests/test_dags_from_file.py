@@ -4,6 +4,7 @@ config-folder check; the state database a moved stream would open empty."""
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import sys
 import types
@@ -215,17 +216,17 @@ def init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Init:
 class Tables:
     """A PostgreSQL server whose every database has `count` tables."""
 
-    def __init__(self, count: int) -> None:
-        self.count, self.dsn = count, []
+    def __init__(self, count: int, ran: int = 0) -> None:
+        self.count, self.ran, self.dsn = count, ran, []
 
     def connect(self, dsn: str) -> Any:
         self.dsn.append(dsn)
-        return types.SimpleNamespace(cursor=lambda: _Cursor(self.count), close=lambda: None)
+        return types.SimpleNamespace(cursor=lambda: _Cursor(self.count, self.ran), close=lambda: None)
 
 
 class _Cursor:
-    def __init__(self, count: int) -> None:
-        self.count = count
+    def __init__(self, count: int, ran: int = 0) -> None:
+        self.count, self.ran, self.found = count, ran, count
 
     def __enter__(self) -> _Cursor:
         return self
@@ -233,20 +234,30 @@ class _Cursor:
     def __exit__(self, *exc: Any) -> None:
         return None
 
-    def execute(self, sql: str) -> None:
+    def execute(self, sql: str, params: tuple[str]) -> None:
         assert "information_schema.tables" in sql
+        self.found = self.ran if params == ("export_state",) else self.count
 
     def fetchone(self) -> tuple[int]:
-        return (self.count,)
+        return (self.found,)
 
 
-def cdc_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own: str | None, count: int, checkpoint: bool) -> Any:
-    tables = Tables(count)
+def cdc_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    own: str | None,
+    count: int,
+    checkpoint: bool,
+    slot: bool = False,
+    ran: int = 1,
+) -> Any:
+    tables = Tables(count, ran)
     monkeypatch.setitem(sys.modules, "psycopg2", types.SimpleNamespace(connect=tables.connect, Error=Exception))
     lookup(monkeypatch, {"rivet_state_aa": connection("rivet_state_aa", "postgres", schema=own)})
     config = tmp_path / "cfg" / "shop.yaml"
     config.parent.mkdir()
-    config.write_text(CDC_CONFIG.format(env="RIVET_SOURCE_URL"))
+    text = CDC_CONFIG.format(env="RIVET_SOURCE_URL")
+    config.write_text(re.sub(r"\n *checkpoint:[^\n]*", "", text) if slot else text)
     state = tmp_path / "state" / "shop"
     (state / "cdc").mkdir(parents=True)
     if checkpoint:
@@ -289,6 +300,20 @@ def test_a_state_database_with_tables_a_first_run_or_the_connection_s_own_passes
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own: str | None, count: int, checkpoint: bool
 ) -> None:
     assert cdc_run(tmp_path, monkeypatch, own, count, checkpoint)[0] is None
+
+
+def test_an_empty_state_database_beside_a_slot_stream_that_ran_on_the_connection_s_own_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refusal, tables = cdc_run(tmp_path, monkeypatch, own="rivet_state_aa", count=0, checkpoint=False, slot=True)
+    assert refusal is not None and "own database `rivet_state_aa` holds rivet's state (`export_state`)" in str(refusal)
+    assert tables.dsn == [
+        "postgresql://u:pw@rivet_state_aa.host/rivet_state_aa",
+        "postgresql://u:pw@rivet_state_aa.host/rivet_state_shop",
+    ]
+    (tmp_path / "fresh").mkdir()
+    fresh = cdc_run(tmp_path / "fresh", monkeypatch, own="rivet_state_aa", count=0, checkpoint=False, slot=True, ran=0)
+    assert fresh[0] is None
 
 
 def test_without_psycopg2_the_state_database_is_not_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

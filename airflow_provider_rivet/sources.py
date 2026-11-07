@@ -157,9 +157,13 @@ def _pasted(path: Path, text: str) -> Iterator[str]:
         match = ALIAS_START.search(code)
         if match and not _quoted_at(code, match.start(1)):
             glob = match.group(1)
+            anchored = re.search(rf"&{re.escape(glob[1:])}\b", text) if len(glob) > 1 else None
             yield (
-                f"{_where(path, number, match.start(1) + 1)}: `{glob}` starts with `*`, which YAML reads as an alias, not "
-                f'text: quote the glob, "{glob}"'
+                f"{_where(path, number, match.start(1) + 1)}: `{glob}` is a YAML alias of the anchor `&{glob[1:]}`; a "
+                "sources file reads no anchors or aliases: write the value out"
+                if anchored
+                else f"{_where(path, number, match.start(1) + 1)}: `{glob}` starts with `*`, which YAML reads as an alias, "
+                f'not text: quote the glob, "{glob}"'
             )
 
 
@@ -515,7 +519,9 @@ def drift(
     for table in load_tables(doc):
         if table in places:
             places[table].append(f"`load.tables.{table}`")
-    bare = {table: table.rsplit(".", 1)[-1] for table in places}
+    source = doc.get("source") or {}
+    mongo = str(_yaml.text_of(source.get("type")) or "").startswith("mongo") if isinstance(source, Mapping) else False
+    bare = {table: table if mongo else table.rsplit(".", 1)[-1] for table in places}
     extra = [t for t in places if not kept(bare[t], include, exclude)]
     literal = [g for g in include if "*" not in g and "?" not in g and kept(g, (), exclude)]
     missing = [g for g in literal if g not in bare.values() and g not in places and g not in skipped]

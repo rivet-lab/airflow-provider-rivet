@@ -6,7 +6,7 @@ import ipaddress
 import os
 import tempfile
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ MYSQL_CDC_SETTINGS = (
     ("binlog_row_metadata", ("FULL",), "SET PERSIST binlog_row_metadata = 'FULL';"),
 )
 MYSQL_GRANTS = ("REPLICATION SLAVE", "REPLICATION CLIENT", "SELECT")
+MYSQL_GRANT_NAMES = {"BINLOG MONITOR": "REPLICATION CLIENT", "REPLICATION REPLICA": "REPLICATION SLAVE"}
 RIVET_DEFAULT_SERVER_ID = 4271
 STATE_SSLMODES = ("disable", "require", "verify-ca", "verify-full")
 GCP_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -91,7 +92,8 @@ def _optional(*modules: str) -> Any:
 
 def state(server: Any, database: str | None, conn_id: str, connect: Callable[[Any], Any] | None = None) -> list[Check]:
     """The state database the tasks will use, by name and server, and whether it exists or can be created."""
-    where = f"`{database or server.schema}` on {server.host}:{server.port or 5432} (Connection `{conn_id}`)"
+    target = database or server.schema or server.login
+    where = f"`{target}` on {server.host}:{server.port or 5432} (Connection `{conn_id}`)"
     name = "state database"
     if connect is None:
         psycopg2 = _optional("psycopg2")
@@ -112,7 +114,6 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
         return [Check(name, FAIL, f"{where}: cannot connect ({type(exc).__name__}: {exc})", f"check Connection `{conn_id}`")]
     try:
         with db.cursor() as cur:
-            target = database or server.schema
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target,))
             exists = cur.fetchone() is not None
             cur.execute("SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user")
@@ -137,7 +138,8 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
 def state_tls(server: Any, conn_id: str) -> Check:
     """Whether rivet will dial the state server: a remote host needs an `sslmode` rivet negotiates, or `disable`."""
     extra = getattr(server, "extra_dejson", None) or {}
-    mode = str(extra.get("sslmode") or "")
+    params = dict(pair.partition("=")[::2] for pair in str(extra.get("rivet_params") or "").split("&") if pair)
+    mode = str(params.get("sslmode") or extra.get("sslmode") or "")
     host = str(server.host or "")
     if mode in STATE_SSLMODES:
         return Check("state database tls", PASS, f"Connection `{conn_id}` says sslmode={mode}")
@@ -159,12 +161,15 @@ def _loopback(host: str) -> bool:
     if host.lower() == "localhost" or host.startswith("/"):
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
     except ValueError:
         return False
+    return address.is_loopback and getattr(address, "ipv4_mapped", None) is None
 
 
-def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], Any] | None = None) -> list[Check]:
+def mysql_source(
+    source: Any, server_id: int | None, connect: Callable[[Any], Any] | None = None, tls: str | None = None
+) -> list[Check]:
     """The MySQL settings, grants and replica id a CDC stream needs, read from the source as rivet will read them."""
     name = "mysql cdc"
     sql = "SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata; SHOW GRANTS"
@@ -189,6 +194,10 @@ def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], An
                 password: c.password or "",
                 "connect_timeout": 10,
             }
+            if tls not in (None, "disable"):
+                args.update(
+                    {"ssl_mode": "REQUIRED"} if driver.__name__ == "MySQLdb" else {"ssl": {"fake_flag_to_enable_tls": True}}
+                )
             return driver.connect(**args)
 
         connect = _connect
@@ -226,8 +235,8 @@ def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], An
                     "" if ok else "log_replica_updates = ON under [mysqld] (read-only at run time), then restart",
                 )
             )
-        grants = " ".join(str(r[0]).upper() for r in _rows(cur, "SHOW GRANTS"))
-        missing = [g for g in MYSQL_GRANTS if g not in grants and "ALL PRIVILEGES" not in grants]
+        held = _mysql_grants(str(r[0]) for r in _rows(cur, "SHOW GRANTS"))
+        missing = [g for g in MYSQL_GRANTS if g not in held]
         out.append(
             Check(
                 "mysql grants",
@@ -255,6 +264,18 @@ def mysql_source(source: Any, server_id: int | None, connect: Callable[[Any], An
     finally:
         db.close()
     return out
+
+
+def _mysql_grants(lines: Iterable[str]) -> set[str]:
+    """The privileges `SHOW GRANTS` gives the stream: replication ones only `ON *.*`, SELECT on any database."""
+    held: set[str] = set()
+    for line in lines:
+        privileges, _, target = line.upper().removeprefix("GRANT ").partition(" ON ")
+        names = {MYSQL_GRANT_NAMES.get(n.strip(), n.strip()) for n in privileges.split(",")}
+        if names & {"ALL", "ALL PRIVILEGES"}:
+            names |= set(MYSQL_GRANTS)
+        held |= names if target.startswith("*.*") else names & {"SELECT"}
+    return held
 
 
 def _first(cur: Any, sql: str) -> Any:
@@ -327,6 +348,13 @@ def postgres_source(source: Any, slot: str | None = None, connect: Callable[[Any
             "raise max_replication_slots, or drop an unused slot",
         ),
     ]
+
+
+def _same_place(dataset: str, bucket: str) -> bool:
+    """Whether a load can read the bucket from the dataset: one location, or a region inside the other's multi-region."""
+    a, b = dataset.lower(), bucket.lower()
+    inside = {"us": "us-", "eu": "europe-"}
+    return a == b or b.startswith(inside.get(a, "\0")) or a.startswith(inside.get(b, "\0"))
 
 
 def _google_client(module: str, key_file: str | None, project: str | None = None) -> Any:
@@ -425,7 +453,7 @@ def bigquery(
             )
         ]
     out = []
-    if bucket_location and str(ds.location).upper() != str(bucket_location).upper():
+    if bucket_location and not _same_place(str(ds.location), str(bucket_location)):
         out.append(
             Check(
                 f"{name} location",
