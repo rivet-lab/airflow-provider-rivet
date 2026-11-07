@@ -519,9 +519,8 @@ def drift(
     for table in load_tables(doc):
         if table in places:
             places[table].append(f"`load.tables.{table}`")
-    source = doc.get("source") or {}
-    mongo = str(_yaml.text_of(source.get("type")) or "").startswith("mongo") if isinstance(source, Mapping) else False
-    bare = {table: table if mongo else table.rsplit(".", 1)[-1] for table in places}
+    mongo = str(_yaml.text_of((doc.get("source") or {}).get("type"))).startswith("mongo")
+    bare = {table: table if mongo else table.rpartition(".")[2] for table in places}
     extra = [t for t in places if not kept(bare[t], include, exclude)]
     literal = [g for g in include if "*" not in g and "?" not in g and kept(g, (), exclude)]
     missing = [g for g in literal if g not in bare.values() and g not in places and g not in skipped]

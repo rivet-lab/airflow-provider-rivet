@@ -260,7 +260,10 @@ class _Cursor:
         return None
 
     def execute(self, sql: str, params: tuple[str]) -> None:
-        assert "information_schema.tables" in sql
+        assert sql == (
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_name LIKE %s"
+        )
         self.found = self.ran if params == ("export_state",) else self.count
 
     def fetchone(self) -> tuple[int]:
@@ -308,6 +311,7 @@ def test_an_empty_state_database_beside_a_started_stream_s_checkpoint_is_refused
     assert refusal is not None and refusal.code == "RIVET_AIRFLOW_STATE_DATABASE_MISMATCH"
     text = str(refusal)
     assert "`rivet_state_shop`" in text and "names the database `rivet_state_aa`" in text
+    assert "has no table, while the stream's checkpoint " in text and "shop_cdc.ckpt exists: the stream ran on" in text
     assert "state_database: connection" in text and "pg_dump rivet_state_aa | psql rivet_state_shop" in text
     assert tables.dsn == ["postgresql://u:pw@rivet_state_aa.host/rivet_state_shop"]
 

@@ -367,6 +367,8 @@ def test_a_missing_mysql_grant_is_named_with_its_grant_statement() -> None:
     assert on_one.detail == "missing REPLICATION SLAVE, REPLICATION CLIENT"
     mariadb = [("GRANT BINLOG MONITOR, REPLICATION REPLICA ON *.* TO `reader`@`%`",), ("GRANT SELECT ON `shop`.* TO `r`",)]
     assert mysql({"SHOW GRANTS": mariadb})["mysql grants"].status == PASS
+    two_ons = [("GRANT SELECT, REPLICATION SLAVE ON *.* TO `on ON on`@`%`",)]
+    assert mysql({"SHOW GRANTS": two_ons})["mysql grants"].detail == "missing REPLICATION CLIENT"
 
 
 @pytest.mark.parametrize(
@@ -664,8 +666,8 @@ def test_preflight_reads_a_postgres_source_with_its_connection_and_the_slot_the_
 
 def test_preflight_dials_a_mysql_source_with_the_tls_mode_the_stream_uses(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     lookup(monkeypatch, {"shop": connection("shop", "mysql")})
-    seen: list[str | None] = []
-    monkeypatch.setattr(checks, "mysql_source", lambda conn, server_id, tls=None: seen.append(tls) or [])
+    seen: list[tuple] = []
+    monkeypatch.setattr(checks, "mysql_source", lambda conn, server_id, tls=None: seen.append((conn.host, server_id, tls)) or [])
     refs = {"RIVET_SOURCE_URL": {"conn_id": "shop"}}
     preflight(init, monkeypatch, env_from_connections=refs, init_args=["--tls", "require"])
     init.run()
@@ -673,7 +675,7 @@ def test_preflight_dials_a_mysql_source_with_the_tls_mode_the_stream_uses(init: 
     for tls in ("{mode: disable}", "{ca_file: /ca.pem}"):
         init.config.write_text(text.replace("  url_env: RIVET_SOURCE_URL\n", f"  url_env: RIVET_SOURCE_URL\n  tls: {tls}\n", 1))
         preflight(init, monkeypatch, env_from_connections=refs)
-    assert seen == ["require", "disable", "verify-full"]
+    assert seen == [("shop.host", None, "require"), ("shop.host", 4271, "disable"), ("shop.host", 4271, "verify-full")]
 
 
 def test_discovery_keeps_only_the_arguments_that_choose_the_tables() -> None:

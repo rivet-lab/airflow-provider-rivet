@@ -144,8 +144,13 @@ ALIAS = 'starts with `*`, which YAML reads as an alias, not text: quote the glob
         (HEAD + "sources:\n  a:\n    exclude: [*_tmp]\n", f"F:6:15: `*_tmp` {ALIAS}"),
         (HEAD + "sources:\n  a:\n    exclude:\n      - *_tmp\n", f"F:7:9: `*_tmp` {ALIAS}"),
         (
-            HEAD + "defaults: &d\n  tls: disable\nsources:\n  a: *d\n",
-            "F:7:6: `*d` is a YAML alias of the anchor `&d`; a sources file reads no anchors or aliases: write the value out",
+            HEAD + "defaults: &defs\n  tls: disable\nsources:\n  a: *defs\n",
+            "F:7:6: `*defs` is a YAML alias of the anchor `&defs`; a sources file reads no anchors or aliases: write the "
+            "value out",
+        ),
+        (
+            HEAD + "defaults: &d\n  tls: disable\nsources:\n  a:\n    exclude: [*]\n",
+            'F:8:15: `*` starts with `*`, which YAML reads as an alias, not text: quote the glob, "*"',
         ),
         (HEAD + "sources:\n  a:\n    datset: x\n", "F:6:5: unknown key `datset`; did you mean `bigquery_dataset`?"),
         (HEAD + "sources:\n  a:\n    dataset: x\n", "F:6:5: unknown key `dataset`; did you mean `bigquery_dataset`?"),
@@ -293,6 +298,11 @@ def test_a_table_init_left_out_of_the_stream_is_not_missing() -> None:
     assert skipped_by_init("  # SKIPPED 'Xmas-sales': its name\n") == ["Xmas-sales"]
     found = drift(STREAM, "cdc", ["pageviews", "visitors", "clicks", "user-events", "sessions"], [], skipped_by_init(text))
     assert list(found.missing) == ["sessions"]
+
+
+def test_a_table_named_with_its_database_and_schema_is_compared_by_its_last_part() -> None:
+    doc = {"exports": [{"name": "c", "mode": "cdc", "tables": ["shop.dbo.orders"]}]}
+    assert not drift(doc, "cdc", ["orders"], [])
 
 
 def test_a_mongo_collection_with_a_dot_is_compared_whole() -> None:

@@ -502,7 +502,7 @@ class RivetCdcRunOperator(RivetBaseOperator):
             return
         checkpoint = checkpoints(self._config_doc(), Path(self.state_dir)).get(str(self.export))
         if checkpoint is None:
-            if not self._table_count(with_database(conn, own), "export_state"):
+            if not self._table_count(conn, "export_state"):
                 return
             evidence = f"the Connection's own database `{own}` holds rivet's state (`export_state`)"
         elif checkpoint.is_file() and checkpoint.stat().st_size:
@@ -922,7 +922,7 @@ class RivetPreflightOperator(_SourceTask):
         if kind == "mysql":
             tls = _mapping_of(_mapping_of(doc.get("source")).get("tls"))
             mode = str(text_of(tls.get("mode")) or "verify-full") if tls else _value_of(self.init_args, "--tls")
-            return checks.mysql_source(conn, server_id_of(doc, checks.RIVET_DEFAULT_SERVER_ID) if doc else None, tls=mode)
+            return checks.mysql_source(conn, server_id_of(doc, checks.RIVET_DEFAULT_SERVER_ID), tls=mode)
         if kind in ("postgres", "postgresql"):
             return checks.postgres_source(conn, slot_of(doc))
         return [

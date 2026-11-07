@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 from .sources import flag_of
 
@@ -147,7 +148,7 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
 def state_tls(server: Any, conn_id: str) -> Check:
     """Whether rivet will dial the state server: a remote host needs an `sslmode` rivet negotiates, or `disable`."""
     extra = getattr(server, "extra_dejson", None) or {}
-    params = dict(pair.partition("=")[::2] for pair in str(extra.get("rivet_params") or "").split("&") if pair)
+    params = dict(parse_qsl(extra.get("rivet_params")))
     mode = str(params.get("sslmode") or extra.get("sslmode") or "")
     host = str(server.host or "")
     if mode in STATE_SSLMODES:
@@ -281,8 +282,7 @@ def _mysql_grants(lines: Iterable[str]) -> set[str]:
     for line in lines:
         privileges, _, target = line.upper().removeprefix("GRANT ").partition(" ON ")
         names = {MYSQL_GRANT_NAMES.get(n.strip(), n.strip()) for n in privileges.split(",")}
-        if names & {"ALL", "ALL PRIVILEGES"}:
-            names |= set(MYSQL_GRANTS)
+        names = set(MYSQL_GRANTS) if "ALL PRIVILEGES" in names else names
         held |= names if target.startswith("*.*") else names & {"SELECT"}
     return held
 
@@ -362,8 +362,8 @@ def postgres_source(source: Any, slot: str | None = None, connect: Callable[[Any
 def _same_place(dataset: str, bucket: str) -> bool:
     """Whether a load can read the bucket from the dataset: one location, or a region inside the other's multi-region."""
     a, b = dataset.lower(), bucket.lower()
-    inside = {"us": "us-", "eu": "europe-"}
-    return a == b or b.startswith(inside.get(a, "\0")) or a.startswith(inside.get(b, "\0"))
+    regions = {"us": "us-", "eu": "europe-"}
+    return a == b or (a in regions and b.startswith(regions[a])) or (b in regions and a.startswith(regions[b]))
 
 
 def _google_client(module: str, key_file: str | None, project: str | None = None) -> Any:
