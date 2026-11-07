@@ -623,7 +623,7 @@ def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[t
     calls: list[tuple] = []
 
     def gcs(bucket: str, prefix: str, key_file: str | None = None) -> tuple[list[Check], str]:
-        calls.append(("gcs", bucket, prefix))
+        calls.append(("gcs", bucket, prefix, key_file))
         return [Check(f"gcs gs://{bucket}/{prefix}", status, "probed")], "US"
 
     def bigquery(project: str, dataset: str, location: str, key_file: str | None = None) -> list[Check]:
@@ -639,11 +639,11 @@ def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init,
     calls = staging_calls(monkeypatch)
     assert "SKIP bucket: init_args name no GCS bucket" in preflight(init, monkeypatch)["checks"]
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
-    preflight(init, monkeypatch, init_args=args)
-    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d", "US")]
+    preflight(init, monkeypatch, init_args=args, env={"GOOGLE_APPLICATION_CREDENTIALS": "/k.json"})
+    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US")]
     init.run(init_args=args)
     out = preflight(init, monkeypatch, init_args=args)
-    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d", "US")]
+    assert calls == [("gcs", "b", "", "/k.json"), ("bigquery", "p", "d", "US")]
     assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
 
 
