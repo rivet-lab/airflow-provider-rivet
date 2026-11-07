@@ -228,13 +228,15 @@ def test_a_checkpoint_in_neither_place_or_in_both_is_not_left_behind(rig: Rig) -
     # 60 (the state directory's copy looked up under another name)
     origin = rig.config.resolve().parent
     config = {"exports": [{"name": "s", "mode": "cdc", "cdc": {"checkpoint": "s.ckpt"}}]}
-    check_nothing_left_beside_config(str(rig.config), config, rig.state_dir, False, None)
+    assert check_nothing_left_beside_config(str(rig.config), config, rig.state_dir, False, None) is None
     (origin / "s.ckpt").write_text("old")
+    with pytest.raises(PreflightRefusal, match=r"^\[RIVET_AIRFLOW_CHECKPOINT_BESIDE_CONFIG\] the checkpoint of `s`"):
+        check_nothing_left_beside_config(str(rig.config), config, rig.state_dir, False, None)
     (rig.state_dir / "s.ckpt").write_text("moved")
-    check_nothing_left_beside_config(str(rig.config), config, rig.state_dir, False, None)
+    assert check_nothing_left_beside_config(str(rig.config), config, rig.state_dir, False, None) is None
     absolute = {"exports": [{"name": "s", "mode": "cdc", "cdc": {"checkpoint": str(origin / "s.ckpt")}}]}
     (rig.state_dir / "s.ckpt").unlink()
-    check_nothing_left_beside_config(str(rig.config), absolute, rig.state_dir, False, None)  # one path from both
+    assert check_nothing_left_beside_config(str(rig.config), absolute, rig.state_dir, False, None) is None
 
 
 def test_a_task_that_loses_the_marker_race_returns_the_winners_whole_identity(
