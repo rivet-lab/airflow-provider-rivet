@@ -131,29 +131,19 @@ you type. The schema is also in the package: `airflow_provider_rivet/schemas/riv
 
 `include` and `exclude` are applied by `rivet init`, which runs once, when the config does not exist. A table lives
 in several places of the config it wrote (the stream's `tables:` or an export per table, and `load.tables.<table>`),
-and the DAG's load and compact tasks come from the config. So once the config exists, the builder compares it with
-the file at every parse. When the config captures a table the file leaves out, or does not capture a table an include
-names literally (a glob that may match a table the source has cannot be judged without the source), the DAG gets two
-more tasks before the stream:
+and the DAG's load and compact tasks come from the config. So once the config exists, the `preflight` task compares
+it with the file on every run (`include and exclude`). A config that captures a table the file leaves out, or does not
+capture a table an include names literally (a glob that may match a table the source has cannot be judged without the
+source), is:
 
-```
-spec_drift ──> spec_checked ──> run ──> load.T ──> compact.T
-```
+- **a FAIL while the stream has not started** (no checkpoint in the state folder): nothing is lost yet, and the run
+  stops before the baseline. Move the config aside; the next run's `init` writes it again with the file's include and
+  exclude.
+- **a WARN once it has**: the stream goes on. Edit the config at the places the line names (`rivet check` it; the DAG
+  follows at the next parse), or give the file the tables the config captures. Whether a stream accepts a changed
+  table list is rivet's decision.
 
-When `spec_drift` runs:
-
-- **The stream has not started**: no checkpoint file in the state folder and no run in rivet's run ledger
-  (`rivet state runs --json`). It moves the config to `<config_dir>/.replaced/<name>.<UTC time>.yaml`, writes it
-  again with `rivet init` and the file's include and exclude (`rivet check` first, as `init` does), and skips the
-  rest of the run. The next parse builds the DAG of the new config, and its next run starts the stream. If the new
-  init fails, the old config is put back.
-- **The stream has started** (or the ledger cannot be read): nothing is written. The task fails without a retry,
-  naming each extra table and where the config writes it, and the run is failed by the watcher; `spec_checked` still
-  runs, so the stream and its loads go on. Edit the config at the places named (`rivet check` it; the DAG follows at
-  the next parse), or give the file the tables the config captures. Whether a stream accepts a changed table list
-  is rivet's decision.
-
-The two tasks disappear at the next parse once the config and the file agree. A filter of the DAG's tasks alone
+A filter of the DAG's tasks alone
 would be wrong: `rivet run` captures every table of the config, so the files of a table without a load task would pile
 up unloaded.
 
@@ -187,8 +177,8 @@ The steps, per source, with the DAG paused:
 3. Keep the configs as they are. A config moved from cron that says `url_env: RIVET_MYSQL_URL` gets the source under
    that variable.
 4. Replace the old DAG file with the one-line one, then compare the tasks with the old ones:
-   `airflow tasks list rivet_<src>_cdc` (`run`, `load.*`, `compact.*`, `watcher`). A `spec_drift` task means the file's
-   include or exclude differ from the config: leave them out to keep the config as it is.
+   `airflow tasks list rivet_<src>_cdc` (`preflight`, `run`, `load.*`, `compact.*`, `watcher`). A preflight `include and exclude` WARN
+   means the file's include or exclude differ from the config: leave them out to keep the config as it is.
 5. Unpause. The first run continues from the checkpoint in `<state_root>/<src>`: no new baseline.
 
 The way back is the old DAG file: nothing in the state folder or database is changed by the move.
@@ -213,7 +203,7 @@ SKIP bigquery my-project.rivet_shop: google-cloud-bigquery is not installed -> f
 It reaches each thing as the tasks will: the binary and its version, the config and state folders, the state
 database (and whether rivet will dial it: a remote state server needs an `sslmode`), the source's CDC settings (MySQL: `log_bin`, `binlog_format`, `binlog_row_image`, `binlog_row_metadata`,
 `log_replica_updates` on a replica, the grants, a free `server_id`; PostgreSQL: `wal_level`, `REPLICATION`, a free
-slot), and the bucket and dataset until the stream has a checkpoint; once the config exists, `rivet check` of it. A
+slot), and the bucket and dataset before `init`; once the config exists, its include and exclude against the sources file and `rivet check` of it. A
 check whose client library is not in the image (psycopg2, MySQLdb or pymysql, google-cloud-storage,
 google-cloud-bigquery) is a SKIP naming the command to run by hand. `preflight: false` leaves the task out.
 
@@ -320,7 +310,7 @@ folder and the state database to start over.
 | operators, `build_batch_dag`, `build_cdc_dag`, `slack_failure_callback` | 0.1.0 |
 | `build_source_dags`, `RivetInitOperator`, `odbc_ini` | 0.3.0 |
 | `build_config_dag`, `env_from_variables`, `url_secret` / `password_secret` configs | 0.4.0 |
-| `build_dags_from_file`, the sources file, `build_source_dags(state_database=, include=, exclude=)`, `spec_drift` | 0.4.0 |
+| `build_dags_from_file`, the sources file, `build_source_dags(state_database=, include=, exclude=)`, `preflight` | 0.4.0 |
 
 `ImportError: cannot import name 'build_source_dags'` is a package older than 0.3.0; `build_dags_from_file`, older than
 0.4.0. Check with `pip show airflow-provider-rivet` in the worker and the scheduler (Airflow 3: the dag-processor).

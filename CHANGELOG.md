@@ -21,11 +21,9 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   (with moving from `build_cdc_dag`, the leftovers of a failed first run, and the version of each function); example:
   `examples/rivet_sources.yaml` and `examples/rivet_sources.py`.
 - `build_source_dags(state_database=..., include=..., exclude=...)`: the state database's name (`None`: the Connection's
-  own, as `build_cdc_dag`), and `rivet init`'s table globs. Once the config exists, a config that captures a table the
-  globs leave out (or misses one an include names literally) gets `spec_drift` -> `spec_checked` before the stream:
-  while the stream has not started (no checkpoint file, no run in `rivet state runs`), `spec_drift` writes the config
-  again with `rivet init` (the old one kept in `<config_dir>/.replaced/`) and skips the rest of the run; once it has,
-  it fails without a retry naming each place the config writes the table, and the stream goes on.
+  own, as `build_cdc_dag`), and `rivet init`'s table globs. Once the config exists, `preflight` compares the config
+  with the globs: a config that captures a table they leave out (or misses one an include names literally) is a FAIL
+  naming each place the config writes it while the stream has no checkpoint, and a WARN once it has.
 - A CDC `run` task refuses a state database it names in place of its Connection's own (`rivet_state_<name>`) that has
   no table while the stream's checkpoint exists (`RIVET_AIRFLOW_STATE_DATABASE_MISMATCH`): a stream moved from
   `build_cdc_dag` whose Connection names another database would otherwise start its state over.
@@ -62,7 +60,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   false` leaves it out) that checks what the next tasks need and logs one PASS / WARN / FAIL / SKIP line per check with
   what to change: the rivet binary and its version, the config and state folders, the state database, the source's
   CDC settings (MySQL binlog settings, grants, `server_id`; PostgreSQL `wal_level`, `REPLICATION`, slots), the GCS
-  bucket and the BigQuery dataset (written to and in one location) until the stream has a checkpoint, and `rivet check`
+  bucket and the BigQuery dataset (written to and in one location) before `init`, the include and exclude of the sources file against the config, and `rivet check`
   once the config exists. A remote state server whose Connection names no `sslmode` rivet dials fails it before `init`
   meets `RIVET_STATE_URL_TLS_REQUIRED`. The GCP key file is read as google-auth reads it (a service account key or the
   file of `gcloud auth application-default login`); one it cannot read is a FAIL line, not a crash. A FAIL fails it with no retry. A check whose
@@ -73,8 +71,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
   stderr lines into the task log as they come; DAGs built from the file set it (`stream_stderr: false` in the file).
 - `preflight` before `init` of a CDC source runs `rivet init --discover` with init's table arguments and WARNs of each
   table rivet would page that the first run reads in one `SELECT` (a one-table source), with the fix: a paged
-  `backfill: auto` recipe (`chunk_by_key`, `parallel`) in place of `initial: snapshot` (rivet-lab/rivet#878). The bucket and dataset checks write once per place: a pass is recorded in
-  `<state_dir>/.preflight-staging.json` and checked again only when the bucket, prefix, project or dataset changes.
+  `backfill: auto` recipe (`chunk_by_key`, `parallel`) in place of `initial: snapshot` (rivet-lab/rivet#878). The bucket and dataset checks write only before `init`, to the places
+  `init_args` name.
   The state TLS check counts a host as local as rivet does: `localhost`, any loopback address (`127.0.0.0/8`, `::1`,
   `[::1]`), a socket path, and every host of a comma list.
 - Docs: the bucket and the dataset are not created for you; running on Docker Compose (host and container paths, two

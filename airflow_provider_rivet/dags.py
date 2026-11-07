@@ -38,14 +38,13 @@ from .operators import (
     RivetPreflightOperator,
     RivetRunOperator,
     RivetRunWatcher,
-    RivetSpecDriftOperator,
     RivetWaveBarrier,
     _RivetTask,
     check_mode,
     config_present,
 )
 from .preflight import ConfigRefusal, PreflightRefusal, read_config
-from .sources import Source, SourcesFile, drift, read_sources_file
+from .sources import Source, SourcesFile, flag_of, read_sources_file
 
 ORDER_ONLY = "all_done"
 WATCHER_ID = "watcher"
@@ -61,8 +60,6 @@ RUN_ONLY = (
     - frozenset(inspect.signature(_RivetTask.__init__).parameters)
 )
 FILTER_FLAGS = ("--include", "--exclude")
-DRIFT_ID = "spec_drift"
-DRIFT_GATE_ID = "spec_checked"
 PREFLIGHT_ID = "preflight"
 NOT_IN_TASK_ID = re.compile(r"[^A-Za-z0-9_.-]")  # ASCII only: Airflow 3 cannot run a non-ASCII task id
 
@@ -341,8 +338,7 @@ def build_source_dags(
 
     `state_database` names each source's state database (`{name}` replaced); None uses the database the state
     Connection names itself, as `build_cdc_dag` did. `include` and `exclude` are `rivet init`'s table globs; once the
-    config exists, a config that captures a table they leave out (or misses one an include names literally) gets a
-    `spec_drift` task that writes it again while the stream has not started, and names what to edit once it has.
+    config exists, `preflight` compares the config with them: a FAIL while the stream has not started, a WARN after.
 
     `preflight` puts a `preflight` task (`RivetPreflightOperator`) first in each DAG: before `init`, and before the first
     tasks of a DAG built from the config, the watcher waiting for it.
@@ -350,7 +346,7 @@ def build_source_dags(
     names = _names("sources", sources)
     include, exclude = _names("include", include), _names("exclude", exclude)
     filters = [*(["--include", *include] if include else []), *(["--exclude", *exclude] if exclude else [])]
-    doubled = sorted({a.partition("=")[0] for a in init_args if a.partition("=")[0] in FILTER_FLAGS})
+    doubled = sorted({flag_of(a) for a in init_args if flag_of(a) in FILTER_FLAGS})
     if filters and doubled:
         raise ValueError(f"init_args set {doubled} beside `include`/`exclude`: give the globs once")
     bad = [n for n in names if not SOURCE_NAME.fullmatch(n)]
@@ -385,8 +381,8 @@ def build_source_dags(
             if preflight:
                 _with_preflight(dags[dag_id], mode, source_init_args, common, SOURCE_ENV)
             continue
-        drift_check = (include, exclude, source_init_args) if filters else None
-        build = partial(_config_dag, dag_id, mode, config, common, kwargs, source, state, drift_check, preflight)
+        globs = (include, exclude) if preflight else None
+        build = partial(_config_dag, dag_id, mode, config, common, kwargs, source, state, globs)
         dags[dag_id] = _built_or_refused(dag_id, mode, config, common, build)
     return dags
 
@@ -399,12 +395,9 @@ def _config_dag(
     kwargs: dict[str, Any],
     source: Mapping[str, Any],
     state: Mapping[str, Any],
-    drift_check: tuple[Sequence[str], Sequence[str], list[str]] | None = None,
-    preflight: bool = False,
+    globs: tuple[Sequence[str], Sequence[str]] | None = None,
 ) -> DAG:
-    """The DAG built from a source's config; with `drift_check` (include, exclude, init_args), a config that differs
-    from the include and exclude gets the tasks that say so (`_with_drift_check`); with `preflight`, its checks first."""
-    init_kwargs = {**kwargs, "env_from_connections": {SOURCE_ENV: source, "RIVET_STATE_URL": state}}
+    """The DAG built from a source's config; with `globs` (include, exclude), `preflight` first, comparing them."""
     doc = read_config(str(config))
     source_block = doc.get("source") or {}
     url_env = source_block.get("url_env")
@@ -415,14 +408,19 @@ def _config_dag(
     elif url_env and url_env != SOURCE_ENV:  # a config moved from cron names its own variable
         kwargs["env_from_connections"] = {url_env: source, "RIVET_STATE_URL": state}
     dag = _dag_of_config(dag_id, mode == "cdc", config, doc, common)
-    if drift_check and drift(doc, mode, drift_check[0], drift_check[1]):
-        _with_drift_check(dag, mode, drift_check, {**common, "operator_kwargs": init_kwargs})
-    if preflight:
-        _with_preflight(dag, mode, drift_check[2] if drift_check else [], {**common, "operator_kwargs": kwargs})
+    if globs is not None:
+        _with_preflight(dag, mode, [], {**common, "operator_kwargs": kwargs}, globs=globs)
     return dag
 
 
-def _with_preflight(dag: DAG, mode: str, init_args: list[str], common: Mapping[str, Any], source_env: str | None = None) -> None:
+def _with_preflight(
+    dag: DAG,
+    mode: str,
+    init_args: list[str],
+    common: Mapping[str, Any],
+    source_env: str | None = None,
+    globs: tuple[Sequence[str], Sequence[str]] = ((), ()),
+) -> None:
     """Put `preflight` (`RivetPreflightOperator`) before every task that starts the run; the watcher waits for it too."""
     roots = [t for t in dag.tasks if not t.upstream_task_ids]
     task_kwargs = {k: v for k, v in common["operator_kwargs"].items() if k not in RUN_ONLY}
@@ -432,6 +430,8 @@ def _with_preflight(dag: DAG, mode: str, init_args: list[str], common: Mapping[s
             mode=mode,
             source_env=source_env,
             init_args=init_args,
+            include=globs[0],
+            exclude=globs[1],
             config=common["config"],
             state_dir=common["state_dir"],
             **{**task_kwargs, "retries": 0},
@@ -439,33 +439,6 @@ def _with_preflight(dag: DAG, mode: str, init_args: list[str], common: Mapping[s
         check.set_downstream(roots)
     if WATCHER_ID in dag.task_ids:
         dag.get_task(WATCHER_ID).set_upstream(check)
-
-
-def _with_drift_check(
-    dag: DAG, mode: str, drift_check: tuple[Sequence[str], Sequence[str], list[str]], common: Mapping[str, Any]
-) -> None:
-    """Add `spec_drift` (`RivetSpecDriftOperator`) before every task that starts the run, through `spec_checked`, which
-    runs when `spec_drift` succeeded or failed and is skipped with it: a config written again skips the rest of the run,
-    and a drift that cannot be fixed fails the run (the watcher) while the stream goes on."""
-    include, exclude, init_args = drift_check
-    roots = [t for t in dag.tasks if not t.upstream_task_ids]
-    task_kwargs = {k: v for k, v in common["operator_kwargs"].items() if k not in RUN_ONLY}
-    with dag:
-        check = RivetSpecDriftOperator(
-            task_id=DRIFT_ID,
-            mode=mode,
-            source_env=SOURCE_ENV,
-            include=include,
-            exclude=exclude,
-            init_args=init_args,
-            config=common["config"],
-            state_dir=common["state_dir"],
-            **{**task_kwargs, "retries": 0},
-        )
-        gate = RivetWaveBarrier(task_id=DRIFT_GATE_ID, trigger_rule="none_skipped")
-        check.set_downstream(gate)
-        gate.set_downstream(roots)
-        dag.get_task(WATCHER_ID).set_upstream([check, gate])
 
 
 def build_config_dag(

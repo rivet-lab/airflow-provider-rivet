@@ -635,28 +635,34 @@ def staging_calls(monkeypatch: pytest.MonkeyPatch, status: str = PASS) -> list[t
     return calls
 
 
-def test_preflight_writes_to_a_bucket_and_dataset_once_until_they_change(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preflight_writes_to_the_bucket_and_dataset_only_before_init(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = staging_calls(monkeypatch)
     args = ["--gcs-bucket", "b", "--bigquery-project", "p", "--bigquery-dataset", "d"]
-    (init.tmp / "state" / "shop").mkdir()
     preflight(init, monkeypatch, init_args=args)
-    second = preflight(init, monkeypatch, init_args=args)
     assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
-    mark = init.tmp / "state" / "shop" / ".preflight-staging.json"
+    init.run(init_args=args)
+    out = preflight(init, monkeypatch, init_args=args)
+    assert calls == [("gcs", "b", ""), ("bigquery", "p", "d")]
+    assert "SKIP bucket and dataset: the config exists; the preflight before `init` wrote to them" in out["checks"]
+
+
+def test_a_config_that_differs_from_include_fails_before_the_stream_starts_and_warns_after(
+    init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging_calls(monkeypatch)
+    init.run()
     assert (
-        f"SKIP bucket and dataset: an earlier preflight wrote to gs://b/ and bigquery p.d; {mark} records it" in second["checks"]
+        "PASS include and exclude: the config captures what the sources file names"
+        in preflight(init, monkeypatch, include=["orders", "customers"])["checks"]
     )
-    preflight(init, monkeypatch, init_args=[*args[:-1], "d2"])
-    assert calls[2:] == [("gcs", "b", ""), ("bigquery", "p", "d2")]
-
-
-def test_a_bucket_check_that_failed_is_run_again_next_time(init: Init, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = staging_calls(monkeypatch, status=FAIL)
-    (init.tmp / "state" / "shop").mkdir()
-    for _ in range(2):
-        preflight(init, monkeypatch, init_args=["--gcs-bucket", "b"])
-    assert calls == [("gcs", "b", ""), ("gcs", "b", "")]
-    assert not (init.tmp / "state" / "shop" / ".preflight-staging.json").exists()
+    refused = preflight(init, monkeypatch, include=["orders"])
+    assert isinstance(refused, AirflowFailException) and "include and exclude" in str(refused)
+    checkpoint = init.tmp / "state" / "shop" / "cdc" / "shop_cdc.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("pos")
+    warned = preflight(init, monkeypatch, include=["orders"])
+    line = next(c for c in warned["checks"] if c.startswith("WARN include and exclude"))
+    assert "captures customers" in line and "edit the config at the places named" in line
 
 
 def test_the_places_a_config_writes_are_urls_an_operator_can_paste() -> None:

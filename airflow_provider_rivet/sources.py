@@ -333,9 +333,13 @@ def _placeholders(path: Path, doc: Any, marks: Mapping[tuple[Any, ...], yaml.Mar
     return out
 
 
-def _flag(arg: str) -> str:
-    """The flag a command-line token sets: `--tls=disable` is `--tls`."""
-    return arg.partition("=")[0] if arg.startswith("--") else arg
+def flag_of(arg: str) -> str:
+    """The flag a command-line token sets as clap reads it: `--output=x` is `--output`, `-oX` and `-o=X` are `-o`."""
+    if arg.startswith("--"):
+        return arg.partition("=")[0]
+    if arg.startswith("-"):
+        return arg[:2]
+    return arg
 
 
 def _merged(layers: Sequence[Mapping[str, Any] | None], name: str) -> dict[str, Any]:
@@ -389,7 +393,7 @@ def _source_errors(path: Path, name: str, settings: Mapping[str, Any], line: int
     """What a source's merged settings may not hold: an `init_args` flag a setting owns."""
     where = _where(path, line, column)
     owned = {INIT_FLAGS[k] for k in INIT_FLAGS if settings.get(k)}
-    taken = sorted({_flag(a) for a in settings.get("init_args") or () if _flag(a) in owned})
+    taken = sorted({flag_of(a) for a in settings.get("init_args") or () if flag_of(a) in owned})
     if taken:
         return [f"{where}: source `{name}`: init_args sets {', '.join(taken)}, which its settings already set; keep one"]
     return []
