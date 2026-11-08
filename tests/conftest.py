@@ -21,6 +21,7 @@ os.environ["AIRFLOW__CORE__UNIT_TEST_MODE"] = "True"
 
 import pytest
 
+from airflow_provider_rivet import checks
 from airflow_provider_rivet.capabilities import MIN_RIVET_VERSION
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -210,6 +211,14 @@ def own_temp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(tempfile, "tempdir", str(path))
     monkeypatch.delenv("RIVET_STATE_URL", raising=False)
     return path
+
+
+@pytest.fixture(autouse=True)
+def pauses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The seconds a preflight check would sleep between connection tries, recorded instead of slept."""
+    slept: list[float] = []
+    monkeypatch.setattr(checks, "sleep", slept.append)
+    return slept
 
 
 @pytest.fixture(autouse=True)

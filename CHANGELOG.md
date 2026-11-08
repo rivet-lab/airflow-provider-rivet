@@ -83,6 +83,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Changed (behaviour change)
 
+- Preflight: the state database, PostgreSQL and MySQL probes try to connect three times, 1s then 2s apart, before they
+  fail; a failure says `cannot connect after 3 tries`.
 - Operators: the refusal, stop and process-release handling every rivet task repeated around its work is one helper,
   `_RivetTask._guarded`; the busy-lock retry of the ADR-0039 tasks and the init failure of `RivetInitOperator` stay with
   their own task. No output changes.

@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import sleep
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -81,6 +82,19 @@ def folder(name: str, path: Path, must_exist: bool = False) -> Check:
     return Check(name, PASS, f"{path} is writable" if probe_dir == path else f"{probe_dir} is writable; {path} is created there")
 
 
+CONNECT_TRIES = 3
+
+
+def _reach(connect: Callable[[Any], Any], target: Any) -> Any:
+    """`connect(target)`, tried `CONNECT_TRIES` times 1s, 2s, ... apart; the last failure is raised."""
+    for attempt in range(1, CONNECT_TRIES):
+        try:
+            return connect(target)
+        except Exception:
+            sleep(attempt)
+    return connect(target)
+
+
 def _optional(*modules: str) -> Any:
     """The first of `modules` this worker can import, or None."""
     for module in modules:
@@ -110,9 +124,16 @@ def state(server: Any, database: str | None, conn_id: str, connect: Callable[[An
         connect = _connect
 
     try:
-        db = connect(server)
+        db = _reach(connect, server)
     except Exception as exc:
-        return [Check(name, FAIL, f"{where}: cannot connect ({type(exc).__name__}: {exc})", f"check Connection `{conn_id}`")]
+        return [
+            Check(
+                name,
+                FAIL,
+                f"{where}: cannot connect after {CONNECT_TRIES} tries ({type(exc).__name__}: {exc})",
+                f"check Connection `{conn_id}`",
+            )
+        ]
     try:
         with db.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target,))
@@ -213,11 +234,14 @@ def mysql_source(
         connect = _connect
 
     try:
-        db = connect(source)
+        db = _reach(connect, source)
     except Exception as exc:
         return [
             Check(
-                name, FAIL, f"cannot connect to {source.host}:{source.port or 3306} ({type(exc).__name__})", f"run by hand: {sql}"
+                name,
+                FAIL,
+                f"cannot connect to {source.host}:{source.port or 3306} after {CONNECT_TRIES} tries ({type(exc).__name__})",
+                f"run by hand: {sql}",
             )
         ]
     out: list[Check] = []
@@ -321,9 +345,16 @@ def postgres_source(source: Any, slot: str | None = None, connect: Callable[[Any
         connect = _connect
 
     try:
-        db = connect(source)
+        db = _reach(connect, source)
     except Exception as exc:
-        return [Check(name, FAIL, f"cannot connect to {source.host} ({type(exc).__name__})", "check the source Connection")]
+        return [
+            Check(
+                name,
+                FAIL,
+                f"cannot connect to {source.host} after {CONNECT_TRIES} tries ({type(exc).__name__})",
+                "check the source Connection",
+            )
+        ]
     try:
         with db.cursor() as cur:
             wal = _first(cur, "SHOW wal_level")
