@@ -310,18 +310,24 @@ def test_each_preflight_probe_fails_after_three_connects_two_pauses_apart(pauses
     for probe in (
         lambda c: checks.state(SERVER, None, "rivet_state", connect=c),
         lambda c: checks.postgres_source(SERVER, connect=c),
-        lambda c: checks.mysql_source(MYSQL, None, connect=c),
+        lambda c: checks.mysql_source(types.SimpleNamespace(host="my", port=None), None, connect=c),
     ):
         connect, calls = flaky(3, None)
         found += probe(connect)
         tried.append(len(calls))
     assert tried == [3, 3, 3] and pauses == [1, 2] * 3
-    assert found[1:] == [
+    assert found == [
+        Check(
+            "state database",
+            FAIL,
+            "`admin` on pg:5432 (Connection `rivet_state`): cannot connect after 3 tries (OSError: blip)",
+            "check Connection `rivet_state`",
+        ),
         Check("postgres cdc", FAIL, "cannot connect to pg after 3 tries (OSError)", "check the source Connection"),
         Check(
             "mysql cdc",
             FAIL,
-            "cannot connect to my:3307 after 3 tries (OSError)",
+            "cannot connect to my:3306 after 3 tries (OSError)",
             "run by hand: SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata; SHOW GRANTS",
         ),
     ]
