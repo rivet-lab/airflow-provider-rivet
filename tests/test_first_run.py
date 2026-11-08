@@ -316,9 +316,14 @@ def test_each_preflight_probe_fails_after_three_connects_two_pauses_apart(pauses
         found += probe(connect)
         tried.append(len(calls))
     assert tried == [3, 3, 3] and pauses == [1, 2] * 3
-    assert [c.detail for c in found[1:]] == [
-        "cannot connect to pg after 3 tries (OSError)",
-        "cannot connect to my:3307 after 3 tries (OSError)",
+    assert found[1:] == [
+        Check("postgres cdc", FAIL, "cannot connect to pg after 3 tries (OSError)", "check the source Connection"),
+        Check(
+            "mysql cdc",
+            FAIL,
+            "cannot connect to my:3307 after 3 tries (OSError)",
+            "run by hand: SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata; SHOW GRANTS",
+        ),
     ]
 
 
