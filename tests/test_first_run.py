@@ -273,7 +273,64 @@ def test_a_state_server_it_cannot_reach_fails_naming_the_connection() -> None:
         raise OSError("timeout")
 
     (found,) = checks.state(SERVER, None, "rivet_state", connect=refuse)
-    assert (found.status, found.fix) == (FAIL, "check Connection `rivet_state`") and "OSError: timeout" in found.detail
+    assert (found.status, found.fix) == (FAIL, "check Connection `rivet_state`")
+    assert found.detail == "`admin` on pg:5432 (Connection `rivet_state`): cannot connect after 3 tries (OSError: timeout)"
+
+
+def flaky(fails: int, db: Any) -> tuple[Any, list[Any]]:
+    """A connect that raises `fails` times, then returns `db`; and the targets it was called with."""
+    calls: list[Any] = []
+
+    def connect(target: Any) -> Any:
+        calls.append(target)
+        if len(calls) <= fails:
+            raise OSError("blip")
+        return db
+
+    return connect, calls
+
+
+@pytest.mark.parametrize(("fails", "slept"), [(0, []), (1, [1]), (2, [1, 2])])
+def test_each_preflight_probe_rides_out_two_failed_connects(fails: int, slept: list[int], pauses: list[float]) -> None:
+    answers = {EXISTS: (1,), CREATEDB: (False,)}
+    for probe in (
+        lambda c: checks.state(SERVER, "rivet_state_shop", "rivet_state", connect=c),
+        lambda c: checks.postgres_source(SERVER, connect=c),
+        lambda c: checks.mysql_source(MYSQL, None, connect=c),
+    ):
+        pauses.clear()
+        connect, calls = flaky(fails, db_of(answers))
+        found = probe(connect)
+        assert (calls, pauses) == ([calls[0]] * (fails + 1), slept)
+        assert calls[0] in (SERVER, MYSQL) and "cannot connect" not in " ".join(c.detail for c in found)
+
+
+def test_each_preflight_probe_fails_after_three_connects_two_pauses_apart(pauses: list[float]) -> None:
+    found, tried = [], []
+    for probe in (
+        lambda c: checks.state(SERVER, None, "rivet_state", connect=c),
+        lambda c: checks.postgres_source(SERVER, connect=c),
+        lambda c: checks.mysql_source(types.SimpleNamespace(host="my", port=None), None, connect=c),
+    ):
+        connect, calls = flaky(3, None)
+        found += probe(connect)
+        tried.append(len(calls))
+    assert tried == [3, 3, 3] and pauses == [1, 2] * 3
+    assert found == [
+        Check(
+            "state database",
+            FAIL,
+            "`admin` on pg:5432 (Connection `rivet_state`): cannot connect after 3 tries (OSError: blip)",
+            "check Connection `rivet_state`",
+        ),
+        Check("postgres cdc", FAIL, "cannot connect to pg after 3 tries (OSError)", "check the source Connection"),
+        Check(
+            "mysql cdc",
+            FAIL,
+            "cannot connect to my:3306 after 3 tries (OSError)",
+            "run by hand: SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@binlog_row_metadata; SHOW GRANTS",
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
