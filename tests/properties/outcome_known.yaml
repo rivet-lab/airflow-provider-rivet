@@ -1,0 +1,5 @@
+"init/*":
+  verdict: NOT_GRADED
+  reason: axis_not_built
+  since: 2026-11-10
+  closes: a harness that runs RivetInitOperator under dag.test() with a source Connection and the init fake
