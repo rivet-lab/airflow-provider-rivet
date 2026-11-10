@@ -346,7 +346,7 @@ def main():
         if key in spec:
             play = spec[key]
             break
-    if sub == "plan" and not play.get("exit"):
+    if sub == "plan" and not play.get("exit") and not play.get("signal"):
         out = value_of(argv, "--output")
         expires = (datetime.now(UTC) + timedelta(hours=spec.get("plan_expires_hours", 24))).isoformat()
         if out:
