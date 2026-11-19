@@ -50,7 +50,7 @@ from .invocation import (
     worker_environment,
 )
 from .preflight import PreflightRefusal, read_config, resolve_binary
-from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, unstarted
+from .result import BUSY, REFUSED, STOPPED, ErrorObject, error_from_exit, error_text, redact, unstarted
 from .tasklog import TaskLog
 
 T = TypeVar("T")
@@ -590,6 +590,19 @@ class RivetInitOperator(_RivetTask):
             raise PreflightRefusal(
                 Code.STATE_DATABASE, f"creating state database `{name}` needs psycopg2 on the worker"
             ) from None
+        try:
+            self._create_database_on(psycopg2, server, name)
+        except Exception as exc:
+            if server.password:
+                mask_secret(server.password)
+            text = error_text(redact(str(exc))) or type(exc).__name__
+            raise PreflightRefusal(
+                Code.STATE_DATABASE,
+                f"creating state database `{name}` on {server.host} failed: {type(exc).__name__}: {text}",
+            ) from exc
+
+    def _create_database_on(self, psycopg2: Any, server: Any, name: str) -> None:
+        """The driver's calls of `_create_state_database`: connect to the server's database, create `name` if missing."""
         conn = psycopg2.connect(connection_url(with_database(server, server.schema or "postgres")))
         try:
             conn.autocommit = True

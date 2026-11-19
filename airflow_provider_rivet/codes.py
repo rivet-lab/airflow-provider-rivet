@@ -6,6 +6,7 @@ from enum import StrEnum
 class Code(StrEnum):
     """A refusal code, as the failed task and the Slack thread print it."""
 
+    BINARY_BROKEN = "RIVET_AIRFLOW_BINARY_BROKEN"
     BINARY_MISSING = "RIVET_AIRFLOW_BINARY_MISSING"
     BINARY_TOO_OLD = "RIVET_AIRFLOW_BINARY_TOO_OLD"
     CDC_ON_POD = "RIVET_AIRFLOW_CDC_ON_POD"

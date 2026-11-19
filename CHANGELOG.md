@@ -119,6 +119,10 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- A `load` or `compact` result whose rows name other tables no longer reads as success when the asked table has no row of its own. A failed row of another table fails the asked unit (rivet names a table `public_users` for the asked `users`, so the failure is the task's); a result with only other tables' rows is recorded as `result_malformed`, never an empty success. Each row of another table is recorded as `result_malformed`; the table's name is not in the XCom (`degraded` is a set of fixed keys).
+- A broken rivet binary (found on the `PATH`, but `--version` exits non-zero, times out or prints no version) is refused as `RIVET_AIRFLOW_BINARY_BROKEN` with the remedy "reinstall rivet or point `rivet_bin` at a binary that runs `--version`". It was `RIVET_AIRFLOW_BINARY_MISSING`, whose remedy was to install rivet.
+- The state database create (`RivetInitOperator`) refuses a failed connection or `CREATE DATABASE` (a wrong host, a refused connection, a missing CREATEDB privilege, a name collision) as `RIVET_AIRFLOW_STATE_DATABASE` with the driver's text, redacted and cut, instead of a raw driver exception. Its password is masked before the text is read.
+
 - A batch DAG of `build_source_dags` or `build_config_dag` over a config with an export whose
   `mode: ${VAR}` may resolve to `cdc` was built, though preflight already treated that export as CDC; it is now
   refused `RIVET_AIRFLOW_CONFIG_HAS_CDC_EXPORT`, naming the export and the mode.
