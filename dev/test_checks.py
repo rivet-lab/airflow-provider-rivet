@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_HELPER = importlib.util.spec_from_file_location("ast_names", ROOT / "dev" / "ast_names.py")
+ast_names = importlib.util.module_from_spec(_HELPER)
+_HELPER.loader.exec_module(ast_names)
 SUITES = ("tests", "gate/tests")
 BROAD = {"Exception", "BaseException", "AirflowException", "AirflowFailException"}
 
@@ -48,22 +52,39 @@ def refusals() -> set[str]:
     return names
 
 
+def _is_truthiness(test: ast.AST) -> bool:
+    """Whether an assert tests truthiness only: a name, `bool(x)`, `len(x)` or `not not x`."""
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
+        return True
+    if isinstance(test, ast.Call):
+        return isinstance(test.func, ast.Name) and test.func.id in ("bool", "len")
+    return (
+        isinstance(test, ast.UnaryOp)
+        and isinstance(test.op, ast.Not)
+        and isinstance(test.operand, ast.UnaryOp)
+        and isinstance(test.operand.op, ast.Not)
+    )
+
+
 def scan(text: str, refused: set[str]) -> list[tuple[str, int]]:
-    """(kind, line) of every weak assert in one test module."""
+    """(kind, line) of every weak assert in one test module, its names read through the module's imports."""
+    tree = ast.parse(text)
+    table = ast_names.import_table(tree)
     found = []
-    for node in ast.walk(ast.parse(text)):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Assert):
             test = node.test
             if isinstance(test, ast.Constant) and test.value is True:
                 found.append(("assert-true", node.lineno))
             elif isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or) and _is_none(test.values[0]):
                 found.append(("or-is-none", node.lineno))
-            elif isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
+            elif _is_truthiness(test):
                 found.append(("bare-assert", node.lineno))
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "raises":
-            if _name(node.func.value) == "pytest" and node.args and _name(node.args[0]) in refused:
-                if not any(k.arg == "match" for k in node.keywords):
-                    found.append(("raises-no-match", node.lineno))
+        elif isinstance(node, ast.Call) and ast_names.dotted(node.func, table) == "pytest.raises" and node.args:
+            first = node.args[0]
+            classes = first.elts if isinstance(first, ast.Tuple) else [first]
+            if any(ast_names.leaf(c, table) in refused for c in classes) and not any(k.arg == "match" for k in node.keywords):
+                found.append(("raises-no-match", node.lineno))
     return found
 
 

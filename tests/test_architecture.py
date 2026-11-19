@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import io
 import re
 import tokenize
@@ -17,6 +18,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 SEAMS = ROOT / "docs" / "seams.yaml"
+_HELPER = importlib.util.spec_from_file_location("ast_names", ROOT / "dev" / "ast_names.py")
+ast_names = importlib.util.module_from_spec(_HELPER)
+_HELPER.loader.exec_module(ast_names)
 MODULE = "<module>"
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 MUTANT_DEF = re.compile(r"__mutmut_(\d+|orig)$")
@@ -74,43 +78,23 @@ def _module_names(tree: ast.Module) -> set[str]:
     return {t.id for t in targets if isinstance(t, ast.Name)}
 
 
-def _rendered(node: ast.AST) -> str | None:
-    """The text of a string literal, each placeholder of an f-string spelled `{}`; None for any other node."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return "".join(part.value if isinstance(part, ast.Constant) else "{}" for part in node.values)
-    return None
+def _refers_to(node: ast.AST, wanted: set[str], table: ast_names.Table) -> bool:
+    """Whether a node mentions one of the names, as a bare name, an attribute or an alias bound to one."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and ast_names.leaf(n, table) in wanted:
+            return True
+        if isinstance(n, ast.Attribute) and n.attr in wanted:
+            return True
+    return False
 
 
-def _called(node: ast.AST, dotted: str) -> bool:
-    """Whether a node calls the dotted name, such as `json.loads`."""
-    if not isinstance(node, ast.Call):
-        return False
-    parts: list[str] = []
-    target: ast.AST = node.func
-    while isinstance(target, ast.Attribute):
-        parts.append(target.attr)
-        target = target.value
-    if isinstance(target, ast.Name):
-        parts.append(target.id)
-    return ".".join(reversed(parts)) == dotted
-
-
-def _refers_to(node: ast.AST, names: set[str]) -> bool:
-    """Whether a node mentions one of the names, as a bare name or an attribute."""
-    return any(
-        (isinstance(n, ast.Name) and n.id in names) or (isinstance(n, ast.Attribute) and n.attr in names) for n in ast.walk(node)
-    )
-
-
-def _is_hit(rule: dict[str, Any], node: ast.AST, inner: set[int]) -> bool:
-    """Whether one node is a bypass of an AST rule (call, raise, get or text)."""
+def _is_hit(rule: dict[str, Any], node: ast.AST, inner: set[int], table: ast_names.Table) -> bool:
+    """Whether one node is a bypass of an AST rule (call, raise, get, subscript or text)."""
     kind = rule["kind"]
     if kind == "call":
-        return _called(node, rule["match"])
+        return isinstance(node, ast.Call) and ast_names.dotted(node.func, table) == rule["match"]
     if kind == "raise":
-        return isinstance(node, ast.Raise) and node.exc is not None and _refers_to(node.exc, set(rule["names"]))
+        return isinstance(node, ast.Raise) and node.exc is not None and _refers_to(node.exc, set(rule["names"]), table)
     if kind == "get":
         return (
             isinstance(node, ast.Call)
@@ -119,22 +103,23 @@ def _is_hit(rule: dict[str, Any], node: ast.AST, inner: set[int]) -> bool:
             and bool(node.args)
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value in rule["names"]
-        )
+        ) or (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value in rule["names"])
     pattern = re.compile(rule["pattern"])
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
         return pattern.fullmatch(str(node.value)) is not None
-    if isinstance(node, (ast.Constant, ast.JoinedStr)) and id(node) not in inner:
-        text = _rendered(node)
+    if isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and id(node) not in inner:
+        text = ast_names.text_of(node)
         return text is not None and pattern.search(text) is not None
     return False
 
 
 def _ast_sites(rule: dict[str, Any], path: str, tree: ast.AST, lines: list[str]) -> list[Site]:
-    """The occurrences of an AST rule in one module."""
-    inner = {id(part) for node in ast.walk(tree) if isinstance(node, ast.JoinedStr) for part in node.values}
+    """The occurrences of an AST rule in one module, with its names read through the module's imports."""
+    inner = ast_names.folded_parts(tree)
+    table = ast_names.import_table(tree, path.removesuffix(".py").replace("/", ".").removesuffix(".__init__"))
     found: list[Site] = []
     for node, scope in _scoped(tree):
-        if _is_hit(rule, node, inner):
+        if _is_hit(rule, node, inner, table):
             line = getattr(node, "lineno", 0)
             found.append(Site(path, scope, line, lines[line - 1].strip()))
     return found
@@ -282,3 +267,28 @@ def test_mutmut_copies_are_not_read() -> None:
     """mutmut's numbered mutants and its `__mutmut_orig` copy add no site; the original def is read."""
     tree = ast.parse("def f():\n    pass\ndef x_f__mutmut_orig():\n    pass\ndef x_f__mutmut_3():\n    pass\n")
     assert [node.name for node, _ in _scoped(tree) if isinstance(node, DEFS)] == ["f"]
+
+
+def test_a_bypass_is_found_through_an_alias_a_module_alias_a_subscript_or_a_concatenation() -> None:
+    """A rule's names are read through the module's imports, so an alias, a module alias, a subscript or a `+` is the same site."""
+    source = (
+        "import json as _json\n"
+        "from json import loads as _loads\n"
+        "from ._compat import AirflowException as _E\n"
+        "a = _json.loads('x')\n"
+        "b = _loads('x')\n"
+        "raise _E('x')\n"
+        "c = 'RIVET_AIRFLOW_' + 'BOGUS'\n"
+        "d = entry['name']\n"
+        "e = entry.get('name')\n"
+    )
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    rules = [
+        {"id": "call", "kind": "call", "match": "json.loads"},
+        {"id": "raise", "kind": "raise", "names": ["AirflowException"]},
+        {"id": "text", "kind": "text", "pattern": "RIVET_AIRFLOW_[A-Z_]+"},
+        {"id": "get", "kind": "get", "names": ["name"]},
+    ]
+    found = {rule["id"]: sorted(s.line for s in _ast_sites(rule, "airflow_provider_rivet/x.py", tree, lines)) for rule in rules}
+    assert found == {"call": [4, 5], "raise": [6], "text": [7], "get": [8, 9]}

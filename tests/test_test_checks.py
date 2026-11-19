@@ -28,11 +28,23 @@ def test_it(x, y):
         pass
     with pytest.raises(ValueError):
         pass
+    with pytest.raises((PreflightRefusal, ValueError)):
+        pass
+    assert bool(x)
+    assert len(x)
+    assert not not x
+    assert not x
+from pytest import raises as _r
+import pytest as _pt
+with _r(PreflightRefusal):
+    pass
+with _pt.raises(PreflightRefusal):
+    pass
 """
 
 
 def test_each_weak_kind_is_found_and_a_strong_assert_or_a_matched_refusal_is_not() -> None:
-    found = checks.scan(SNIPPET, checks.refusals())
+    found = sorted(checks.scan(SNIPPET, checks.refusals()), key=lambda hit: hit[1])
     assert found == [
         ("assert-true", 6),
         ("or-is-none", 7),
@@ -40,6 +52,12 @@ def test_each_weak_kind_is_found_and_a_strong_assert_or_a_matched_refusal_is_not
         ("bare-assert", 9),
         ("raises-no-match", 12),
         ("raises-no-match", 16),
+        ("raises-no-match", 20),
+        ("bare-assert", 22),
+        ("bare-assert", 23),
+        ("bare-assert", 24),
+        ("raises-no-match", 28),
+        ("raises-no-match", 30),
     ]
 
 
