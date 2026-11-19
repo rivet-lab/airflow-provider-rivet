@@ -62,10 +62,15 @@ rules:
         reason: "reads an export entry's name or query file beside exports.py"
         closes: "`exports.name_of` and one query-file reader (seams-6)"
       - at: airflow_provider_rivet/preflight.py::*
-        count: 2
+        count: 4
         date: 2026-11-02
-        reason: "reads an export entry's name in the checkpoint refusal beside exports.py"
+        reason: "reads an export entry's name in the checkpoint refusal and in the entry-shape check, beside exports.py"
         closes: "`exports.name_of` (seams-6)"
+      - at: airflow_provider_rivet/operators.py::RivetInitOperator._write_config
+        count: 3
+        date: 2026-11-19
+        reason: "the init's export log line reads an entry's name and tables by subscript; spelled by subscript, not `.get`, so the guard now sees it"
+        closes: "`exports.name_of` and the tables reader in the init log line (seams-6)"
   - id: rivet-event
     owner: null
     kind: text

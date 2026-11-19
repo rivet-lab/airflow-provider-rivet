@@ -51,6 +51,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- Tests (harness, no product code change): the seam guard and the weak-assert counter resolve each name through the module's imports, so an aliased import, a module alias, a subscript read or a `+`-built prefix is the same site as its spelled-out form; `pytest.raises` of a tuple and `assert bool(x)` / `len(x)` / `not not x` count as weak asserts. The refusal-code text scan is gone: `docs/failure-surface-matrix.yaml` holds each code's named test (#155).
+
 - A failed unit's remedy (`action`) reaches the Slack alert: each one is an `action:` line in the thread's text (or the webhook message), before rivet's error line. The `format_failure` formatter it had been lost from was dead code, reachable only from tests, and is deleted; the matrix's Slack cells now name tests that drive `slack_failure_callback`, and a guard refuses a cell that does not.
 
 - An init draft that `rivet init` and `rivet check` accept but the config reader refuses (`exports` not a list, an
