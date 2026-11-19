@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from airflow.exceptions import AirflowException, AirflowFailException
-from conftest import Rig
+from conftest import PACKAGE_ROOT, Rig
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.operators import RivetApplyOperator, RivetLoadOperator, RivetRunOperator
@@ -107,11 +107,12 @@ def test_d18_a_readable_summary_records_nothing(rig: Rig) -> None:
 STOP_CHILD = r"""
 import json, os, signal, sys, tempfile, threading, time
 from pathlib import Path
-sys.path.insert(0, sys.argv[3])
+sys.path[:0] = [sys.argv[3], str(Path(sys.argv[3]) / "tests")]
 tmp, how = Path(sys.argv[1]), sys.argv[2]
 (tmp / "tmp").mkdir()
 tempfile.tempdir = str(tmp / "tmp")
 from conftest import Rig
+import airflow_provider_rivet
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.operators import RivetRunOperator
 invocation.STOP_GRACE = 1.0
@@ -150,7 +151,8 @@ try:
 except ProcessLookupError:
     alive = False
 print(json.dumps({"elapsed": time.monotonic() - t0, "raised": raised, "rivet_alive": alive,
-                  "secrets": sorted(p.name for p in (tmp / "tmp").glob("rivet-airflow-secrets-*"))}))
+                  "secrets": sorted(p.name for p in (tmp / "tmp").glob("rivet-airflow-secrets-*")),
+                  "package": airflow_provider_rivet.__file__}))
 """
 
 
@@ -165,13 +167,15 @@ def test_d02_a_sigterm_in_the_middle_of_a_step_stops_rivet_and_cleans_up(tmp_pat
     script.write_text(STOP_CHILD)
     work = tmp_path / "work"
     work.mkdir()
-    tests = str(Path(__file__).resolve().parent)
     try:
-        done = subprocess.run([sys.executable, str(script), str(work), how, tests], capture_output=True, text=True, timeout=25)
+        done = subprocess.run(
+            [sys.executable, str(script), str(work), how, str(PACKAGE_ROOT)], capture_output=True, text=True, timeout=25
+        )
     except subprocess.TimeoutExpired:
         pytest.fail("D02: execute did not return within 25 s of SIGTERM (on_kill deadlocked in the signal handler)")
     assert done.returncode == 0, done.stderr[-2000:]
     report = json.loads(done.stdout.strip().splitlines()[-1])
+    assert Path(report["package"]).resolve().is_relative_to(PACKAGE_ROOT), f"D02: the child imported {report['package']}"
     assert report["elapsed"] < 10, f"D02: execute took {report['elapsed']:.1f} s after SIGTERM"
     assert report["secrets"] == [], "D02: the rivet-airflow-secrets-* folder was left behind"
     assert report["rivet_alive"] is False
@@ -201,11 +205,12 @@ def test_d02_on_kill_only_signals_and_never_waits_or_polls(rig: Rig, monkeypatch
 GAP_CHILD = r"""
 import json, os, signal, sys, tempfile, time
 from pathlib import Path
-sys.path.insert(0, sys.argv[4])
+sys.path[:0] = [sys.argv[4], str(Path(sys.argv[4]) / "tests")]
 tmp, how, gap = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 (tmp / "tmp").mkdir()
 tempfile.tempdir = str(tmp / "tmp")
 from conftest import FakeTI, Rig
+import airflow_provider_rivet
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.operators import RivetApplyOperator
 rig = Rig(tmp)
@@ -254,7 +259,8 @@ except BaseException as exc:
     raised = type(exc).__name__
 print(json.dumps({"elapsed": time.monotonic() - t0, "raised": raised, "handled": len(handled),
                   "steps": [c["argv"][0] for c in rig.calls()],
-                  "secrets": sorted(p.name for p in (tmp / "tmp").glob("rivet-airflow-secrets-*"))}))
+                  "secrets": sorted(p.name for p in (tmp / "tmp").glob("rivet-airflow-secrets-*")),
+                  "package": airflow_provider_rivet.__file__}))
 """
 
 
@@ -271,15 +277,15 @@ def test_d40_a_sigterm_while_no_rivet_runs_stops_the_next_step_from_starting(tmp
     script.write_text(GAP_CHILD)
     work = tmp_path / "work"
     work.mkdir()
-    tests = str(Path(__file__).resolve().parent)
     try:
         done = subprocess.run(
-            [sys.executable, str(script), str(work), how, gap, tests], capture_output=True, text=True, timeout=25
+            [sys.executable, str(script), str(work), how, gap, str(PACKAGE_ROOT)], capture_output=True, text=True, timeout=25
         )
     except subprocess.TimeoutExpired:
         pytest.fail("D40: execute did not return within 25 s of SIGTERM")
     assert done.returncode == 0, done.stderr[-2000:]
     report = json.loads(done.stdout.strip().splitlines()[-1])
+    assert Path(report["package"]).resolve().is_relative_to(PACKAGE_ROOT), f"D40: the child imported {report['package']}"
     assert report["handled"] == 1, "D40: the SIGTERM never reached the handler: the test proves nothing"
     started = ["plan"] if gap == "between_plan_and_apply" else []
     assert report["steps"] == started, f"D40: rivet was started after the stop: {report['steps']}"
