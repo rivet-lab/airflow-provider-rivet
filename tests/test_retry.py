@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 from airflow.exceptions import AirflowException, AirflowFailException
-from conftest import FakeTI, Rig
+from conftest import PACKAGE_ROOT, FakeTI, Rig
 
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.operators import (
@@ -148,12 +148,13 @@ def test_g1b_a_new_try_series_plans_and_applies_again(rig: Rig) -> None:
 TASK_PROCESS = r"""
 import json, sys, tempfile
 from pathlib import Path
-sys.path.insert(0, sys.argv[2])
+sys.path[:0] = [sys.argv[2], str(Path(sys.argv[2]) / "tests")]
 tmp = Path(sys.argv[1])
 (tmp / "tmp").mkdir(exist_ok=True)
 tempfile.tempdir = str(tmp / "tmp")
 from conftest import FakeTI, Rig
 from airflow_provider_rivet import operators
+(tmp / "package").write_text(operators.__file__)
 spec = json.loads(sys.argv[3])
 rig = Rig(tmp)
 rig.scenario(**spec["scenario"])
@@ -171,9 +172,12 @@ def task_process(
     work.mkdir()
     script = tmp / "task.py"
     script.write_text(TASK_PROCESS)
-    tests = str(Path(__file__).resolve().parent)
     spec = {"operator": operator, "kwargs": kwargs or {"export": "orders"}, "scenario": scenario}
-    proc = subprocess.Popen([sys.executable, str(script), str(work), tests, json.dumps(spec)], cwd=tests)
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(work), str(PACKAGE_ROOT), json.dumps(spec)], cwd=PACKAGE_ROOT / "tests"
+    )
+    package = wait_for(work / "package")
+    assert Path(package).resolve().is_relative_to(PACKAGE_ROOT), f"the task process imported {package}, not the tree under test"
     rig = Rig.__new__(Rig)
     rig.tmp, rig.bin, rig.state_dir, rig.config, rig.records = work, work / "bin", work / "state", work / "cfg" / "pg.yaml", []
     return proc, rig

@@ -51,6 +51,7 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- Tests (harness, no product code change): a child process a test forks (`tests/test_retry.py`, `tests/test_process_io.py`) puts the tree under test ahead of the venv's copy of the package, and each test checks the child imported that tree. Before, the cells could silently test another checkout's `operators.py` (#153).
 - A failed unit's remedy (`action`) reaches the Slack alert: each one is an `action:` line in the thread's text (or the webhook message), before rivet's error line. The `format_failure` formatter it had been lost from was dead code, reachable only from tests, and is deleted; the matrix's Slack cells now name tests that drive `slack_failure_callback`, and a guard refuses a cell that does not.
 
 - An init draft that `rivet init` and `rivet check` accept but the config reader refuses (`exports` not a list, an
