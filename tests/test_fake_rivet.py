@@ -3,42 +3,25 @@ flag or a subcommand it does not offer is refused with exit 2, as clap refuses i
 
 from __future__ import annotations
 
-import ast
 import json
-import re
 import subprocess
 from pathlib import Path
 
 import rivet_cli
-from conftest import CONFIG, Rig, fixture
+from conftest import CONFIG, PRODUCT_SUBCOMMANDS, Rig, fixture
 from rivet_shapes import ENTRY_KEYS, TABLE_KEYS, load_row, load_summary, run_entry, run_summary
 
 from airflow_provider_rivet.capabilities import MIN_RIVET_VERSION, probe
 
-FAKE = ast.parse((Path(__file__).parent / "fake_rivet.py").read_text())  # the fake runs `main()` on import
-BASE_FLAGS = next(ast.literal_eval(n.value) for n in FAKE.body if isinstance(n, ast.Assign) and n.targets[0].id == "BASE_FLAGS")
 
-
-OPTION = re.compile(r"^  (?:-(\w), |    )--([\w-]+)( <[^>]+>)?(?:\s|$)", re.M)
-
-
-def options(help_text: str) -> dict[str, tuple[str | None, bool]]:
-    """{long flag: (short, takes a value)} of a `--help` text, as clap prints it (`-h`/`-V` left out)."""
-    return {long: (short or None, bool(value)) for short, long, value in OPTION.findall(help_text) if long != "help"}
-
-
-def test_the_fake_offers_each_subcommand_the_flags_rivet_0_32_2_does(rig: Rig) -> None:
+def test_the_fake_prints_each_subcommands_help_as_the_installed_rivet_does(rig: Rig) -> None:
+    """The fake's `--help` is the installed binary's, verbatim, for every subcommand the package calls."""
     real = rivet_cli.path()
     assert probe(real).version >= MIN_RIVET_VERSION, "the installed rivet-cli is below the floor the fake models"
-    exact = probe(real).version == MIN_RIVET_VERSION  # a newer rivet-cli may have grown flags the floor lacks
-    for sub in BASE_FLAGS:
-        want = options(subprocess.run([real, sub, "--help"], capture_output=True, text=True, check=True).stdout)
-        got = options(subprocess.run([str(rig.bin / "rivet"), sub, "--help"], capture_output=True, text=True, check=True).stdout)
-        assert want, f"no options parsed from `rivet {sub} --help`"
-        if exact:
-            assert got == want, f"rivet {sub}: the fake lacks {want.keys() - got.keys()}, offers {got.keys() - want.keys()}"
-        else:
-            assert got.items() <= want.items(), f"rivet {sub}: the fake offers {got.items() - want.items()}"
+    for sub in PRODUCT_SUBCOMMANDS:
+        want = subprocess.run([real, sub, "--help"], capture_output=True, text=True, check=True).stdout
+        got = subprocess.run([str(rig.bin / "rivet"), sub, "--help"], capture_output=True, text=True, check=True).stdout
+        assert got == want, sub
 
 
 def test_an_unknown_flag_or_subcommand_is_refused_as_clap_refuses_it(rig: Rig) -> None:
@@ -53,10 +36,23 @@ def test_an_unknown_flag_or_subcommand_is_refused_as_clap_refuses_it(rig: Rig) -
     for sub in ("run", "plan"):  # `-p` is a flag of run, plan and check only
         done = subprocess.run([rivet, sub, "--config", cfg, "-p", "A=1", "--param=B=2", "-pC=3", "--json-errors"], cwd=rig.tmp)
         assert done.returncode == 0, sub
-    for sub in ("load", "compact", "apply", "metrics"):
+    for sub in ("load", "compact", "apply"):
         argv = [sub, cfg, "-p", "A=1"] if sub == "apply" else [sub, "--config", cfg, "-p", "A=1"]  # apply takes a file
         done = subprocess.run([rivet, *argv], capture_output=True, text=True, cwd=rig.tmp)
         assert (done.returncode, "unexpected argument '-p'" in done.stderr) == (2, True), sub
+
+
+def test_an_unknown_export_and_a_missing_config_are_refused_with_the_line_rivet_prints(rig: Rig, tmp_path: Path) -> None:
+    """The fake refuses what the installed rivet refuses before it connects, with the same `--json-errors` line."""
+    env = {"PATH": "/usr/bin:/bin", "RIVET_PG_URL": "postgresql://u:p@127.0.0.1:1/db"}  # port 1: nothing listens
+    for argv in (
+        ["run", "--json-errors", "--config", str(rig.config), "--export", "nope"],
+        ["run", "--json-errors", "--config", str(tmp_path / "missing.yaml")],
+    ):
+        real = subprocess.run([rivet_cli.path(), *argv], capture_output=True, text=True, cwd=tmp_path, env=env)
+        fake = subprocess.run([str(rig.bin / "rivet"), *argv], capture_output=True, text=True, cwd=tmp_path, env=env)
+        assert fake.returncode == real.returncode == 1, argv
+        assert json.loads(fake.stderr.strip().splitlines()[-1]) == json.loads(real.stderr.strip().splitlines()[-1]), argv
 
 
 def test_the_rig_config_is_one_the_installed_rivet_reads(tmp_path: Path) -> None:
