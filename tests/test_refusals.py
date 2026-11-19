@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -92,8 +94,21 @@ def test_d08_a_version_probe_that_times_out_is_refused_without_retry(rig: Rig, m
     monkeypatch.setattr(capabilities, "PROBE_TIMEOUT", 0.5, raising=False)
     rig.scenario(probe_broken={"--version": "hang"})
     code, text = refusal(rig, rig.operator(RivetRunOperator, export="orders"))
-    assert code == "RIVET_AIRFLOW_BINARY_MISSING"
+    assert code == "RIVET_AIRFLOW_BINARY_BROKEN"
     assert "--version" in text
+
+
+def test_a_binary_that_is_there_but_fails_its_version_probe_is_broken_not_missing(rig: Rig, tmp_path: Path) -> None:
+    """#150: a binary on the PATH whose `--version` exits non-zero is RIVET_AIRFLOW_BINARY_BROKEN, with its own remedy."""
+    broken = tmp_path / "rivet-broken"
+    broken.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(3)\n")
+    broken.chmod(0o755)
+    op = rig.operator(RivetRunOperator, export="orders")
+    op.rivet_bin = str(broken)
+    code, text = refusal(rig, op)
+    assert code == "RIVET_AIRFLOW_BINARY_BROKEN"
+    assert "is installed but does not answer its probes" in text and "reinstall rivet" in text
+    assert "install rivet" not in text.replace("reinstall rivet", "")
 
 
 # ---- `-p` is a flag of rivet run / plan / check only (0.32.2): the others refuse it as clap does ----

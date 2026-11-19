@@ -263,6 +263,30 @@ def test_a_result_with_no_table_entry_is_not_read_as_done_without_a_note(rig: Ri
 
 
 @pytest.mark.parametrize("operator", [RivetLoadOperator, RivetCompactOperator])
+def test_a_failed_row_of_another_table_fails_the_asked_unit_and_is_recorded(rig: Rig, operator: type) -> None:
+    """#148: rivet's row for `public_users` (failed) answers a task that asked `users`; it is no success."""
+    rig.scenario(**{operator.command: {"summary": {"run_id": "r1", "per_table": [load_row("orders", "public_users", "failed")]}}})
+    exc, ti = rig.run(rig.operator(operator, export="orders", table="users"))
+    payload = payload_of(ti)
+    assert isinstance(exc, AirflowFailException) and payload["decision"] == "fail"
+    assert [(u["table"], u["status"]) for u in payload["units"]] == [("users", "failed")]
+    assert "result_malformed" in payload["degraded"]
+
+
+@pytest.mark.parametrize("operator", [RivetLoadOperator, RivetCompactOperator])
+def test_a_row_of_another_table_is_recorded_and_names_no_unit_of_the_asked_one(rig: Rig, operator: type) -> None:
+    """#148: a result whose only row is another table's is recorded, not read as an empty success."""
+    rig.scenario(
+        **{operator.command: {"summary": {"run_id": "r1", "per_table": [load_row("orders", "other", "loaded", rows=1)]}}}
+    )
+    payload, _ = rig.run(rig.operator(operator, export="orders", table="users"))
+    assert payload["decision"] == "success" and payload["degraded"] == ["result_malformed"]
+    assert [(u["table"], u["status"]) for u in payload["units"]] == [
+        ("users", "loaded" if operator is RivetLoadOperator else "compacted")
+    ]
+
+
+@pytest.mark.parametrize("operator", [RivetLoadOperator, RivetCompactOperator])
 def test_a_result_with_a_table_entry_carries_no_note_and_a_failed_load_none_either(rig: Rig, operator: type) -> None:
     """Unchanged neighbours: a well-formed result is not degraded, and a failed command whose result is empty is a failure."""
     done = "loaded" if operator is RivetLoadOperator else "compacted"

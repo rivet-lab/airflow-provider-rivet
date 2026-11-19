@@ -1103,6 +1103,44 @@ def test_without_psycopg2_the_state_database_is_refused(init: Init, monkeypatch:
     assert str(out) == "[RIVET_AIRFLOW_STATE_DATABASE] creating state database `rivet_state_shop` needs psycopg2 on the worker"
 
 
+@pytest.mark.parametrize("stage", ["connect", "create"])
+def test_a_state_server_the_package_cannot_use_is_a_coded_refusal_with_the_password_masked(
+    init: Init, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """#150: a driver error at connect or at CREATE DATABASE is `STATE_DATABASE` with its text, and no password in it."""
+
+    class Denied:
+        def __enter__(self) -> Denied:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def execute(self, sql: str, args: tuple = ()) -> None:
+            if sql.startswith("CREATE"):
+                raise RuntimeError("permission denied to create database")
+
+        def fetchone(self) -> None:
+            return None
+
+    def refuse(dsn: str) -> Any:
+        if stage == "connect":
+            raise RuntimeError(f"could not connect using {dsn}: connection refused")
+        return types.SimpleNamespace(cursor=lambda: Denied(), close=lambda: None, autocommit=False)
+
+    monkeypatch.setitem(sys.modules, "psycopg2", types.SimpleNamespace(connect=refuse))
+    state = connection("rivet_state", "postgres")
+    state.password = "a-long-state-secret"
+    lookup(monkeypatch, {"rivet_state": state})
+    out = init.run(env_from_connections=state_refs(init, "rivet_state_shop"))
+    text = str(out)
+    assert text.startswith(
+        "[RIVET_AIRFLOW_STATE_DATABASE] creating state database `rivet_state_shop` on rivet_state.host failed: "
+    )
+    assert "a-long-state-secret" not in text, "the state server's password reached the refusal"
+    assert init.calls() == [], "no rivet process starts after a refused state database"
+
+
 # --- the builder's decisions ---
 
 

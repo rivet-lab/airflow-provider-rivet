@@ -182,15 +182,17 @@ class Reading:
         """Units of a `load` / `compact` process: one per `per_table` entry of its result (the asked table only), or the
         one the task asked for when the result has none."""
         rows = self.entries(doc, "per_table")
-        if not rows:
+        asked = [row for row in rows if not table or row.get("table") == table]
+        if not asked:
+            failed = [row for row in rows if row.get("status") == "failed"]
             if error is None and isinstance(doc, dict):
-                self.degraded.add("result_malformed")  # a result that came and names no table: "done" is the task's guess
+                self.degraded.add("result_malformed")
+            if error is None and failed:
+                error = self.unit_error(step, None, failed[0].get("error"), export, table)
             status = "failed" if error else DONE_WORD[self.command]
             return [self.without_row(UnitResult(export, table, status=status, error=error))]
         units = []
-        for row in rows:
-            if table and row.get("table") != table:
-                continue
+        for row in asked:
             name, of = self.malformed(row.get("export"), str), self.malformed(row.get("table"), str)
             status = self.status(row.get("status"))
             unit_error = None  # pragma: no mutate - a unit not failed is read by its status, its error by truthiness

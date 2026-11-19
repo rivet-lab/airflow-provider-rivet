@@ -266,7 +266,12 @@ def run_preflight(
     try:
         caps = probe(binary)
     except ProbeFailed as exc:
-        raise PreflightRefusal(Code.BINARY_MISSING, f"the rivet binary does not answer its probes: {exc}") from exc
+        need = ".".join(str(n) for n in MIN_RIVET_VERSION)
+        raise PreflightRefusal(
+            Code.BINARY_BROKEN,
+            f"the rivet binary {binary} is installed but does not answer its probes ({exc}); reinstall rivet {need} or "
+            "newer, or point `rivet_bin` at a binary that runs `--version`",
+        ) from exc
     if not caps.new_enough():
         floor = ".".join(str(n) for n in MIN_RIVET_VERSION)
         raise PreflightRefusal(
