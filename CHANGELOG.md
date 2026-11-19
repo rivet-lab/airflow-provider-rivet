@@ -51,6 +51,10 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- Files a step creates no longer outlive it (#151). The summary and result JSON of a run or load, the plan scratch file next to the user's plan file, and the `.init` draft and log are listed as owned by the step and removed in a `finally`, so a task killed or timed out (a `BaseException` out of the process wait) leaves none of them. A `.init` log of a rivet init that exited non-zero is kept as evidence and removed by age (`remove_stale`, 24 h) at the next init, as the other files a killed process left are; the `.init` logs are opened private (`0600`) like the rest of the package's files. Before, the summary and result files were unlinked only after the step returned.
+
+- Load and compact locks of different scopes exclude each other (#152). One function (`_lock_paths`) maps a command's scope to the locks it takes: a whole-config load takes every export's and table's lock, an export load takes its export's and its tables', and a table load takes its table's, so a load of one table and a load of the whole config that holds it never run side by side. Run locks are keyed by export and source (as rivet's run lease is keyed by export and source), not by export alone: two configs with one export name and different sources no longer wait for each other. Operators upgrading with a run in flight: the lock files change name, so a run started before the upgrade and one started after may overlap for that run's length; a stopped run's lock file is left in `locks/run/` and is harmless.
+
 - A failed unit's remedy (`action`) reaches the Slack alert: each one is an `action:` line in the thread's text (or the webhook message), before rivet's error line. The `format_failure` formatter it had been lost from was dead code, reachable only from tests, and is deleted; the matrix's Slack cells now name tests that drive `slack_failure_callback`, and a guard refuses a cell that does not.
 
 - An init draft that `rivet init` and `rivet check` accept but the config reader refuses (`exports` not a list, an

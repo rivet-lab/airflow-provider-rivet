@@ -7,6 +7,7 @@ import ctypes
 import fcntl
 import fnmatch
 import functools
+import glob
 import hashlib
 import itertools
 import json
@@ -28,6 +29,7 @@ from typing import Any
 from . import _yaml
 from .codes import Code
 from .events import Event
+from .exports import entries_of, name_of, tables_of
 from .preflight import STATE_URL_ENV, Preflight, PreflightRefusal, run_preflight, selects_state
 from .reading import Reading, _json_of, _Step, config_target  # noqa: F401  (config_target is re-exported)
 from .result import SUBCOMMAND, ErrorObject, UnitResult, worst
@@ -56,12 +58,7 @@ _LOG_FILE = re.compile(r"^(?P<attempt>.+)\.[a-z]+\.(?:stderr|stdout)\.log$")
 LOCK_POLL = 0.2  # seconds between two tries of a held export lock
 BUSY_CODE = Code.EXPORT_BUSY
 PR_SET_PDEATHSIG = 1  # <linux/prctl.h>
-# The layout of the package's own files in a state directory (docs/state.md): `<state_dir>/airflow/<dag>/` holds a
-# DAG's sealed plans (`plans/<run>/`) and crashed ledgers (`crashed/`), which `_prune_stale` walks; `airflow/locks/`
-# the export locks; `logs/<dag>/<task>/` the stderr files.
 WORK, PLANS, CRASHED, LOCKS, LOGS = "airflow", "plans", "crashed", "locks", "logs"
-# The lock each command takes (`_lock_path`): rivet's run lease covers run, cdc_run and apply alike, its load lease a
-# load or compact of one table; `plan` only reads. Every command `invoke` dispatches has a row.
 LOCK_SCOPE = {"run": "run", "cdc_run": "run", "apply": "run", "load": "load", "compact": "load", "plan": None}
 
 
@@ -256,6 +253,7 @@ class _Session:
         self.read = Reading(self.degraded, pf.config, request.command)
         self.stderr_path: str | None = None
         self.tmp: Path | None = None
+        self.owned: list[Path] = []
         dag, run = (path_name(part) for part in request.label[:2])
         task = hashed_name(request.label[2])
         attempt = f"try{int(request.label[3])}"
@@ -288,13 +286,20 @@ class _Session:
             self.logs = _private_dir(_temp_base(), LOGS, dag, task)
             self.degraded.add("stderr_temp")
 
+    def own(self, path: Path) -> Path:
+        """Register a file this task's step creates, so `close` removes it on every exit."""
+        self.owned.append(path)
+        return path
+
     def _drop_tmp(self) -> None:
         """Remove the temp work folder of a diskless worker, if one was made."""
         if self.tmp is not None:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
     def close(self) -> None:
-        """Drop the scratch directory of a diskless worker and the log files past the retention."""
+        """Remove the files the steps created, the scratch directory of a diskless worker and the log files past the retention."""
+        for path in self.owned:
+            path.unlink(missing_ok=True)
         if self.tmp is not None:
             self._drop_tmp()
         else:
@@ -360,11 +365,11 @@ class _Session:
         return _Step(None if signal else code, signal, _error_line(lines), truncated or _has_broken_object(lines))
 
     def step_with_result(self, name: str, argv: list[str], result: Path) -> tuple[_Step, ErrorObject | None, Any]:
-        """Run a step asked to write `result`, classify its exit, read and remove the file."""
+        """Run a step asked to write `result`, classify its exit and read the file (removed by `close`)."""
+        self.own(result)
         step = self.step(name, argv)
         error = self.read.classify(step)
         doc = self.read.result_file(result, step)
-        result.unlink(missing_ok=True)
         return step, error, doc
 
     def outcome(self, step: _Step, units: list[UnitResult], error: ErrorObject | None) -> Outcome:
@@ -482,6 +487,8 @@ def _prune_stale(work: Path, now: float | None = None) -> None:
     folder of its run and plans into it a moment later (`_apply` touches it on every use), and a sibling's close must
     not take it in between."""
     cutoff = (time.time() if now is None else now) - STALE_AFTER
+    for pattern in ("*.summary.json", "*.result.json"):
+        remove_stale(work, pattern, now)
     for kind in (PLANS, CRASHED):
         try:
             files = [p for p in (work / kind).rglob("*") if p.is_file() and p.stat().st_mtime < cutoff]
@@ -497,6 +504,15 @@ def _prune_stale(work: Path, now: float | None = None) -> None:
                 folder.rmdir()
             except OSError:
                 pass
+
+
+def remove_stale(folder: Path, pattern: str, now: float | None = None) -> None:
+    """Remove the files of `folder` matching `pattern` untouched for STALE_AFTER: what a step killed before its cleanup left."""
+    cutoff = (time.time() if now is None else now) - STALE_AFTER
+    with contextlib.suppress(OSError):
+        for path in folder.glob(pattern):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)  # pragma: no mutate - just listed; gone only if a parallel task removed it
 
 
 def _idle_folders(base: Path, cutoff: float) -> list[Path]:
@@ -627,40 +643,44 @@ def _parent_death_signal() -> Callable[[], None] | None:
     return arm
 
 
-def _lock_path(s: _Session) -> tuple[Path, str] | None:
-    """The export's lock file and what it covers; `None` for `plan` (read-only) and without a state directory.
-
-    run / cdc_run / apply share one lock per export (rivet's run lease covers the three); load / compact take one per
-    table, else one per export, as the load lease covers (G2)."""
-    cmd, export, table = s.req.command, s.req.export, s.req.table
-    scope = LOCK_SCOPE[cmd]  # a command with no row is a KeyError, never a silent run lock
-    if s.pf.state_dir is None or scope is None:
-        return None
-    locks = _private_dir(s.pf.state_dir, WORK, LOCKS)
-    whole = hashed_name("config", os.path.abspath(s.req.config))
-    if scope == "load":
-        if table:
-            return _private_dir(locks, "table") / f"{hashed_name(export or '', table)}.lock", f"table `{table}` of `{export}`"
-        return locks / f"{path_name(export) if export else whole}.lock", f"export `{export}`" if export else "the config"
-    return _private_dir(locks, "run") / f"{path_name(export) if export else whole}.lock", (
-        f"export `{export}`" if export else "the config"
-    )
-
-
 def _lock_paths(s: _Session) -> list[tuple[Path, str]]:
-    """The locks this task takes: its export's (`_lock_path`), or for a run of the whole config the run lock of every
-    export the config has, sorted, so a run of one of them waits for the whole config's and the other way round."""
-    found = _lock_path(s)
-    if found is None:
+    """The locks a command's scope takes, with what each covers, sorted by path; none for `plan` or without a state directory."""
+    scope = LOCK_SCOPE[s.req.command]
+    if s.pf.state_dir is None or scope is None:
         return []
-    if s.req.export is not None or LOCK_SCOPE[s.req.command] != "run":
-        return [found]
-    names = {_yaml.text_of(e.get("name")) for e in s.pf.config.get("exports") or [] if isinstance(e, Mapping)}
-    named = sorted(str(n) for n in names if n is not None)
-    if not named:
-        return [found]
-    run = _private_dir(s.pf.state_dir, WORK, LOCKS, "run")
-    return [(run / f"{path_name(n)}.lock", f"export `{n}` of the config") for n in named]
+    locks = _private_dir(s.pf.state_dir, WORK, LOCKS)
+    if scope == "load" and s.req.table:
+        table = s.req.table
+        found = [
+            (
+                _private_dir(locks, "table") / f"{hashed_name(s.req.export or '', table)}.lock",
+                f"table `{table}` of `{s.req.export}`",
+            )
+        ]
+    else:
+        found = _export_locks(s, locks, scope)
+    return sorted({path: unit for path, unit in found}.items(), key=lambda entry: str(entry[0]))
+
+
+def _export_locks(s: _Session, locks: Path, scope: str) -> list[tuple[Path, str]]:
+    """The export locks of a command without a table, each with the table locks inside it; the whole config takes all."""
+    export = s.req.export
+    exports = [(name_of(e), tables_of(e)) for e in entries_of(s.pf.config)]
+    if export:
+        exports = [(export, next((tables for name, tables in exports if name == export), []))]
+    if not exports:
+        whole = hashed_name("config", os.path.abspath(s.req.config))
+        return [((_private_dir(locks, "run") if scope == "run" else locks) / f"{whole}.lock", "the config")]
+    source = json.dumps(s.pf.config.get("source"), sort_keys=True, default=str)
+    found: list[tuple[Path, str]] = []
+    for name, tables in exports:
+        unit = f"export `{name}`" if export else f"export `{name}` of the config"
+        if scope == "run":
+            found.append((_private_dir(locks, "run") / f"{hashed_name(name, source)}.lock", unit))
+            continue
+        found.append((locks / f"{path_name(name)}.lock", unit))
+        found += [(_private_dir(locks, "table") / f"{hashed_name(name, t)}.lock", f"table `{t}` of `{name}`") for t in tables]
+    return found
 
 
 @contextlib.contextmanager
@@ -913,7 +933,8 @@ def _emit_already_applied(s: _Session, export: str, unit: UnitResult, artifact: 
 def _plan(s: _Session) -> Outcome:
     """`rivet plan --format json` for the whole config, swapped into `plan_file` only when a builder can read it."""
     target = Path(str(s.req.plan_file))
-    scratch = target.with_name(f"{target.name}.{s.global_name}.tmp")
+    remove_stale(target.parent, f"{glob.escape(target.name)}.*.tmp")
+    scratch = s.own(target.with_name(f"{target.name}.{s.global_name}.tmp"))
     argv = [s.pf.binary, "plan", "--config", s.config_for(), "--format", "json", *s.req.extra_args, "--json-errors"]
     step = s.step("plan", argv, stdout_to=scratch)
     error = s.read.classify(step)
@@ -924,7 +945,6 @@ def _plan(s: _Session) -> Outcome:
             os.replace(scratch, target)
         except PLAN_ERRORS:
             error = ErrorObject(None, None, "internal", 6, False, None, "rivet plan printed no plan layout")
-    scratch.unlink(missing_ok=True)
     return s.outcome(step, [UnitResult(None, status="failed" if error else "success", error=error)], error)
 
 

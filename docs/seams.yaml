@@ -57,7 +57,7 @@ rules:
     allowed: [airflow_provider_rivet/exports.py]
     exceptions:
       - at: airflow_provider_rivet/invocation.py::*
-        count: 3
+        count: 2
         date: 2026-11-02
         reason: "reads an export entry's name or query file beside exports.py"
         closes: "`exports.name_of` and one query-file reader (seams-6)"
