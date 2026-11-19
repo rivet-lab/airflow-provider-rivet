@@ -26,6 +26,8 @@ from airflow_provider_rivet.operators import (
     RivetRunOperator,
 )
 
+RIG_SOURCE = json.dumps({"type": "postgres", "url_env": "RIVET_PG_URL"}, sort_keys=True)
+
 FULL = {"per_export": [{"export_name": "orders", "status": "success", "mode": "full", "rows": 7, "files": 2}]}
 INCREMENTAL = {"per_export": [{"export_name": "users", "status": "success", "mode": "incremental", "rows": 3, "files": 1}]}
 
@@ -223,7 +225,7 @@ def test_g2_the_export_lock_passes_to_rivet_and_outlives_the_killed_task_process
     proc.kill()
     proc.wait()
     try:
-        lock = rig.state_dir / "airflow" / "locks" / "run" / "orders.lock"
+        lock = rig.state_dir / "airflow" / "locks" / "run" / f"{invocation.hashed_name('orders', RIG_SOURCE)}.lock"
         assert lock.exists(), "no export lock was taken for the apply"
         assert held(lock), "the export lock was freed with the task process while its rivet runs on"
         retry, _ = rig.run(rig.operator(RivetApplyOperator, export="orders", lock_wait=1), FakeTI(try_number=2, max_tries=2))
@@ -254,7 +256,7 @@ def test_g2_the_lock_is_released_by_an_explicit_unlock_not_by_close(rig: Rig) ->
     try:
         payload, _ = rig.run(op)
         assert payload["decision"] == "success" and forks
-        lock = rig.state_dir / "airflow" / "locks" / "run" / "orders.lock"
+        lock = rig.state_dir / "airflow" / "locks" / "run" / f"{invocation.hashed_name('orders', RIG_SOURCE)}.lock"
         assert lock.exists(), "no export lock was taken for the apply"
         assert not held(lock), "the lock stayed held by a copy of its descriptor after the task ended"
     finally:

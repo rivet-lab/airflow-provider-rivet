@@ -42,9 +42,11 @@ from .invocation import (
     Outcome,
     Request,
     Stopped,
+    _open_private,
     crashed_ledger,
     crashed_retry_allowed,
     invoke,
+    remove_stale,
     spawn,
     warehouse_table,
     worker_environment,
@@ -609,8 +611,12 @@ class RivetInitOperator(_RivetTask):
         if self._stop_requested:
             raise Stopped(argv[0])
         output = cwd / f"{argv[0]}.log"
-        with output.open("w") as out:
-            code = spawn([binary, *argv], out, subprocess.STDOUT, env, str(cwd), self._hold)
+        try:
+            with _open_private(output) as out:
+                code = spawn([binary, *argv], out, subprocess.STDOUT, env, str(cwd), self._hold)
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
         for line in output.read_text(errors="replace").splitlines():
             self.log.info(
                 "%s", line
@@ -652,12 +658,22 @@ class RivetInitOperator(_RivetTask):
         state_dir.mkdir(exist_ok=True)
         work = state_dir / ".init"
         work.mkdir(exist_ok=True)
-        draft = work / target.name  # init names the stream's server_id, slot, checkpoint and prefix after this stem
+        remove_stale(work, "*.log")
+        remove_stale(work, "*.yaml")
+        draft = work / target.name
         draft.unlink(missing_ok=True)
+        try:
+            return self._drafted(draft, target, env, binary)
+        finally:
+            draft.unlink(missing_ok=True)
+
+    def _drafted(self, draft: Path, target: Path, env: Mapping[str, str], binary: str) -> dict[str, Any]:
+        """`rivet init` and `rivet check` into the draft, then the draft's copy at `target` unless one is there already."""
+        work = draft.parent
         mode = ["--mode", "cdc"] if self.mode == "cdc" else []
         self._rivet(binary, ["init", "--source-env", self.source_env, *mode, "-o", str(draft), *self.init_args], env, work)
         self._rivet(binary, ["check", "--config", str(draft)], env, work)
-        doc = read_config(str(draft))  # init writes `url_env:`, no `${...}`
+        doc = read_config(str(draft))
         target.parent.mkdir(parents=True, exist_ok=True)
         self._refuse_shared_places(doc, target)
         staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")

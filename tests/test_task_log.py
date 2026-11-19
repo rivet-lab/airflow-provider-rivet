@@ -330,7 +330,8 @@ def test_golden_busy_lock(rig: Rig, log: Recorder, monkeypatch: pytest.MonkeyPat
     op = rig.operator(RivetRunOperator, export="orders", lock_wait=0)
     path = rig.state_dir / "airflow" / "locks" / "run"
     path.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path / "orders.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    source = json.dumps({"type": "postgres", "url_env": "RIVET_PG_URL"}, sort_keys=True)
+    fd = os.open(path / f"{invocation.hashed_name('orders', source)}.lock", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
         exc, _ = rig.run(op, FakeTI(try_number=1, max_tries=2))

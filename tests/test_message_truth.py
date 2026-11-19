@@ -231,14 +231,16 @@ def test_the_success_headline_of_one_lock_is_unchanged() -> None:
 
 def test_a_cdc_run_stopped_while_waiting_for_its_lock_names_rivet_run(rig: Rig, log: Recorder) -> None:
     import fcntl
+    import json
     import os
 
-    from airflow_provider_rivet.invocation import path_name
+    from airflow_provider_rivet.invocation import hashed_name
 
     op = rig.operator(RivetCdcRunOperator, export="orders_cdc", lock_wait=5)
     locks = rig.state_dir / "airflow" / "locks" / "run"
     locks.mkdir(parents=True, exist_ok=True)
-    holder = os.open(locks / f"{path_name('orders_cdc')}.lock", os.O_RDWR | os.O_CREAT)
+    source = json.dumps({"type": "postgres", "url_env": "RIVET_PG_URL"}, sort_keys=True)
+    holder = os.open(locks / f"{hashed_name('orders_cdc', source)}.lock", os.O_RDWR | os.O_CREAT)
     fcntl.flock(holder, fcntl.LOCK_EX)
     op._stop_requested = True
     try:

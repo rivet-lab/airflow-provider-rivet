@@ -5,6 +5,7 @@ the mutmut names of airflow_provider_rivet/invocation.py."""
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -15,56 +16,60 @@ import pytest
 from airflow_provider_rivet import invocation
 from airflow_provider_rivet.invocation import Busy, Stopped, hashed_name, path_name
 
+SOURCE = {"type": "postgres", "url_env": "SRC_URL"}
 
-def lock_session(tmp_path: Path, command: str, export: str | None, table: str | None = None):
+
+def lock_session(tmp_path: Path, command: str, export: str | None, table: str | None = None, exports=(("orders", ("users",)),)):
     config = tmp_path / "rivet.yaml"
     config.write_text("")
     (tmp_path / "state").mkdir(exist_ok=True)
+    pf = {"exports": [{"name": name, "tables": list(tables)} for name, tables in exports], "source": SOURCE}
     return SimpleNamespace(
-        pf=SimpleNamespace(state_dir=tmp_path / "state"),
+        pf=SimpleNamespace(state_dir=tmp_path / "state", config=pf),
         req=SimpleNamespace(command=command, export=export, table=table, config=str(config)),
     )
 
 
+def run_key(name: str) -> str:
+    return hashed_name(name, json.dumps(SOURCE, sort_keys=True, default=str))
+
+
 def test_plan_and_a_task_without_a_state_directory_take_no_lock(tmp_path: Path) -> None:
-    """_lock_path 4/5: `plan` only reads."""
-    assert invocation._lock_path(lock_session(tmp_path, "plan", "orders")) is None
+    """`plan` only reads; no state directory means no lock."""
+    assert invocation._lock_paths(lock_session(tmp_path, "plan", "orders")) == []
     s = lock_session(tmp_path, "run", "orders")
     s.pf.state_dir = None
-    assert invocation._lock_path(s) is None
+    assert invocation._lock_paths(s) == []
 
 
-def test_each_command_locks_its_own_file_and_names_what_it_covers(tmp_path: Path) -> None:
-    """_lock_path 18-25/30/31/43-51/54-59/68-73: run/apply share `locks/run/<export>`, load and compact given a
-    table lock `locks/table/<export, table>`, otherwise `locks/<export>`; without an export the config's own name."""
+def test_each_command_locks_its_own_files_and_names_what_it_covers(tmp_path: Path) -> None:
+    """A run locks `locks/run/<export, source>`; a load or compact of a table locks its table file; an export without
+    a table also locks every table it holds; the whole config locks every export's file."""
     locks = tmp_path / "state" / "airflow" / "locks"
-    whole = hashed_name("config", str((tmp_path / "rivet.yaml").resolve()))
+    table = locks / "table" / f"{hashed_name('orders', 'users')}.lock"
     cases = {
-        ("run", "orders", None): (locks / "run" / "orders.lock", "export `orders`"),
-        ("apply", None, None): (locks / "run" / f"{whole}.lock", "the config"),
-        ("load", "orders", "users"): (
-            locks / "table" / f"{hashed_name('orders', 'users')}.lock",
-            "table `users` of `orders`",
-        ),
-        ("compact", "orders", "users"): (
-            locks / "table" / f"{hashed_name('orders', 'users')}.lock",
-            "table `users` of `orders`",
-        ),
-        ("load", None, "users"): (locks / "table" / f"{hashed_name('', 'users')}.lock", "table `users` of `None`"),
-        ("compact", "orders", None): (locks / f"{path_name('orders')}.lock", "export `orders`"),
-        ("load", None, None): (locks / f"{whole}.lock", "the config"),
+        ("run", "orders", None): {(locks / "run" / f"{run_key('orders')}.lock", "export `orders`")},
+        ("apply", None, None): {(locks / "run" / f"{run_key('orders')}.lock", "export `orders` of the config")},
+        ("load", "orders", "users"): {(table, "table `users` of `orders`")},
+        ("compact", "orders", "users"): {(table, "table `users` of `orders`")},
+        ("load", None, "users"): {(locks / "table" / f"{hashed_name('', 'users')}.lock", "table `users` of `None`")},
+        ("compact", "orders", None): {
+            (locks / f"{path_name('orders')}.lock", "export `orders`"),
+            (table, "table `users` of `orders`"),
+        },
     }
-    for (command, export, table), want in cases.items():
-        assert invocation._lock_path(lock_session(tmp_path, command, export, table)) == want, (command, export, table)
+    for (command, export, tbl), want in cases.items():
+        got = set(invocation._lock_paths(lock_session(tmp_path, command, export, tbl)))
+        assert got == want, (command, export, tbl)
 
 
 def test_a_config_reached_through_a_symlink_locks_by_the_path_the_dag_gave(tmp_path: Path) -> None:
-    """_lock_path: git-sync swaps `repo -> rev-<sha>`; the lock of a task without an export stays one file across syncs."""
-    s = lock_session(tmp_path, "apply", None)
+    """git-sync swaps `repo -> rev-<sha>`; the lock of a config without exports stays one file across syncs."""
+    s = lock_session(tmp_path, "apply", None, exports=())
     (tmp_path / "repo").symlink_to(tmp_path)
     s.req.config = str(tmp_path / "repo" / "rivet.yaml")
     want = tmp_path / "state" / "airflow" / "locks" / "run" / f"{hashed_name('config', s.req.config)}.lock"
-    assert invocation._lock_path(s) == (want, "the config")
+    assert invocation._lock_paths(s) == [(want, "the config")]
 
 
 class Clock:
@@ -267,7 +272,7 @@ def test_the_lock_wait_of_a_whole_config_run_is_per_lock_not_for_the_task(
     run.mkdir(parents=True)
     holders = {}
     for name in ("a", "b"):
-        holders[name] = os.open(run / f"{invocation.path_name(name)}.lock", os.O_RDWR | os.O_CREAT)
+        holders[name] = os.open(run / f"{hashed_name(name, json.dumps(None))}.lock", os.O_RDWR | os.O_CREAT)
         fcntl.flock(holders[name], fcntl.LOCK_EX)
     clock = Clock()
 
