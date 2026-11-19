@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import FakeTI
+from conftest import FakeTI, install_fake
 from test_slack_alerts import posted_for
 
 from airflow_provider_rivet._compat import AirflowFailException, AirflowNotFoundException
@@ -79,30 +79,6 @@ exports:
   - name: customers
     table: customers
     mode: full
-"""
-FAKE_RIVET = """\
-import json, os, sys
-from pathlib import Path
-here = Path(__file__).resolve().parent
-argv = sys.argv[1:]
-with open(here / "calls.jsonl", "a") as log:
-    log.write(json.dumps({"argv": argv, "url": os.environ.get("RIVET_SOURCE_URL"),
-                          "state": os.environ.get("RIVET_STATE_URL"), "cwd": os.getcwd()}) + "\\n")
-spec = json.loads((here / "spec.json").read_text())
-if argv[0] == "init":
-    if spec.get("sleep"):
-        import time
-        time.sleep(spec["sleep"])
-    if spec.get("raw"):
-        sys.stdout.buffer.write(b"caf\\xe9 table\\n")
-    if spec.get("init_exit"):
-        print("error: cannot connect", file=sys.stderr)
-        sys.exit(spec["init_exit"])
-    Path(argv[argv.index("-o") + 1]).write_text(spec["yaml"])
-    print("wrote config, 100% %s of it")
-elif argv[0] == "check":
-    print("check ok" if not spec.get("check_exit") else "error: binlog_format is STATEMENT", file=sys.stderr)
-    sys.exit(spec.get("check_exit", 0))
 """
 
 
@@ -285,9 +261,7 @@ class Init:
     def __init__(self, tmp: Path, monkeypatch: pytest.MonkeyPatch, **spec: Any) -> None:
         self.tmp = tmp
         (tmp / "bin").mkdir()
-        script = tmp / "bin" / "rivet"
-        script.write_text(f"#!{sys.executable}\n{FAKE_RIVET}")
-        script.chmod(0o755)
+        install_fake(tmp / "bin")
         (tmp / "odbc.ini").write_text(ODBC)
         self.spec(**spec)
         lookup(monkeypatch, {})
@@ -295,11 +269,29 @@ class Init:
         (tmp / "state").mkdir()  # the state root, a mounted volume in a deployment
 
     def spec(self, **spec: Any) -> None:
-        (self.tmp / "bin" / "spec.json").write_text(json.dumps({"yaml": CDC_CONFIG.format(env="RIVET_SOURCE_URL"), **spec}))
+        """The scenario of the next calls: the config `init` writes, its failure, and the check's exit."""
+        init: dict[str, Any] = {"yaml": spec.get("yaml", CDC_CONFIG.format(env="RIVET_SOURCE_URL"))}
+        if spec.get("sleep"):
+            init["sleep"] = spec["sleep"]
+        if spec.get("raw"):
+            init["stdout_raw"] = "café table\n"
+        if spec.get("init_exit"):
+            init.update(exit=spec["init_exit"], stderr="error: cannot connect")
+        check = (
+            {"exit": spec["check_exit"], "stderr": "error: binlog_format is STATEMENT"}
+            if spec.get("check_exit")
+            else {"stdout": "check ok"}
+        )
+        scenario = {"record_env": ["RIVET_SOURCE_URL", "RIVET_STATE_URL"], "init": init, "check": check}
+        (self.tmp / "bin" / "scenario.json").write_text(json.dumps(scenario))
 
     def calls(self) -> list[dict]:
         log = self.tmp / "bin" / "calls.jsonl"
-        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        records = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        return [
+            {"argv": r["argv"], "url": r["env"]["RIVET_SOURCE_URL"], "state": r["env"]["RIVET_STATE_URL"], "cwd": r["cwd"]}
+            for r in records
+        ]
 
     def run(self, **kwargs: Any) -> Any:
         try:

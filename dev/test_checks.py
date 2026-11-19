@@ -16,7 +16,7 @@ BROAD = {"Exception", "BaseException", "AirflowException", "AirflowFailException
 CEILING: dict[str, tuple[int, str, str]] = {
     "assert-true": (0, "2026-11-02", "a literal True asserts nothing"),
     "or-is-none": (0, "2026-11-02", "an assert that accepts None passes a function that returned nothing"),
-    "bare-assert": (10, "2026-11-02", "truthiness asserts that name no value; pin each value, then lower this"),
+    "bare-assert": (9, "2026-11-19", "truthiness asserts that name no value; pin each value, then lower this"),
     "raises-no-match": (39, "2026-11-02", "pytest.raises of one of our refusals without match= does not check its code or text"),
 }
 

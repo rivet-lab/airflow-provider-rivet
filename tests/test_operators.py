@@ -59,7 +59,6 @@ def test_apply_on_a_binary_with_the_contract_flags_passes_them_and_degrades_noth
     assert apply[2:] == ["--summary-output", apply[3], "--json-errors", "--no-notify", "--lock-wait", "30"]
     plan = ["plan", "--config", str(rig.copy()), "--export", "orders", "--format", "json", "--output", apply[1]]
     assert rig.argv("plan") == [*plan, "--json-errors"]
-    assert not any(c["argv"][0] == "metrics" for c in rig.calls())
     assert payload["degraded"] == [] and payload["units"][0]["rows"] == 7
 
 
@@ -1380,7 +1379,7 @@ def test_two_exports_whose_names_sanitise_to_one_get_their_own_plan_and_are_both
     for n in names:
         payload, _ = rig.run(rig.operator(RivetApplyOperator, task_id="t", export=n))
         assert payload["decision"] == "success" and [u["export"] for u in payload["units"]] == [n]
-    steps = [(c["argv"][0], c["export"]) for c in rig.calls() if c["argv"][0] != "metrics"]
+    steps = [(c["argv"][0], c["export"]) for c in rig.calls()]
     assert steps == [("plan", one), ("apply", one), ("plan", two), ("apply", two)], (
         "each export is planned and applies its own plan"
     )

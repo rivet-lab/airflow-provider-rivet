@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib.util
 import json
@@ -14,6 +15,8 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+
+import rivet_cli
 
 os.environ["AIRFLOW_HOME"] = tempfile.mkdtemp(prefix="rivet-provider-airflow-home-")
 os.environ["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
@@ -124,6 +127,29 @@ class LazyPull:
         return True
 
 
+PRODUCT_SUBCOMMANDS = ("run", "plan", "apply", "load", "compact", "init", "check")
+
+
+@functools.cache
+def real_help() -> dict[str, str]:
+    """`rivet <sub> --help` of the installed rivet-cli, verbatim, for each subcommand the package calls."""
+    real = rivet_cli.path()
+    return {
+        sub: subprocess.run([real, sub, "--help"], capture_output=True, text=True, check=True).stdout
+        for sub in PRODUCT_SUBCOMMANDS
+    }
+
+
+def install_fake(bin_dir: Path) -> None:
+    """Write the fake `rivet` into a bin dir, with the installed binary's help it answers from."""
+    body = (Path(__file__).parent / "fake_rivet.py").read_text()
+    script = bin_dir / "rivet"
+    script.write_text(f"#!{sys.executable}\n{body}")
+    script.chmod(0o755)
+    shutil.copy(Path(__file__).parent / "rivet_shapes.py", bin_dir / "rivet_shapes.py")  # the fake imports it
+    (bin_dir / "help.json").write_text(json.dumps(real_help()))
+
+
 class Rig:
     """A fake binary, a config, a state directory, and the calls and log records of one test."""
 
@@ -131,11 +157,7 @@ class Rig:
         self.tmp = tmp
         self.bin = tmp / "bin"
         self.bin.mkdir()
-        body = (Path(__file__).parent / "fake_rivet.py").read_text()
-        script = self.bin / "rivet"
-        script.write_text(f"#!{sys.executable}\n{body}")
-        script.chmod(0o755)
-        shutil.copy(Path(__file__).parent / "rivet_shapes.py", self.bin / "rivet_shapes.py")  # the fake imports it
+        install_fake(self.bin)
         self.state_dir = tmp / "state"
         self.state_dir.mkdir()
         self.config_dir = tmp / "cfg"

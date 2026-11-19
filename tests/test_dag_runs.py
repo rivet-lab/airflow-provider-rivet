@@ -189,7 +189,7 @@ def test_two_non_ascii_exports_of_one_dag_are_each_planned_and_extracted(dag_rig
     dag_rig.config.write_text(f"source:\n  type: postgres\n  url_env: RIVET_PG_URL\nexports:\n{exports}")
     state, tasks = dag_rig.run_dag("build_batch_dag", "non_ascii_exports", exports=list(NON_ASCII), load=False)
     assert state == OK and tasks.pop("watcher") == SKIPPED and set(tasks.values()) == {OK} and len(tasks) == 2
-    steps = [c for c in dag_rig.ran() if c[0] != "metrics"]
+    steps = dag_rig.ran()
     assert sorted(steps) == sorted([(step, n) for n in NON_ASCII for step in ("plan", "apply")]), steps
     artifacts = {c["argv"][1] for c in dag_rig.calls() if c["argv"][0] == "apply"}
     assert len(artifacts) == 2 and sorted(json.loads(Path(a).read_text())["export_name"] for a in artifacts) == sorted(NON_ASCII)

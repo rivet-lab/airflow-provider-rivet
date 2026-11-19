@@ -12,39 +12,8 @@ from pathlib import Path
 from rivet_shapes import error_line, load_summary, run_entry, run_summary  # copied beside this script by the rig
 
 HERE = Path(__file__).resolve().parent
-# rivet 0.32.2's flags per subcommand, as `rivet <sub> --help` lists them: `[-x/]--long[=]`, `=` when it takes a value.
-# tests/test_fake_rivet.py diffs this table against the installed rivet-cli, subcommand by subcommand.
-GLOBAL_FLAGS = ["--json-errors", "--no-notify", "--lock-wait="]
-BASE_FLAGS = {
-    "run": [
-        "-c/--config=",
-        "-e/--export=",
-        "--validate",
-        "--reconcile",
-        "--resume",
-        "--force",
-        "--parallel-exports",
-        "--parallel-export-processes",
-        "--summary-output=",
-        "--json",
-        "-p/--param=",
-        "--strict",
-    ],
-    "plan": ["-c/--config=", "-e/--export=", "-p/--param=", "-o/--output=", "--annotate-waves", "--format=", "--date="],
-    "apply": ["--parallel-export-processes", "--resume", "--force", "--pool=", "--split", "--summary-output=", "--json"],
-    "load": [
-        "-c/--config=",
-        "--run-id=",
-        "--rebuild-changelog",
-        "--pool=",
-        "-e/--export=",
-        "--table=",
-        "--json",
-        "--summary-output=",
-    ],
-    "compact": ["-c/--config=", "--run-id=", "--pool=", "-e/--export=", "--table=", "--json", "--summary-output="],
-    "metrics": ["-c/--config=", "-e/--export=", "-l/--last=", "--json"],
-}
+PRODUCT = ("run", "plan", "apply", "load", "compact", "init", "check")
+OPTION = re.compile(r"^  (?:-(\w), |    )--([\w-]+)( <[^>]+>)?(?:\s|$)", re.M)
 SOURCE_INVALID = "RIVET_CONFIG_EXPORT_SOURCE_INVALID"
 QUERY_FILE_RULES = (
     "query_file must be a relative path",
@@ -53,19 +22,14 @@ QUERY_FILE_RULES = (
 )
 
 
-def flags_of(spec, sub):
-    """{long flag: (short or None, takes a value)} the subcommand accepts: rivet 0.32.2's."""
-    table = {}
-    for entry in [*GLOBAL_FLAGS, *BASE_FLAGS[sub]]:
-        short, _, long = entry.rpartition("/")
-        table[long.rstrip("=")] = (short or None, long.endswith("="))
-    return table
+def helps():
+    """`rivet <sub> --help` of the installed rivet-cli for each subcommand the package calls, as the rig wrote them."""
+    return json.loads((HERE / "help.json").read_text())
 
 
-def help_text(sub, table):
-    """`rivet <sub> --help`'s option lines as clap prints them: `  -x, --long <X>`, a switch without the value."""
-    lines = [f"  {short + ', ' if short else '    '}{long}{' <X>' if takes else ''}" for long, (short, takes) in table.items()]
-    return "Usage: rivet " + sub + " [OPTIONS]\n\nOptions:\n" + "\n".join(lines)
+def flags_of(sub):
+    """{long flag: (short or None, takes a value)} the subcommand's `--help` lists, as clap prints it."""
+    return {long: (short or None, bool(value)) for short, long, value in OPTION.findall(helps()[sub]) if long != "help"}
 
 
 def value_of(argv, flag):
@@ -107,7 +71,16 @@ def read_config(argv):
     import yaml
 
     try:
-        doc = yaml.safe_load(substitute(Path(cfg).read_text(), params_of(argv))) or {}
+        text = Path(cfg).read_text()
+    except FileNotFoundError:
+        hint = "check the path, or run `rivet init` to generate one."
+        return (
+            {},
+            Path(cfg).resolve().parent,
+            (f"config file '{cfg}' not found.\n  Hint: {hint}", "RIVET_CONFIG_FILE_UNREADABLE", False),
+        )
+    try:
+        doc = yaml.safe_load(substitute(text, params_of(argv))) or {}
     except (KeyError, yaml.YAMLError) as exc:
         code = "RIVET_CONFIG_SECRET_UNSET" if isinstance(exc, KeyError) else "RIVET_CONFIG_YAML_INVALID"
         return {}, Path(cfg).resolve().parent, (f"config file '{cfg}': {type(exc).__name__}", code, False)
@@ -180,7 +153,8 @@ def source_refusal(spec, doc):
 def query_files(sub, argv, doc, base):
     """rivet's `query_file` rule (src/config/export.rs, src/config/mod.rs): the refusal text, and the SQL read."""
     only, read = value_of(argv, "--export"), {}
-    for entry in doc.get("exports") or []:
+    listed = doc.get("exports")
+    for entry in listed if isinstance(listed, list) else []:
         name, ref = entry.get("name"), entry.get("query_file")
         if not ref:
             continue
@@ -207,7 +181,8 @@ def unit_of(sub, argv, doc):
             export = json.loads(Path(argv[1]).read_text()).get("export_name")
         except (OSError, ValueError):
             export = None
-    names = [e.get("name") for e in doc.get("exports") or []]
+    listed = doc.get("exports")
+    names = [e.get("name") for e in listed] if isinstance(listed, list) else []
     if export is None and sub in ("load", "compact") and len(names) == 1:
         export = names[0]
     return export or "", value_of(argv, "--table") or ""
@@ -305,7 +280,10 @@ def main():
         if broken.get(sub) == "exit":
             print(f"error: unrecognized subcommand '{sub}'", file=sys.stderr)
             return 2
-        print(help_text(sub, flags_of(spec, sub) if sub in BASE_FLAGS else {}))
+        if sub not in PRODUCT:
+            print(f"error: unrecognized subcommand '{sub}'", file=sys.stderr)
+            return 2
+        print(helps()[sub], end="")
         return 0
     doc, base, unreadable = read_config(argv)
     refusal, sql = query_files(sub, argv, doc, base) if base else (None, {})
@@ -318,17 +296,17 @@ def main():
         call["stdin_null"] = os.path.samestat(os.fstat(0), os.stat(os.devnull))
     with open(HERE / "calls.jsonl", "a") as log:
         log.write(json.dumps(call) + "\n")
-    if sub not in BASE_FLAGS:
+    if sub not in PRODUCT:
         print(f"error: unrecognized subcommand '{sub}'", file=sys.stderr)
         return 2
     # clap refuses a flag the subcommand does not have, `-p` on load and compact included
-    offered = flags_of(spec, sub)
-    shorts = {short: long for long, (short, _) in offered.items() if short}
+    offered = flags_of(sub)
+    shorts = {f"-{short}": long for long, (short, _) in offered.items() if short}
     args = iter(argv[1:])
     for arg in args:
         if not arg.startswith("-"):
             continue
-        name = arg.split("=", 1)[0] if arg.startswith("--") else shorts.get(arg[:2], arg[:2])
+        name = arg[2:].split("=", 1)[0] if arg.startswith("--") else shorts.get(arg[:2], arg[:2])
         if name not in offered:
             print(
                 f"error: unexpected argument '{arg.split('=', 1)[0] if arg.startswith('--') else arg[:2]}' found", file=sys.stderr
@@ -336,6 +314,16 @@ def main():
             return 2
         if offered[name][1] and "=" not in arg and arg in (name, offered[name][0]):
             next(args, None)  # the flag's value
+    listed = doc.get("exports")
+    names = [e.get("name") for e in listed] if isinstance(listed, list) else []
+    if refusal is None and value_of(argv, "--export") not in (None, *names):
+        known = ", ".join(sorted(n for n in names if n))
+        hint = "check the spelling against the names above."
+        refusal = (
+            f"export '{value_of(argv, '--export')}' not found in config.\n  Known exports: {known}\n  Hint: {hint}",
+            "RIVET_CLI_EXPORT_UNKNOWN",
+            False,
+        )
     if refusal:
         text, code, prefixed = refusal
         text = f"config file '{value_of(argv, '--config')}': {text}" if prefixed else text
@@ -382,21 +370,17 @@ def main():
         text = f"plan '{export}': cursor has drifted since plan was generated"
         print(json.dumps(error_line(text, 5, "RIVET_PLAN_ARTIFACT_STALE")), file=sys.stderr)
         return 5
-    if sub == "metrics":
-        if "rows" in play:
-            print(json.dumps(play["rows"]))
-        else:
-            held = json.loads((HERE / "metrics.json").read_text()) if (HERE / "metrics.json").exists() else []
-            # opt-in `newer`: rows another process (another config, a run outside Airflow) recorded after this one's
-            held = [*play.get("newer", []), *(r for r in reversed(held) if export in ("", r["export_name"]))]
-            print(json.dumps(held[: int(value_of(argv, "--last") or len(held))]))
-        return play.get("exit", 0)
     metric = None
     if sub in ("run", "apply") and export:
         rows, files = counts_of(play, export)
         metric = {"export_name": export, "run_id": run_id_of(export), "status": "running", "total_rows": rows}
         metric["files_produced"] = files
         record_metric(metric)
+    if play.get("stdout") is not None:
+        print(play["stdout"])
+    if play.get("stdout_raw") is not None:
+        sys.stdout.flush()
+        sys.stdout.buffer.write(play["stdout_raw"].encode("latin-1"))
     if play.get("stderr"):
         print(play["stderr"], file=sys.stderr)
     for name in spec.get("leak_env", []):
@@ -435,7 +419,8 @@ def main():
                 os._exit(143)
 
             signal.signal(signal.SIGTERM, on_term)
-        Path(play["started"]).write_text(str(os.getpid()))
+        if play.get("started"):
+            Path(play["started"]).write_text(str(os.getpid()))
         time.sleep(play["sleep"])
     if play.get("signal"):
         os.kill(os.getpid(), getattr(signal, play["signal"]))
@@ -447,6 +432,10 @@ def main():
         entries = [e for e in summary.get("per_export") or [] if isinstance(e, dict) and e.get("export_name") == export]
         run_id = (entries[0] if entries else {}).get("run_id") or (metric or {}).get("run_id")  # as the summary said
         applied({artifact_key(argv): {"run_id": run_id, "rows": rows, "files": files, "mode": mode}})
+    out = value_of(argv, "--output") or value_of(argv, "-o")
+    if sub == "init" and not play.get("exit") and out:
+        Path(out).write_text(play["yaml"])
+        print("wrote config, 100% %s of it")
     if metric is not None:
         # opt-in `metric`: what the terminal row records beside the status (a `skip_empty` run's `skipped`, its reason)
         record_metric({**metric, "status": "failed" if play.get("exit") else "success", **play.get("metric", {})})

@@ -51,6 +51,8 @@ rivet binary; its release tags will use the prefix `airflow-v`.
 
 ### Fixed
 
+- Tests: the fake `rivet` answers `--help` with the installed binary's text, verbatim, for each subcommand, and refuses an unknown flag, an unknown export and a missing config with the line rivet prints. One fake serves every test module (was a second copy in `test_source_dags`), so a flag the package passes that rivet lacks fails the suite instead of passing against a hand-written table.
+
 - A failed unit's remedy (`action`) reaches the Slack alert: each one is an `action:` line in the thread's text (or the webhook message), before rivet's error line. The `format_failure` formatter it had been lost from was dead code, reachable only from tests, and is deleted; the matrix's Slack cells now name tests that drive `slack_failure_callback`, and a guard refuses a cell that does not.
 
 - An init draft that `rivet init` and `rivet check` accept but the config reader refuses (`exports` not a list, an
